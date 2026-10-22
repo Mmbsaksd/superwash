@@ -2,21 +2,23 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { Order, BusinessSettings } from '../../types';
 import { LaundryService } from '../../services/laundryService';
+import { supabase } from '../../services/supabase';
 import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
 import { WeightEntryModal } from '../../components/WeightEntryModal';
 import { AssignStaffModal } from '../../components/AssignStaffModal';
 import {
   Scale, RefreshCw, Sparkles, CheckCircle,
-  Truck, ArrowRight, UserPlus, Search, Phone, Calendar, LogOut
+  Truck, ArrowRight, UserPlus, Search, Phone, Calendar, LogOut, AlertCircle, ShieldCheck
 } from 'lucide-react';
 
 export const ManagerDashboard: React.FC = () => {
-  const { currentUser, logout } = useAuth();
-  const [activeTab, setActiveTab] = useState<'collected' | 'washing' | 'ready'>('collected');
+  const { currentUser, logout, signInWithPassword } = useAuth();
+  const [activeTab, setActiveTab] = useState<'collected' | 'washing' | 'ready' | 'out_for_delivery' | 'delivered'>('collected');
   const [orders, setOrders] = useState<Order[]>([]);
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Modals
   const [weighingOrder, setWeighingOrder] = useState<Order | null>(null);
@@ -25,10 +27,34 @@ export const ManagerDashboard: React.FC = () => {
 
   useEffect(() => {
     loadData();
+
+    // Auto-refresh when manager returns to the dashboard tab
+    const handleFocus = () => {
+      loadData();
+    };
+    window.addEventListener('focus', handleFocus);
+
+    // Live Realtime updates across devices/tabs when orders are placed or updated
+    const channel = supabase
+      .channel('manager-orders-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders' },
+        () => {
+          loadData();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      supabase.removeChannel(channel);
+    };
   }, [currentUser]);
 
   const loadData = async () => {
     setIsLoading(true);
+    setLoadError(null);
     try {
       const [s, allOrds] = await Promise.all([
         LaundryService.getSettings(),
@@ -36,8 +62,9 @@ export const ManagerDashboard: React.FC = () => {
       ]);
       setSettings(s);
       setOrders(allOrds);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error loading manager orders:', err);
+      setLoadError(err?.message || 'Failed to load orders from database.');
     } finally {
       setIsLoading(false);
     }
@@ -54,16 +81,22 @@ export const ManagerDashboard: React.FC = () => {
     );
   });
 
-  // Section 1: New or Collected Orders (waiting for weight or just collected)
+  // Section 1: New / Weighed / Collected Orders
   const collectedOrders = filteredOrders.filter((o) =>
-    o.order_status === 'collected' || o.order_status === 'booked' || o.order_status === 'pickup_assigned'
+    o.order_status === 'collected' || o.order_status === 'booked' || o.order_status === 'pickup_assigned' || o.order_status === 'weighed'
   );
 
   // Section 2: Washing (in washing machines)
   const washingOrders = filteredOrders.filter((o) => o.order_status === 'washing');
 
   // Section 3: Ready for Delivery (clean, awaiting dispatch)
-  const readyOrders = filteredOrders.filter((o) => o.order_status === 'ready_for_delivery' || o.order_status === 'out_for_delivery');
+  const readyOrders = filteredOrders.filter((o) => o.order_status === 'ready_for_delivery' || o.order_status === 'delivery_assigned');
+
+  // Section 4: Out for Delivery (in transit with courier)
+  const outForDeliveryOrders = filteredOrders.filter((o) => o.order_status === 'out_for_delivery');
+
+  // Section 5: Delivered / Completed history
+  const deliveredOrders = filteredOrders.filter((o) => o.order_status === 'delivered');
 
   const handleStartWashing = async (order: Order) => {
     if (!order.measured_weight) {
@@ -181,22 +214,22 @@ export const ManagerDashboard: React.FC = () => {
       {/* Tabs & Search Filter */}
       <div className="bg-white border-b border-slate-200 sticky top-[68px] z-20">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="grid grid-cols-3 gap-2 w-full sm:w-auto">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 w-full sm:w-auto">
             <button
               onClick={() => setActiveTab('collected')}
-              className={`py-2 px-3 sm:px-4 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+              className={`py-2 px-2.5 sm:px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 ${
                 activeTab === 'collected'
                   ? 'bg-purple-700 text-white shadow-sm'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
-              <span>1. New / Weighed</span>
+              <span>1. Intake</span>
               <span className="text-[10px] opacity-80">({collectedOrders.length})</span>
             </button>
 
             <button
               onClick={() => setActiveTab('washing')}
-              className={`py-2 px-3 sm:px-4 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+              className={`py-2 px-2.5 sm:px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 ${
                 activeTab === 'washing'
                   ? 'bg-purple-700 text-white shadow-sm'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -208,14 +241,38 @@ export const ManagerDashboard: React.FC = () => {
 
             <button
               onClick={() => setActiveTab('ready')}
-              className={`py-2 px-3 sm:px-4 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+              className={`py-2 px-2.5 sm:px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 ${
                 activeTab === 'ready'
                   ? 'bg-purple-700 text-white shadow-sm'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
-              <span>3. Ready for Delivery</span>
+              <span>3. Ready</span>
               <span className="text-[10px] opacity-80">({readyOrders.length})</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('out_for_delivery')}
+              className={`py-2 px-2.5 sm:px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 ${
+                activeTab === 'out_for_delivery'
+                  ? 'bg-purple-700 text-white shadow-sm'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              <span>4. In Transit</span>
+              <span className="text-[10px] opacity-80">({outForDeliveryOrders.length})</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('delivered')}
+              className={`py-2 px-2.5 sm:px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 ${
+                activeTab === 'delivered'
+                  ? 'bg-purple-700 text-white shadow-sm'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              <span>5. History</span>
+              <span className="text-[10px] opacity-80">({deliveredOrders.length})</span>
             </button>
           </div>
 
@@ -234,6 +291,50 @@ export const ManagerDashboard: React.FC = () => {
 
       {/* Main Content Area */}
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full flex-1 space-y-4">
+        {loadError && (
+          <div className="p-4 bg-red-50 border border-red-200 rounded-2xl text-red-900 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
+            <div className="flex items-center gap-2.5">
+              <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
+              <div>
+                <strong className="block text-sm">Database Authorization / Sync Notice:</strong>
+                <span className="text-red-700">{loadError}</span>
+              </div>
+            </div>
+            <button
+              onClick={loadData}
+              className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs transition cursor-pointer self-start sm:self-auto"
+            >
+              Retry Sync
+            </button>
+          </div>
+        )}
+
+        {!loadError && currentUser?.role === 'customer' && (
+          <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl text-amber-900 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>
+                <strong>Customer Account Detected ({currentUser.email || currentUser.full_name}):</strong> In live Supabase mode, store operations require an authorized Manager or Owner role. Under database RLS, customer accounts can only view their own bookings.
+              </span>
+            </div>
+            <button
+              onClick={async () => {
+                setIsLoading(true);
+                const res = await signInWithPassword('manager@superwash.in', 'SuperWashManager2026!');
+                if (res.success) {
+                  await loadData();
+                } else {
+                  alert(res.message || 'Failed to authenticate as manager');
+                  setIsLoading(false);
+                }
+              }}
+              className="px-3.5 py-1.5 bg-purple-700 hover:bg-purple-800 text-white font-bold rounded-xl text-xs transition cursor-pointer shrink-0 self-start sm:self-auto"
+            >
+              Sign In as Store Manager
+            </button>
+          </div>
+        )}
+
         {/* ================= TAB 1: NEW / COLLECTED ORDERS ================= */}
         {activeTab === 'collected' && (
           <div className="space-y-4">
@@ -498,12 +599,121 @@ export const ManagerDashboard: React.FC = () => {
                     {order.order_status === 'ready_for_delivery' && (
                       <button
                         onClick={() => handleDispatchOutForDelivery(order)}
-                        className="w-full py-2.5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5"
+                        className="w-full py-2.5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5 cursor-pointer"
                       >
                         <Truck className="w-4 h-4" />
                         Dispatch Out for Delivery
                       </button>
                     )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ================= TAB 4: OUT FOR DELIVERY ================= */}
+        {activeTab === 'out_for_delivery' && (
+          <div className="space-y-4">
+            {outForDeliveryOrders.length === 0 ? (
+              <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 text-slate-500 text-xs shadow-sm">
+                No orders currently in transit with delivery couriers.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {outForDeliveryOrders.map((order) => (
+                  <div
+                    key={order.id}
+                    className="bg-white rounded-3xl border border-slate-200 p-5 space-y-4 shadow-sm text-xs flex flex-col justify-between"
+                  >
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <span className="font-black text-slate-900 text-base block">#{order.order_number}</span>
+                          <span className="font-bold text-slate-800 text-sm">{order.customer_name}</span>
+                          <span className="text-[11px] text-slate-500 block truncate">📍 {order.pickup_address}</span>
+                        </div>
+                        <StatusBadge status={order.order_status} size="sm" />
+                      </div>
+
+                      <div className="p-3 bg-blue-50 border border-blue-200 rounded-2xl flex justify-between items-center text-blue-900">
+                        <div>
+                          <span className="text-blue-600 block text-[10px] uppercase font-bold">In Transit Courier</span>
+                          <span className="font-bold text-blue-950">
+                            🛵 {order.assigned_delivery_name || 'Agent'} ({order.assigned_delivery_phone || ''})
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setAssigningOrder(order);
+                            setAssignmentType('delivery');
+                          }}
+                          className="px-2.5 py-1 bg-white border border-blue-300 hover:bg-blue-50 text-blue-800 rounded-xl font-bold text-[10px] shadow-sm"
+                        >
+                          Reassign
+                        </button>
+                      </div>
+
+                      <div className="flex justify-between items-center text-slate-600">
+                        <span>Total: <b>₹{((order.total_amount_paise || 0) / 100).toFixed(2)}</b></span>
+                        <PaymentBadge status={order.payment_status} />
+                      </div>
+                    </div>
+
+                    <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 text-center text-slate-500 text-[11px]">
+                      Awaiting delivery confirmation from courier at doorstep
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ================= TAB 5: DELIVERED / HISTORY ================= */}
+        {activeTab === 'delivered' && (
+          <div className="space-y-4">
+            {deliveredOrders.length === 0 ? (
+              <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 text-slate-500 text-xs shadow-sm">
+                No delivered orders found in history.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {deliveredOrders.map((order) => (
+                  <div
+                    key={order.id}
+                    className="bg-white rounded-3xl border border-slate-200 p-5 space-y-4 shadow-sm text-xs flex flex-col justify-between"
+                  >
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <span className="font-black text-slate-900 text-base block">#{order.order_number}</span>
+                          <span className="font-bold text-slate-800 text-sm">{order.customer_name}</span>
+                          <span className="text-[11px] text-slate-500 block truncate">📍 {order.pickup_address}</span>
+                        </div>
+                        <StatusBadge status={order.order_status} size="sm" />
+                      </div>
+
+                      <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-1 text-[11px] text-emerald-950">
+                        <div className="flex justify-between">
+                          <span>Delivered:</span>
+                          <b>{order.delivered_at ? new Date(order.delivered_at).toLocaleString() : 'Completed'}</b>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Delivered By:</span>
+                          <b>{order.assigned_delivery_name || 'Courier'}</b>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Picked Up By:</span>
+                          <b>{order.assigned_pickup_name || 'Pickup Agent'}</b>
+                        </div>
+                      </div>
+
+                      <div className="flex justify-between items-center text-slate-600">
+                        <span>Total: <b>₹{((order.total_amount_paise || 0) / 100).toFixed(2)}</b></span>
+                        <PaymentBadge status={order.payment_status} />
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>

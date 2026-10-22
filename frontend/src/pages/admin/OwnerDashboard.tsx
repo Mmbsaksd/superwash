@@ -77,6 +77,7 @@ export const OwnerDashboard: React.FC = () => {
 
   // Modals
   const [assigningOrder, setAssigningOrder] = useState<Order | null>(null);
+  const [assignmentType, setAssignmentType] = useState<'pickup' | 'delivery'>('pickup');
   const [paymentOrder, setPaymentOrder] = useState<Order | null>(null);
   const [weighingOrder, setWeighingOrder] = useState<Order | null>(null);
 
@@ -671,9 +672,15 @@ export const OwnerDashboard: React.FC = () => {
                           <span className="font-bold text-emerald-700">₹{(order.paid_amount_paise / 100).toFixed(2)}</span>
                         </div>
                         <div>
-                          <span className="text-slate-400 block">Assigned:</span>
+                          <span className="text-slate-400 block">Pickup Agent:</span>
                           <span className="font-bold text-slate-800 truncate block">
-                            {order.assigned_delivery_name || 'None'}
+                            {order.assigned_pickup_name || 'Unassigned'}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block">Delivery Courier:</span>
+                          <span className="font-bold text-slate-800 truncate block">
+                            {order.assigned_delivery_name || 'Unassigned'}
                           </span>
                         </div>
                       </div>
@@ -681,12 +688,27 @@ export const OwnerDashboard: React.FC = () => {
 
                     {/* Action buttons */}
                     <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-100">
-                      <button
-                        onClick={() => setAssigningOrder(order)}
-                        className="py-1.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-[11px]"
-                      >
-                        {order.assigned_delivery_name ? 'Reassign' : 'Assign Courier'}
-                      </button>
+                      {(order.order_status === 'booked' || order.order_status === 'pickup_assigned') ? (
+                        <button
+                          onClick={() => {
+                            setAssigningOrder(order);
+                            setAssignmentType('pickup');
+                          }}
+                          className="py-1.5 px-3 bg-brand-50 hover:bg-brand-100 text-brand-700 rounded-xl font-bold text-[11px]"
+                        >
+                          {order.assigned_pickup_name ? 'Reassign Pickup' : 'Assign Pickup'}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setAssigningOrder(order);
+                            setAssignmentType('delivery');
+                          }}
+                          className="py-1.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-[11px]"
+                        >
+                          {order.assigned_delivery_name ? 'Reassign Courier' : 'Assign Courier'}
+                        </button>
+                      )}
 
                       <button
                         onClick={() => setWeighingOrder(order)}
@@ -1447,6 +1469,7 @@ export const OwnerDashboard: React.FC = () => {
             setAssigningOrder(null);
           }}
           assignedByName={currentUser?.full_name || 'Owner'}
+          assignmentType={assignmentType}
         />
       )}
 
@@ -1461,6 +1484,7 @@ export const OwnerDashboard: React.FC = () => {
             setPaymentOrder(null);
             LaundryService.getAllPayments().then(setPayments);
           }}
+          recordedBy={currentUser?.id}
           recordedByName={currentUser?.full_name || 'Owner'}
           isStaff={true}
         />

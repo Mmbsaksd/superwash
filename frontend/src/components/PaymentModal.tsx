@@ -2,12 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { X, Banknote, QrCode, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { Order, BusinessSettings } from '../types';
 import { LaundryService } from '../services/laundryService';
+import { useAuth } from '../context/AuthContext';
 
 interface PaymentModalProps {
   order: Order;
   isOpen: boolean;
   onClose: () => void;
   onPaymentSuccess: (updatedOrder: Order) => void;
+  recordedBy?: string;
   recordedByName?: string;
   isStaff?: boolean;
 }
@@ -17,9 +19,11 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   isOpen,
   onClose,
   onPaymentSuccess,
-  recordedByName = 'Staff',
+  recordedBy,
+  recordedByName,
   isStaff = true
 }) => {
+  const { currentUser } = useAuth();
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [method, setMethod] = useState<'cash' | 'upi_manual'>('upi_manual');
   const [amountInput, setAmountInput] = useState<string>('');
@@ -75,13 +79,17 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     setError(null);
 
     try {
+      const staffUuid = recordedBy || currentUser?.id;
+      const staffDisplayName = recordedByName || currentUser?.full_name || 'Staff';
+
       const updated = await LaundryService.recordPayment(
         order.id,
         amountPaise,
         method,
         utrReference.trim() || undefined,
         notes.trim() || undefined,
-        recordedByName
+        staffUuid,
+        staffDisplayName
       );
 
       if (updated) {

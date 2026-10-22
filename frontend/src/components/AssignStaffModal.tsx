@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Order, Profile } from '../types';
 import { LaundryService } from '../services/laundryService';
-import { Truck, X, CheckCircle, UserCheck } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
+import { Truck, X, CheckCircle, UserCheck, AlertCircle } from 'lucide-react';
 
 interface AssignStaffModalProps {
   order: Order;
@@ -20,6 +21,9 @@ export const AssignStaffModal: React.FC<AssignStaffModalProps> = ({
   assignedByName = 'Owner',
   assignmentType
 }) => {
+  const { currentUser } = useAuth();
+  const isCustomerSession = currentUser?.role === 'customer';
+
   const isPickup = assignmentType
     ? assignmentType === 'pickup'
     : (order.order_status === 'booked' || order.order_status === 'pickup_assigned');
@@ -100,24 +104,49 @@ export const AssignStaffModal: React.FC<AssignStaffModalProps> = ({
         <div className="bg-slate-900 p-4 text-white flex justify-between items-center">
           <div className="flex items-center gap-2">
             <Truck className="w-5 h-5 text-emerald-400" />
-            <h3 className="font-bold text-sm">
-              {isPickup ? 'Assign Pickup Agent' : 'Assign Delivery Staff'}
-            </h3>
+            <div>
+              <h3 className="font-bold text-sm">
+                {isPickup ? 'Assign Pickup Executive' : 'Assign Delivery Courier'}
+              </h3>
+              <p className="text-[10px] text-slate-300">
+                {isPickup
+                  ? 'Assign doorstep pickup executive to collect and weigh laundry'
+                  : 'Assign delivery courier for final clean laundry dispatch'}
+              </p>
+            </div>
           </div>
-          <button onClick={onClose} className="p-1 rounded-full hover:bg-white/20 text-white">
+          <button onClick={onClose} className="p-1 rounded-full hover:bg-white/20 text-white cursor-pointer">
             <X className="w-4 h-4" />
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-4 space-y-4 text-xs">
-          <div>
-            <span className="text-slate-500 block mb-1">
-              Order #{order.order_number} • {order.customer_name}
-            </span>
-            <span className="font-medium text-slate-700 block">
+          <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1">
+            <div className="flex justify-between items-start">
+              <span className="font-bold text-slate-900">
+                Order #{order.order_number} • {order.customer_name}
+              </span>
+              <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-slate-200 text-slate-700">
+                {isPickup ? 'Pickup Stage' : 'Delivery Stage'}
+              </span>
+            </div>
+            <p className="text-slate-600 text-[11px] leading-relaxed">
               📍 {order.pickup_address} ({order.pickup_pincode})
-            </span>
+            </p>
+            <div className="grid grid-cols-2 gap-1 pt-1 mt-1 border-t border-slate-200 text-[10px] text-slate-500">
+              <span>Pickup Executive: <b className="text-slate-700">{order.assigned_pickup_name || 'Unassigned'}</b></span>
+              <span>Delivery Courier: <b className="text-slate-700">{order.assigned_delivery_name || 'Unassigned'}</b></span>
+            </div>
           </div>
+
+          {isCustomerSession && (
+            <div className="p-3 bg-amber-50 text-amber-800 rounded-xl border border-amber-200 flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <span>
+                <strong>Customer Session:</strong> You are currently signed in as a customer ({currentUser?.email || currentUser?.full_name}). Supabase Row-Level Security requires an authenticated Manager account to assign staff.
+              </span>
+            </div>
+          )}
 
           {error && (
             <div className="p-2.5 bg-red-50 text-red-700 rounded-lg border border-red-200">
@@ -127,7 +156,7 @@ export const AssignStaffModal: React.FC<AssignStaffModalProps> = ({
 
           <div>
             <label className="block font-bold text-slate-700 mb-2">
-              Select Delivery Person:
+              {isPickup ? 'Select Pickup Executive:' : 'Select Delivery Courier:'}
             </label>
             <div className="space-y-2">
               {staffList.map((staff) => (
@@ -177,8 +206,8 @@ export const AssignStaffModal: React.FC<AssignStaffModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={isLoading || !selectedStaffId}
-              className="flex-1 py-2 px-3 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-xl shadow-md transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+              disabled={isLoading || !selectedStaffId || isCustomerSession}
+              className="flex-1 py-2 px-3 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-xl shadow-md transition flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
             >
               <CheckCircle className="w-4 h-4" />
               {isLoading ? 'Assigning...' : 'Assign Staff'}

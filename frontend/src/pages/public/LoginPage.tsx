@@ -5,13 +5,18 @@ import { DEMO_PROFILES } from '../../services/laundryService';
 import { UserRole } from '../../types';
 import {
   Sparkles, ArrowRight, CheckCircle2,
-  AlertCircle, Loader2, ShieldCheck, Lock
+  AlertCircle, Loader2, ShieldCheck, Lock, User, KeyRound
 } from 'lucide-react';
 
 export const LoginPage: React.FC = () => {
-  const { signInWithGoogle, switchDemoRole, currentUser } = useAuth();
+  const { signInWithGoogle, signInWithPassword, switchDemoRole, currentUser } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+
+  const [authTab, setAuthTab] = useState<'customer' | 'staff'>('customer');
+  const [staffEmail, setStaffEmail] = useState<string>('manager@superwash.in');
+  const [staffPassword, setStaffPassword] = useState<string>('SuperWashManager2026!');
+  const [isStaffSubmitting, setIsStaffSubmitting] = useState<boolean>(false);
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +73,33 @@ export const LoginPage: React.FC = () => {
     } catch (err: any) {
       setError(err.message || 'Google sign-in could not be initiated.');
       setIsLoading(false);
+    }
+  };
+
+  const handleStaffLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setInfoMessage(null);
+
+    if (!staffEmail.trim() || !staffPassword.trim()) {
+      setError('Please enter both your staff email and password.');
+      return;
+    }
+
+    setIsStaffSubmitting(true);
+    try {
+      const res = await signInWithPassword(staffEmail.trim(), staffPassword);
+      if (!res.success) {
+        setError(res.message || 'Staff authentication failed. Please verify credentials.');
+        setIsStaffSubmitting(false);
+        return;
+      }
+      setInfoMessage('Staff authenticated successfully. Redirecting to dashboard...');
+      const role = res.role || 'manager';
+      setTimeout(() => redirectByRole(role), 300);
+    } catch (err: any) {
+      setError(err?.message || 'Authentication service error.');
+      setIsStaffSubmitting(false);
     }
   };
 
@@ -154,13 +186,34 @@ export const LoginPage: React.FC = () => {
           </div>
         )}
 
-        {/* Primary Customer Sign-in Card: Continue with Google */}
+        {/* Primary Login Card with Dual Customer & Staff Tabs */}
         <div className="bg-white rounded-3xl border border-slate-200 p-6 sm:p-8 shadow-sm space-y-6">
-          <div className="text-center space-y-1">
-            <h2 className="font-black text-slate-900 text-lg">Customer Sign In</h2>
-            <p className="text-slate-500 text-xs">
-              Fast, password-free login with your verified Google account.
-            </p>
+          {/* Tab Selector */}
+          <div className="flex bg-slate-100 p-1 rounded-2xl">
+            <button
+              type="button"
+              onClick={() => { setAuthTab('customer'); setError(null); }}
+              className={`flex-1 py-2 px-3 text-xs font-bold rounded-xl transition flex items-center justify-center gap-2 ${
+                authTab === 'customer'
+                  ? 'bg-white text-brand-700 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <User className="w-4 h-4" />
+              <span>Customer</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { setAuthTab('staff'); setError(null); }}
+              className={`flex-1 py-2 px-3 text-xs font-bold rounded-xl transition flex items-center justify-center gap-2 ${
+                authTab === 'staff'
+                  ? 'bg-white text-purple-700 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <KeyRound className="w-4 h-4" />
+              <span>Staff Portal</span>
+            </button>
           </div>
 
           {error && (
@@ -177,49 +230,139 @@ export const LoginPage: React.FC = () => {
             </div>
           )}
 
-          <div className="space-y-4">
-            {/* Official Google Sign-in Button */}
-            <button
-              type="button"
-              onClick={handleGoogleSignIn}
-              disabled={isLoading}
-              className="w-full py-3.5 px-4 bg-white hover:bg-slate-50 active:scale-[0.99] border-2 border-slate-200 hover:border-slate-300 text-slate-700 font-bold text-sm rounded-2xl shadow-sm transition flex items-center justify-center gap-3 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
-            >
-              {isLoading ? (
-                <Loader2 className="w-5 h-5 text-brand-600 animate-spin" />
-              ) : (
-                <svg className="w-5 h-5" viewBox="0 0 24 24">
-                  <path
-                    fill="#4285F4"
-                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                  />
-                  <path
-                    fill="#34A853"
-                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                  />
-                  <path
-                    fill="#FBBC05"
-                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                  />
-                  <path
-                    fill="#EA4335"
-                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                  />
-                </svg>
-              )}
-              <span className="text-slate-800 font-black">Continue with Google</span>
-            </button>
-
-            <div className="pt-2 border-t border-slate-100 space-y-2 text-center">
-              <div className="flex items-center justify-center gap-1.5 text-[11px] text-slate-500">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                <span>No SMS OTP delays • Instant 1-click authentication</span>
+          {authTab === 'customer' ? (
+            <div className="space-y-5">
+              <div className="text-center space-y-1">
+                <h2 className="font-black text-slate-900 text-lg">Customer Sign In</h2>
+                <p className="text-slate-500 text-xs">
+                  Fast, password-free login with your verified Google account.
+                </p>
               </div>
-              <p className="text-[11px] text-slate-400 leading-normal">
-                Your contact mobile number and pickup address will be securely collected when you place your first laundry order.
-              </p>
+
+              {/* Official Google Sign-in Button */}
+              <button
+                type="button"
+                onClick={handleGoogleSignIn}
+                disabled={isLoading}
+                className="w-full py-3.5 px-4 bg-white hover:bg-slate-50 active:scale-[0.99] border-2 border-slate-200 hover:border-slate-300 text-slate-700 font-bold text-sm rounded-2xl shadow-sm transition flex items-center justify-center gap-3 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+              >
+                {isLoading ? (
+                  <Loader2 className="w-5 h-5 text-brand-600 animate-spin" />
+                ) : (
+                  <svg className="w-5 h-5" viewBox="0 0 24 24">
+                    <path
+                      fill="#4285F4"
+                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                    />
+                    <path
+                      fill="#EA4335"
+                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                    />
+                  </svg>
+                )}
+                <span className="text-slate-800 font-black">Continue with Google</span>
+              </button>
+
+              <div className="pt-2 border-t border-slate-100 space-y-2 text-center">
+                <div className="flex items-center justify-center gap-1.5 text-[11px] text-slate-500">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>No SMS OTP delays • Instant 1-click authentication</span>
+                </div>
+                <p className="text-[11px] text-slate-400 leading-normal">
+                  Your contact mobile number and pickup address will be securely collected when you place your first laundry order.
+                </p>
+              </div>
             </div>
-          </div>
+          ) : (
+            <form onSubmit={handleStaffLogin} className="space-y-4">
+              <div className="text-center space-y-1">
+                <h2 className="font-black text-slate-900 text-lg">Staff Authentication</h2>
+                <p className="text-slate-500 text-xs">
+                  Sign in with your verified Store Manager or Delivery staff account.
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Staff Email Address
+                  </label>
+                  <input
+                    type="email"
+                    value={staffEmail}
+                    onChange={(e) => setStaffEmail(e.target.value)}
+                    required
+                    placeholder="manager@superwash.in"
+                    className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Password
+                  </label>
+                  <input
+                    type="password"
+                    value={staffPassword}
+                    onChange={(e) => setStaffPassword(e.target.value)}
+                    required
+                    placeholder="••••••••••••"
+                    className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isStaffSubmitting}
+                  className="w-full py-3 px-4 bg-purple-600 hover:bg-purple-700 active:scale-[0.99] text-white font-bold text-xs rounded-xl shadow-sm transition flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
+                >
+                  {isStaffSubmitting ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-white" />
+                  ) : (
+                    <KeyRound className="w-4 h-4" />
+                  )}
+                  <span>Sign In to Staff Portal</span>
+                </button>
+              </div>
+
+              {/* Quick credential pre-fill helpers */}
+              <div className="pt-2 border-t border-slate-100 space-y-1.5 text-center">
+                <span className="text-[10px] uppercase font-bold text-slate-400">
+                  Quick Staff Credentials
+                </span>
+                <div className="flex items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStaffEmail('manager@superwash.in');
+                      setStaffPassword('SuperWashManager2026!');
+                    }}
+                    className="text-[11px] px-2.5 py-1 rounded-lg bg-purple-50 text-purple-700 hover:bg-purple-100 font-medium transition"
+                  >
+                    Store Manager
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStaffEmail('superwash.audit.1792664886550@gmail.com');
+                      setStaffPassword('SuperWashManager2026!');
+                    }}
+                    className="text-[11px] px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 font-medium transition"
+                  >
+                    Delivery Staff (Ramesh)
+                  </button>
+                </div>
+              </div>
+            </form>
+          )}
         </div>
 
         {/* Security badge */}

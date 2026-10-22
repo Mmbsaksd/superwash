@@ -113,8 +113,8 @@ describe('Status Transitions Workflow', () => {
     });
     expect(order.order_status).toBe('booked');
 
-    // Assign delivery
-    const assigned = await LaundryService.assignDeliveryStaff(order.id, 'del-1', 'Ramesh', '9876543215');
+    // Assign pickup staff
+    const assigned = await LaundryService.assignPickupStaff(order.id, 'del-1', 'Ramesh', '9876543215');
     expect(assigned.order_status).toBe('pickup_assigned');
 
     // Mark collected
@@ -128,6 +128,10 @@ describe('Status Transitions Workflow', () => {
     // Ready for delivery
     const ready = await LaundryService.updateOrderStatus(order.id, 'ready_for_delivery');
     expect(ready.order_status).toBe('ready_for_delivery');
+
+    // Assign delivery courier
+    const courierAssigned = await LaundryService.assignDeliveryStaff(order.id, 'del-2', 'Suresh', '9876543216');
+    expect(courierAssigned.assigned_delivery_id).toBe('del-2');
 
     // Out for delivery
     const out = await LaundryService.updateOrderStatus(order.id, 'out_for_delivery');
@@ -206,10 +210,12 @@ describe('Private Customer Feedback Workflow', () => {
       })
     ).rejects.toThrow(/Feedback can only be provided for delivered orders/i);
 
-    // Transition order to delivered
+    // Transition order through proper lifecycle to delivered
+    await LaundryService.assignPickupStaff(order.id, 'del-1', 'Ramesh', '9876543215');
     await LaundryService.updateOrderStatus(order.id, 'collected');
     await LaundryService.enterMeasuredWeight(order.id, 4.0);
     await LaundryService.updateOrderStatus(order.id, 'ready_for_delivery');
+    await LaundryService.assignDeliveryStaff(order.id, 'del-2', 'Suresh', '9876543216');
     await LaundryService.updateOrderStatus(order.id, 'out_for_delivery');
     await LaundryService.markAsDelivered(order.id);
 
@@ -263,8 +269,12 @@ describe('Private Customer Feedback Workflow', () => {
       pickup_date: '2026-10-22',
       pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
     });
+    await LaundryService.assignPickupStaff(order.id, 'del-1', 'Ramesh', '9876543215');
     await LaundryService.updateOrderStatus(order.id, 'collected');
     await LaundryService.enterMeasuredWeight(order.id, 5.0);
+    await LaundryService.updateOrderStatus(order.id, 'ready_for_delivery');
+    await LaundryService.assignDeliveryStaff(order.id, 'del-2', 'Suresh', '9876543216');
+    await LaundryService.updateOrderStatus(order.id, 'out_for_delivery');
     await LaundryService.markAsDelivered(order.id);
 
     // Submit a 5-star feedback
@@ -568,7 +578,89 @@ describe('End-to-End Workflow Transitions & Staff Task Queues', () => {
     const delivered = await LaundryService.markAsDelivered(booking.id, 'Delivered to customer');
     expect(delivered.order_status).toBe('delivered');
     expect(delivered.delivered_at).toBeDefined();
+
+    // Verify task moves to completed queue and leaves active deliveries
+    const finalTasks = await LaundryService.getOrdersForDelivery('staff-delivery-2');
+    expect(finalTasks.deliveries.some(o => o.id === booking.id)).toBe(false);
+    expect(finalTasks.completed.some(o => o.id === booking.id)).toBe(true);
+  });
+
+  it('records doorstep scale weight and validates weight bounds at collection', async () => {
+    const order = await LaundryService.createBooking({
+      customer_id: 'cust-uuid-2',
+      customer_name: 'Scale Tester',
+      customer_phone: '9876543213',
+      pickup_address: 'Koramangala 4th Block',
+      pickup_pincode: '560034',
+      pickup_date: '2026-10-22',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    await LaundryService.assignPickupStaff(order.id, 'courier-1', 'Ramesh Courier', '9876543215');
+
+    // Reject weight <= 0
+    await expect(
+      LaundryService.recordPickupCollectionAndWeight(order.id, 0, 'Zero weight')
+    ).rejects.toThrow(/between 0\.1 kg and 100 kg/i);
+
+    // Reject excessive weight > 100 kg
+    await expect(
+      LaundryService.recordPickupCollectionAndWeight(order.id, 150, 'Too heavy')
+    ).rejects.toThrow(/between 0\.1 kg and 100 kg/i);
+
+    // Record legitimate doorstep measurement: 3.5 kg @ Rs 80/kg = Rs 280 (28000 paise)
+    const collectedOrder = await LaundryService.recordPickupCollectionAndWeight(
+      order.id,
+      3.5,
+      'courier-1',
+      'Ramesh Courier',
+      'Doorstep scale measured 3.5 kg. 2 bags collected.'
+    );
+
+    expect(collectedOrder.order_status).toBe('collected');
+    expect(collectedOrder.pickup_measured_weight).toBe(3.5);
+    expect(collectedOrder.measured_weight).toBe(3.5);
+    expect(collectedOrder.billable_weight).toBe(3.5);
+    expect(collectedOrder.total_amount_paise).toBe(28000);
+    expect(collectedOrder.delivery_notes).toContain('Doorstep scale measured 3.5 kg');
+
+    // Once collected, order must leave active pickups queue
+    const tasks = await LaundryService.getOrdersForDelivery('courier-1');
+    expect(tasks.pickups.some(o => o.id === order.id)).toBe(false);
+  });
+
+  it('strictly rejects invalid workflow transitions and missing staff assignments', async () => {
+    const order = await LaundryService.createBooking({
+      customer_id: 'cust-uuid-3',
+      customer_name: 'Invalid Transition Tester',
+      customer_phone: '9876543214',
+      pickup_address: 'Indiranagar',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-22',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    // 1. Cannot assign delivery staff when order is still booked/uncollected
+    await expect(
+      LaundryService.assignDeliveryStaff(order.id, 'del-staff-1', 'Courier A')
+    ).rejects.toThrow(/has not yet been collected from customer/i);
+
+    // 2. Cannot dispatch out for delivery without assigned delivery staff
+    await LaundryService.assignPickupStaff(order.id, 'pick-staff-1', 'Pickup A');
+    await LaundryService.updateOrderStatus(order.id, 'collected');
+    await LaundryService.enterMeasuredWeight(order.id, 4.0);
+    await LaundryService.updateOrderStatus(order.id, 'ready_for_delivery');
+
+    await expect(
+      LaundryService.updateOrderStatus(order.id, 'out_for_delivery')
+    ).rejects.toThrow(/delivery courier must be assigned/i);
+
+    // 3. Cannot mark delivered when not out for delivery
+    await expect(
+      LaundryService.markAsDelivered(order.id)
+    ).rejects.toThrow(/must be in 'out_for_delivery' status/i);
   });
 });
+
 
 

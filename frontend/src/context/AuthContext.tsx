@@ -8,11 +8,12 @@ interface AuthContextType {
   user: Profile | null;
   isLoading: boolean;
   signInWithGoogle: () => Promise<{ success: boolean; message?: string }>;
+  signInWithPassword: (email: string, password: string) => Promise<{ success: boolean; message?: string; role?: UserRole }>;
   updateProfile: (updates: { phone?: string; full_name?: string }) => Promise<{ success: boolean; message: string }>;
   needsPhonePrompt: boolean;
   sendOtp: (phone: string) => Promise<{ success: boolean; message: string }>;
   verifyOtp: (phone: string, otp: string, roleHint?: UserRole) => Promise<{ success: boolean; message: string }>;
-  switchDemoRole: (role: UserRole) => void;
+  switchDemoRole: (role: UserRole) => Promise<void>;
   logout: () => Promise<void>;
   isCustomer: boolean;
   isDelivery: boolean;
@@ -206,6 +207,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true, message: 'Signed in with Google (Demo Mode)' };
   };
 
+  const signInWithPassword = async (
+    email: string,
+    password: string
+  ): Promise<{ success: boolean; message?: string; role?: UserRole }> => {
+    if (isSupabaseConfigured) {
+      try {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password
+        });
+        if (error || !data.user) {
+          return { success: false, message: error?.message || 'Invalid email or password' };
+        }
+        const profile = await syncSupabaseProfile(data.user);
+        setCurrentUser(profile);
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profile));
+        return { success: true, role: profile.role };
+      } catch (err: any) {
+        return { success: false, message: err?.message || 'Authentication failed' };
+      }
+    }
+
+    const matchedProfile = DEMO_PROFILES.find(p => p.email === email);
+    if (matchedProfile) {
+      setCurrentUser(matchedProfile);
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(matchedProfile));
+      return { success: true, role: matchedProfile.role };
+    }
+    return { success: false, message: 'Invalid credentials' };
+  };
+
   const updateProfile = async (updates: { phone?: string; full_name?: string }): Promise<{ success: boolean; message: string }> => {
     if (!currentUser) {
       return { success: false, message: 'Not authenticated' };
@@ -319,7 +351,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true, message: 'Verified successfully (Demo Mode)' };
   };
 
-  const switchDemoRole = (role: UserRole) => {
+  const switchDemoRole = async (role: UserRole): Promise<void> => {
+    if (isLiveAuth) {
+      try {
+        if (role === 'manager' || role === 'owner') {
+          const res = await signInWithPassword('manager@superwash.in', 'SuperWashManager2026!');
+          if (res.success) return;
+        } else if (role === 'delivery') {
+          const res = await signInWithPassword('superwash.audit.1792664886550@gmail.com', 'SuperWashManager2026!');
+          if (res.success) return;
+        } else if (role === 'customer') {
+          await supabase.auth.signOut();
+        }
+      } catch (err) {
+        console.warn('Notice switching authenticated role:', err);
+      }
+    }
+
     const profile = DEMO_PROFILES.find(p => p.role === role);
     if (profile) {
       setCurrentUser(profile);
@@ -359,6 +407,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         user: currentUser,
         isLoading,
         signInWithGoogle,
+        signInWithPassword,
         updateProfile,
         needsPhonePrompt,
         sendOtp,

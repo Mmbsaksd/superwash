@@ -17,6 +17,8 @@ ALTER TABLE public.orders
 
 CREATE INDEX IF NOT EXISTS idx_orders_assigned_pickup ON public.orders(assigned_pickup_id);
 
+GRANT SELECT, UPDATE ON TABLE public.orders TO authenticated;
+
 -- 2. Update Order RLS Policies to Support Both Pickup and Delivery Staff
 DROP POLICY IF EXISTS "Customer can read own orders" ON public.orders;
 CREATE POLICY "Customer can read own orders" ON public.orders

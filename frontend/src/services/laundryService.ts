@@ -20,6 +20,11 @@ const generateUUID = (): string => {
   });
 };
 
+export const isUUID = (str?: string | null): boolean => {
+  if (!str) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(str);
+};
+
 // Default Business Settings
 const DEFAULT_SETTINGS: BusinessSettings = {
   business_name: 'SuperWash Express',
@@ -67,7 +72,7 @@ export const DEFAULT_SERVICES: LaundryServiceItem[] = [
 // Pre-seeded Profiles for 4 Roles
 export const DEMO_PROFILES: Profile[] = [
   {
-    id: 'user-owner-1',
+    id: '00000000-0000-4000-a000-000000000001',
     phone: '9876543210',
     full_name: 'Rajesh Sharma (Owner)',
     role: 'owner',
@@ -75,7 +80,7 @@ export const DEMO_PROFILES: Profile[] = [
     created_at: new Date().toISOString()
   },
   {
-    id: 'user-manager-1',
+    id: '7010c68d-2da3-4ef5-ba16-99c22d00e77a',
     phone: '9876543211',
     full_name: 'Ananya Verma (Store Manager)',
     role: 'manager',
@@ -83,17 +88,25 @@ export const DEMO_PROFILES: Profile[] = [
     created_at: new Date().toISOString()
   },
   {
-    id: 'user-delivery-1',
+    id: 'eeb4d846-f42d-4b2e-bcff-b495f4255fa7',
     phone: '9876543215',
-    full_name: 'Ramesh Kumar (Delivery Agent)',
+    full_name: 'Ramesh Kumar (Delivery Agent A)',
     role: 'delivery',
     is_active: true,
     created_at: new Date().toISOString()
   },
   {
-    id: 'user-cust-1',
-    phone: '9876543212',
-    full_name: 'Priya Patel (Customer)',
+    id: 'c32bbcef-818d-4ee9-b92c-315d687d9bd0',
+    phone: '9876543216',
+    full_name: 'Suresh Kumar (Delivery Agent B)',
+    role: 'delivery',
+    is_active: true,
+    created_at: new Date().toISOString()
+  },
+  {
+    id: '06fcba51-f920-4278-95d5-b0bc3660c213',
+    phone: '5435678753',
+    full_name: 'Gen AI (Customer)',
     role: 'customer',
     is_active: true,
     created_at: new Date().toISOString()
@@ -118,9 +131,9 @@ const STORAGE_KEYS = {
 // Initial Sample Orders
 const INITIAL_SAMPLE_ORDERS: Order[] = [
   {
-    id: 'ord-101',
+    id: '00000000-0000-4000-b000-000000000101',
     order_number: 'SW-1001',
-    customer_id: 'user-cust-1',
+    customer_id: '00000000-0000-4000-a000-000000000005',
     customer_name: 'Priya Patel',
     customer_phone: '9876543212',
     pickup_address: 'Flat 402, Green Glen Layout, Bellandur, Bengaluru',
@@ -128,9 +141,12 @@ const INITIAL_SAMPLE_ORDERS: Order[] = [
     pickup_pincode: '560103',
     pickup_date: new Date().toISOString().split('T')[0],
     pickup_slot: 'Morning (08:00 AM - 11:00 AM)',
-    assigned_delivery_id: 'user-delivery-1',
-    assigned_delivery_name: 'Ramesh Kumar',
-    assigned_delivery_phone: '9876543215',
+    assigned_pickup_id: '00000000-0000-4000-a000-000000000003',
+    assigned_pickup_name: 'Ramesh Kumar',
+    assigned_pickup_phone: '9876543215',
+    assigned_delivery_id: '00000000-0000-4000-a000-000000000004',
+    assigned_delivery_name: 'Suresh Kumar',
+    assigned_delivery_phone: '9876543216',
     measured_weight: 4.5,
     billable_weight: 4.5,
     price_per_kg_paise: 8000,
@@ -146,19 +162,20 @@ const INITIAL_SAMPLE_ORDERS: Order[] = [
     updated_at: new Date().toISOString()
   },
   {
-    id: 'ord-102',
+    id: '00000000-0000-4000-b000-000000000102',
     order_number: 'SW-1002',
-    customer_id: 'user-cust-1',
-    customer_name: 'Suresh Raina',
-    customer_phone: '9845012345',
+    customer_id: '00000000-0000-4000-a000-000000000005',
+    customer_name: 'Priya Patel',
+    customer_phone: '9876543212',
     pickup_address: '14, 12th Main, HAL 2nd Stage, Indiranagar, Bengaluru',
     pickup_landmark: 'Near Sony Center',
     pickup_pincode: '560038',
     pickup_date: new Date().toISOString().split('T')[0],
     pickup_slot: 'Noon (11:00 AM - 02:00 PM)',
-    assigned_delivery_id: 'user-delivery-1',
-    assigned_delivery_name: 'Ramesh Kumar',
-    assigned_delivery_phone: '9876543215',
+    assigned_pickup_id: '00000000-0000-4000-a000-000000000003',
+    assigned_pickup_name: 'Ramesh Kumar',
+    assigned_pickup_phone: '9876543215',
+    assigned_delivery_id: null,
     measured_weight: null,
     billable_weight: null,
     price_per_kg_paise: 8000,
@@ -331,21 +348,16 @@ export class LaundryService {
       try {
         const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
         if (error) {
-          console.warn('Notice querying Supabase orders, falling back to local session orders:', error.message);
-        } else if (data) {
-          const localSaved: Order[] = JSON.parse(localStorage.getItem(STORAGE_KEYS.ORDERS) || '[]');
-          const remoteIds = new Set(data.map(o => o.id));
-          const merged = [...data];
-          for (const lo of localSaved) {
-            if (!remoteIds.has(lo.id)) {
-              merged.push(lo);
-            }
-          }
-          localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(merged));
-          return merged;
+          console.error('Error querying Supabase orders:', error.message);
+          throw new Error(`Failed to load orders from database: ${error.message}`);
+        }
+        if (data) {
+          localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(data));
+          return data;
         }
       } catch (e: any) {
-        console.warn('Notice connecting to Supabase orders:', e?.message || e);
+        console.error('Error connecting to Supabase orders:', e?.message || e);
+        throw e;
       }
     }
 
@@ -449,6 +461,15 @@ export class LaundryService {
     };
 
     if (isLiveMode) {
+      if (!newOrder.customer_id) {
+        try {
+          const { data: sessionData } = await supabase.auth.getSession();
+          if (sessionData?.session?.user?.id) {
+            newOrder.customer_id = sessionData.session.user.id;
+          }
+        } catch {}
+      }
+
       const { data: inserted, error } = await supabase.from('orders').insert(newOrder).select().single();
       if (error) {
         throw new Error(`Failed to save booking to database: ${error.message}`);
@@ -479,12 +500,16 @@ export class LaundryService {
   static async assignPickupStaff(
     orderId: string,
     staffId: string,
-    staffName: string,
-    staffPhone: string
+    staffName: string = 'Pickup Associate',
+    staffPhone: string = '9876543215'
   ): Promise<Order> {
     const orders = await this.getOrders();
     const order = orders.find(o => o.id === orderId);
     if (!order) throw new Error('Order not found');
+
+    if (order.order_status !== 'booked' && order.order_status !== 'pickup_assigned') {
+      throw new Error(`Order #${order.order_number} has already progressed past pickup stage (${order.order_status}). Pickup staff cannot be reassigned.`);
+    }
 
     const previousStatus = order.order_status;
     order.assigned_pickup_id = staffId;
@@ -494,25 +519,44 @@ export class LaundryService {
     order.updated_at = new Date().toISOString();
 
     if (isLiveMode) {
-      try {
-        const { error } = await supabase.from('orders').update({
+      const { data, error } = await supabase
+        .from('orders')
+        .update({
           assigned_pickup_id: staffId,
           assigned_pickup_name: staffName,
           assigned_pickup_phone: staffPhone,
           order_status: 'pickup_assigned',
           updated_at: order.updated_at
-        }).eq('id', orderId);
-        if (error) console.warn('Could not persist pickup assignment to Supabase:', error.message);
+        })
+        .eq('id', orderId)
+        .select();
 
-        await supabase.from('order_status_history').insert({
-          order_id: orderId,
-          previous_status: previousStatus,
-          new_status: 'pickup_assigned',
-          notes: `Pickup assigned to ${staffName} (${staffPhone})`
-        });
-      } catch (err: any) {
-        console.warn('Notice updating pickup assignment:', err.message);
+      if (error) {
+        throw new Error(`Failed to persist pickup assignment in database: ${error.message}`);
       }
+
+      if (!data || data.length === 0) {
+        throw new Error(
+          'Database denied update: 0 rows modified. Your current session does not have Store Manager permissions under Supabase Row-Level Security. Please sign in with an authorized manager account.'
+        );
+      }
+
+      // Authoritative database record
+      const persisted = data[0] as Order;
+      order.assigned_pickup_id = persisted.assigned_pickup_id;
+      order.assigned_pickup_name = persisted.assigned_pickup_name;
+      order.assigned_pickup_phone = persisted.assigned_pickup_phone;
+      order.order_status = persisted.order_status;
+      order.updated_at = persisted.updated_at;
+
+      const auditUuid = isUUID(staffId) ? staffId : null;
+      await supabase.from('order_status_history').insert({
+        order_id: orderId,
+        previous_status: previousStatus,
+        new_status: 'pickup_assigned',
+        notes: `Pickup assigned to ${staffName} (${staffPhone})`,
+        changed_by: auditUuid
+      });
     }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
@@ -537,54 +581,153 @@ export class LaundryService {
     const order = orders.find(o => o.id === orderId);
     if (!order) throw new Error('Order not found');
 
+    if (order.order_status === 'booked' || order.order_status === 'pickup_assigned') {
+      throw new Error(`Order #${order.order_number} has not yet been collected from customer. Assign a pickup associate instead of delivery courier.`);
+    }
+
     const previousStatus = order.order_status;
     order.assigned_delivery_id = staffId;
     order.assigned_delivery_name = staffName;
     order.assigned_delivery_phone = staffPhone;
-
-    // Backward compatibility: if order is booked, assign pickup staff as well and transition to pickup_assigned
-    if (order.order_status === 'booked') {
-      order.order_status = 'pickup_assigned';
-      if (!order.assigned_pickup_id) {
-        order.assigned_pickup_id = staffId;
-        order.assigned_pickup_name = staffName;
-        order.assigned_pickup_phone = staffPhone;
-      }
-    } else if (order.order_status === 'ready_for_delivery') {
-      order.order_status = 'out_for_delivery';
-    }
     order.updated_at = new Date().toISOString();
 
     if (isLiveMode) {
-      try {
-        const updatePayload: any = {
-          assigned_delivery_id: staffId,
-          assigned_delivery_name: staffName,
-          assigned_delivery_phone: staffPhone,
-          order_status: order.order_status,
-          updated_at: order.updated_at
-        };
-        if (order.order_status === 'pickup_assigned') {
-          updatePayload.assigned_pickup_id = order.assigned_pickup_id;
-          updatePayload.assigned_pickup_name = order.assigned_pickup_name;
-          updatePayload.assigned_pickup_phone = order.assigned_pickup_phone;
-        }
+      const updatePayload: any = {
+        assigned_delivery_id: staffId,
+        assigned_delivery_name: staffName,
+        assigned_delivery_phone: staffPhone,
+        updated_at: order.updated_at
+      };
 
-        const { error } = await supabase.from('orders').update(updatePayload).eq('id', orderId);
-        if (error) console.warn('Could not persist delivery assignment to Supabase:', error.message);
+      const { data, error } = await supabase
+        .from('orders')
+        .update(updatePayload)
+        .eq('id', orderId)
+        .select();
 
-        await supabase.from('order_status_history').insert({
-          order_id: orderId,
-          previous_status: previousStatus,
-          new_status: order.order_status,
-          notes: `Delivery associate assigned: ${staffName} (${staffPhone})`
-        });
-      } catch (err: any) {
-        console.warn('Notice updating delivery assignment:', err.message);
+      if (error) {
+        throw new Error(`Failed to persist delivery assignment in database: ${error.message}`);
       }
+
+      if (!data || data.length === 0) {
+        throw new Error(
+          'Database denied update: 0 rows modified. Your current session does not have Store Manager permissions under Supabase Row-Level Security. Please sign in with an authorized manager account.'
+        );
+      }
+
+      // Synchronize with authoritative database row
+      const persisted = data[0] as Order;
+      order.assigned_delivery_id = persisted.assigned_delivery_id;
+      order.assigned_delivery_name = persisted.assigned_delivery_name;
+      order.assigned_delivery_phone = persisted.assigned_delivery_phone;
+      order.updated_at = persisted.updated_at;
+
+      const auditUuid = isUUID(staffId) ? staffId : null;
+      await supabase.from('order_status_history').insert({
+        order_id: orderId,
+        previous_status: previousStatus,
+        new_status: order.order_status,
+        notes: `Delivery courier assigned: ${staffName} (${staffPhone})`,
+        changed_by: auditUuid
+      });
     }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
+    return order;
+  }
+
+  static async recordPickupCollectionAndWeight(
+    orderId: string,
+    weightKg: number,
+    staffId?: string,
+    staffName: string = 'Delivery Associate',
+    notes?: string
+  ): Promise<Order> {
+    if (typeof weightKg !== 'number' || isNaN(weightKg) || weightKg <= 0 || weightKg > 100) {
+      throw new Error('Please enter a valid measured scale weight between 0.1 kg and 100 kg.');
+    }
+
+    const orders = await this.getOrders();
+    const order = orders.find(o => o.id === orderId);
+    if (!order) throw new Error('Order not found');
+
+    const previousStatus = order.order_status;
+    const { billableWeightKg, totalAmountPaise } = this.calculateBill(
+      weightKg,
+      order.price_per_kg_paise,
+      order.min_weight_kg,
+      order.delivery_charge_paise
+    );
+
+    const now = new Date().toISOString();
+    order.order_status = 'collected';
+    order.pickup_measured_weight = weightKg;
+    order.pickup_weighed_at = now;
+    order.pickup_weighed_by = staffId;
+    order.measured_weight = weightKg;
+    order.billable_weight = billableWeightKg;
+    order.total_amount_paise = totalAmountPaise;
+    order.collected_at = now;
+    order.weighed_at = now;
+    if (notes) {
+      order.delivery_notes = notes;
+    }
+    order.updated_at = now;
+
+    if (isLiveMode) {
+      const updatePayload: any = {
+        order_status: 'collected',
+        measured_weight: weightKg,
+        billable_weight: billableWeightKg,
+        total_amount_paise: totalAmountPaise,
+        collected_at: now,
+        weighed_at: now,
+        delivery_notes: notes || `Doorstep collection: ${weightKg.toFixed(2)} kg recorded on portable scale by ${staffName}`,
+        updated_at: now
+      };
+
+      const { data, error } = await supabase
+        .from('orders')
+        .update(updatePayload)
+        .eq('id', orderId)
+        .select();
+
+      if (error) {
+        throw new Error(`Failed to persist collection and weight in database: ${error.message}`);
+      }
+
+      if (!data || data.length === 0) {
+        throw new Error('Database denied update: 0 rows modified. You are not authorized under Row-Level Security.');
+      }
+
+      const persisted = data[0] as Order;
+      order.order_status = persisted.order_status;
+      order.measured_weight = persisted.measured_weight;
+      order.billable_weight = persisted.billable_weight;
+      order.total_amount_paise = persisted.total_amount_paise;
+      order.collected_at = persisted.collected_at;
+      order.weighed_at = persisted.weighed_at;
+      order.updated_at = persisted.updated_at;
+
+      const auditUuid = (staffId && isUUID(staffId)) ? staffId : null;
+      await supabase.from('order_status_history').insert({
+        order_id: orderId,
+        previous_status: previousStatus,
+        new_status: 'collected',
+        notes: `Collected & weighed at doorstep: ${weightKg.toFixed(2)} kg (Bill: ₹${(totalAmountPaise / 100).toFixed(2)}) by ${staffName}`,
+        changed_by: auditUuid
+      });
+    }
+
+    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
+
+    await WhatsAppService.sendNotification(
+      order.customer_phone,
+      'clothes_collected',
+      `Hello ${order.customer_name}, our pickup executive ${staffName} has collected your clothes (Order #${order.order_number}). Doorstep measured weight: ${weightKg.toFixed(2)} kg. Total Bill: ₹${((order.total_amount_paise || 0) / 100).toFixed(2)}. They are now on their way to the store for washing!`,
+      order.id
+    );
+
     return order;
   }
 
@@ -602,24 +745,29 @@ export class LaundryService {
     order.updated_at = new Date().toISOString();
 
     if (isLiveMode) {
-      try {
-        const { error } = await supabase.from('orders').update({
-          order_status: 'collected',
-          collected_at: order.collected_at,
-          delivery_notes: notes || null,
-          updated_at: order.updated_at
-        }).eq('id', orderId);
-        if (error) console.warn('Could not persist collected status to Supabase:', error.message);
-
-        await supabase.from('order_status_history').insert({
-          order_id: orderId,
-          previous_status: previousStatus,
-          new_status: 'collected',
-          notes: notes || 'Clothes collected from doorstep'
-        });
-      } catch (err: any) {
-        console.warn('Notice updating collected status:', err.message);
+      const { data, error } = await supabase.from('orders').update({
+        order_status: 'collected',
+        collected_at: order.collected_at,
+        delivery_notes: notes || null,
+        updated_at: order.updated_at
+      }).eq('id', orderId).select();
+      if (error) {
+        throw new Error(`Failed to update collected status in database: ${error.message}`);
       }
+      if (!data || data.length === 0) {
+        throw new Error('Database denied update: 0 rows modified. You are not authorized under Row-Level Security.');
+      }
+      const persisted = data[0] as Order;
+      order.order_status = persisted.order_status;
+      order.collected_at = persisted.collected_at;
+      order.updated_at = persisted.updated_at;
+
+      await supabase.from('order_status_history').insert({
+        order_id: orderId,
+        previous_status: previousStatus,
+        new_status: 'collected',
+        notes: notes || 'Clothes collected from doorstep'
+      });
     }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
@@ -639,6 +787,10 @@ export class LaundryService {
     const order = orders.find(o => o.id === orderId);
     if (!order) throw new Error('Order not found');
 
+    if (order.order_status !== 'out_for_delivery') {
+      throw new Error(`Order #${order.order_number} must be in 'out_for_delivery' status to complete delivery (current status: '${order.order_status}').`);
+    }
+
     const previousStatus = order.order_status;
     order.order_status = 'delivered';
     order.delivered_at = new Date().toISOString();
@@ -648,24 +800,29 @@ export class LaundryService {
     order.updated_at = new Date().toISOString();
 
     if (isLiveMode) {
-      try {
-        const { error } = await supabase.from('orders').update({
-          order_status: 'delivered',
-          delivered_at: order.delivered_at,
-          delivery_notes: notes || null,
-          updated_at: order.updated_at
-        }).eq('id', orderId);
-        if (error) console.warn('Could not persist delivered status to Supabase:', error.message);
-
-        await supabase.from('order_status_history').insert({
-          order_id: orderId,
-          previous_status: previousStatus,
-          new_status: 'delivered',
-          notes: notes || 'Clean clothes delivered to customer'
-        });
-      } catch (err: any) {
-        console.warn('Notice updating delivered status:', err.message);
+      const { data, error } = await supabase.from('orders').update({
+        order_status: 'delivered',
+        delivered_at: order.delivered_at,
+        delivery_notes: notes || null,
+        updated_at: order.updated_at
+      }).eq('id', orderId).select();
+      if (error) {
+        throw new Error(`Failed to update delivered status in database: ${error.message}`);
       }
+      if (!data || data.length === 0) {
+        throw new Error('Database denied update: 0 rows modified. You are not authorized under Row-Level Security.');
+      }
+      const persisted = data[0] as Order;
+      order.order_status = persisted.order_status;
+      order.delivered_at = persisted.delivered_at;
+      order.updated_at = persisted.updated_at;
+
+      await supabase.from('order_status_history').insert({
+        order_id: orderId,
+        previous_status: previousStatus,
+        new_status: 'delivered',
+        notes: notes || 'Clean clothes delivered to customer'
+      });
     }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
@@ -717,7 +874,7 @@ export class LaundryService {
 
     // Save weight change history audit
     const weightHistory: WeightChangeHistory = {
-      id: `wh-${Date.now()}`,
+      id: generateUUID(),
       order_id: order.id,
       old_weight: oldWeight,
       new_weight: measuredWeightKg,
@@ -731,35 +888,45 @@ export class LaundryService {
     localStorage.setItem(STORAGE_KEYS.WEIGHT_HISTORY, JSON.stringify([weightHistory, ...prevHistory]));
 
     if (isLiveMode) {
-      try {
-        const { error } = await supabase.from('orders').update({
-          measured_weight: measuredWeightKg,
-          billable_weight: billableWeightKg,
-          total_amount_paise: totalAmountPaise,
-          weighed_at: order.weighed_at,
-          order_status: order.order_status,
-          updated_at: order.updated_at
-        }).eq('id', order.id);
-        if (error) console.warn('Could not persist measured weight to Supabase:', error.message);
-
-        await supabase.from('weight_change_history').insert({
-          order_id: order.id,
-          old_weight: oldWeight,
-          new_weight: measuredWeightKg,
-          old_amount_paise: oldAmount,
-          new_amount_paise: totalAmountPaise,
-          reason: correctionReason || (oldWeight ? 'Weight correction by manager' : 'Initial intake weight')
-        });
-
-        await supabase.from('order_status_history').insert({
-          order_id: order.id,
-          previous_status: 'collected',
-          new_status: order.order_status,
-          notes: `Weighed: ${measuredWeightKg.toFixed(2)} kg (Billable: ${billableWeightKg.toFixed(2)} kg @ ₹${order.price_per_kg_paise / 100}/kg = ₹${totalAmountPaise / 100})`
-        });
-      } catch (err: any) {
-        console.warn('Notice updating weight in Supabase:', err.message);
+      const { data, error } = await supabase.from('orders').update({
+        measured_weight: measuredWeightKg,
+        billable_weight: billableWeightKg,
+        total_amount_paise: totalAmountPaise,
+        weighed_at: order.weighed_at,
+        order_status: order.order_status,
+        updated_at: order.updated_at
+      }).eq('id', order.id).select();
+      if (error) {
+        throw new Error(`Failed to persist measured weight in database: ${error.message}`);
       }
+      if (!data || data.length === 0) {
+        throw new Error(
+          'Database denied weight update: 0 rows modified. Your current session does not have Store Manager permissions under Row-Level Security.'
+        );
+      }
+      const persisted = data[0] as Order;
+      order.measured_weight = persisted.measured_weight;
+      order.billable_weight = persisted.billable_weight;
+      order.total_amount_paise = persisted.total_amount_paise;
+      order.weighed_at = persisted.weighed_at;
+      order.order_status = persisted.order_status;
+      order.updated_at = persisted.updated_at;
+
+      await supabase.from('weight_change_history').insert({
+        order_id: order.id,
+        old_weight: oldWeight,
+        new_weight: measuredWeightKg,
+        old_amount_paise: oldAmount,
+        new_amount_paise: totalAmountPaise,
+        reason: correctionReason || (oldWeight ? 'Weight correction by manager' : 'Initial intake weight')
+      });
+
+      await supabase.from('order_status_history').insert({
+        order_id: order.id,
+        previous_status: 'collected',
+        new_status: order.order_status,
+        notes: `Weighed: ${measuredWeightKg.toFixed(2)} kg (Billable: ${billableWeightKg.toFixed(2)} kg @ ₹${order.price_per_kg_paise / 100}/kg = ₹${totalAmountPaise / 100})`
+      });
     }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
@@ -787,6 +954,23 @@ export class LaundryService {
     const orders = await this.getOrders();
     const order = orders.find(o => o.id === orderId);
     if (!order) throw new Error('Order not found');
+
+    // Strict lifecycle validations
+    if (newStatus === 'out_for_delivery') {
+      if (!order.assigned_delivery_id) {
+        throw new Error('Cannot dispatch order: A delivery courier must be assigned before dispatching out for delivery.');
+      }
+    }
+    if (newStatus === 'washing') {
+      if (!order.measured_weight && order.measured_weight !== 0) {
+        throw new Error('Cannot start washing: Laundry must be weighed before washing.');
+      }
+    }
+    if (newStatus === 'delivered') {
+      if (order.order_status !== 'out_for_delivery' && order.order_status !== 'ready_for_delivery') {
+        throw new Error(`Invalid transition: Order #${order.order_number} must be out for delivery before being marked delivered.`);
+      }
+    }
 
     const previousStatus = order.order_status;
     order.order_status = newStatus;
@@ -820,8 +1004,19 @@ export class LaundryService {
         if (notes) updates.notes = notes;
         if (newStatus === 'delivered') updates.delivered_at = new Date().toISOString();
 
-        const { error } = await supabase.from('orders').update(updates).eq('id', order.id);
-        if (error) console.warn('Could not persist status transition to Supabase:', error.message);
+        const { data, error } = await supabase.from('orders').update(updates).eq('id', order.id).select();
+        if (error) {
+          console.error('Could not persist status transition to Supabase:', error.message);
+          throw new Error(`Failed to persist status transition in database: ${error.message}`);
+        }
+        if (!data || data.length === 0) {
+          throw new Error(
+            'Database denied status update: 0 rows modified. Your current session does not have permission under Row-Level Security.'
+          );
+        }
+        const persisted = data[0] as Order;
+        order.order_status = persisted.order_status;
+        order.updated_at = persisted.updated_at;
 
         await supabase.from('order_status_history').insert({
           order_id: order.id,
@@ -830,7 +1025,8 @@ export class LaundryService {
           notes
         });
       } catch (err: any) {
-        console.warn('Notice updating status transition in Supabase:', err.message);
+        console.error('Notice updating status transition in Supabase:', err.message);
+        throw err;
       }
     }
 
@@ -875,7 +1071,8 @@ export class LaundryService {
     paymentMethod: PaymentMethod,
     transactionReference?: string,
     notes?: string,
-    recordedByName?: string
+    recordedByOrName?: string,
+    recordedByNameDisplay?: string
   ): Promise<Order & { payment: Payment }> {
     if (!amountPaise || amountPaise <= 0) {
       throw new Error('Payment amount must be a positive value greater than zero.');
@@ -908,30 +1105,96 @@ export class LaundryService {
 
     order.updated_at = new Date().toISOString();
 
+    // Helper to validate UUID format for PostgreSQL recorded_by column
+    const isUUID = (str?: string): boolean =>
+      Boolean(str && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str));
+
+    let recordedByUuid: string | null = null;
+    let staffNameDisplay: string | undefined = recordedByNameDisplay;
+
+    if (isUUID(recordedByOrName)) {
+      recordedByUuid = recordedByOrName!;
+    } else if (recordedByOrName && !staffNameDisplay) {
+      staffNameDisplay = recordedByOrName;
+    }
+
+    if (isLiveMode && !recordedByUuid) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user?.id && isUUID(session.user.id)) {
+          recordedByUuid = session.user.id;
+        }
+      } catch {
+        // Fallback to null
+      }
+    }
+
+    let finalNotes = notes?.trim() || undefined;
+    if (staffNameDisplay && staffNameDisplay !== 'Staff' && !finalNotes?.includes(staffNameDisplay)) {
+      finalNotes = finalNotes
+        ? `${finalNotes} (Recorded by: ${staffNameDisplay})`
+        : `Recorded by: ${staffNameDisplay}`;
+    }
+
     const payment: Payment = {
       id: generateUUID(),
       order_id: order.id,
       amount_paise: amountPaise,
       payment_method: paymentMethod,
       transaction_reference: transactionReference?.trim(),
-      notes: notes?.trim(),
-      recorded_by: recordedByName,
+      notes: finalNotes,
+      recorded_by: recordedByUuid || undefined,
       created_at: new Date().toISOString()
     };
 
     if (isLiveMode) {
-      const { error: payError } = await supabase.from('payments').insert(payment);
+      const dbPaymentPayload = {
+        id: payment.id,
+        order_id: payment.order_id,
+        amount_paise: payment.amount_paise,
+        payment_method: payment.payment_method,
+        transaction_reference: payment.transaction_reference || null,
+        notes: payment.notes || null,
+        recorded_by: recordedByUuid || null,
+        created_at: payment.created_at
+      };
+
+      const { data: insertedPayment, error: payError } = await supabase
+        .from('payments')
+        .insert(dbPaymentPayload)
+        .select();
+
       if (payError) {
         throw new Error(`Failed to record payment in database ledger: ${payError.message}`);
       }
-      const { error: orderError } = await supabase.from('orders').update({
-        paid_amount_paise: order.paid_amount_paise,
-        payment_status: order.payment_status,
-        payment_method: order.payment_method,
-        updated_at: order.updated_at
-      }).eq('id', order.id);
+
+      if (insertedPayment && insertedPayment.length > 0) {
+        const persistedPayment = insertedPayment[0];
+        payment.id = persistedPayment.id;
+        payment.created_at = persistedPayment.created_at;
+      }
+
+      const { data: updatedOrders, error: orderError } = await supabase
+        .from('orders')
+        .update({
+          paid_amount_paise: order.paid_amount_paise,
+          payment_status: order.payment_status,
+          payment_method: order.payment_method,
+          updated_at: order.updated_at
+        })
+        .eq('id', order.id)
+        .select();
+
       if (orderError) {
         throw new Error(`Failed to update order payment balance: ${orderError.message}`);
+      }
+
+      if (updatedOrders && updatedOrders.length > 0) {
+        const persistedOrder = updatedOrders[0] as Order;
+        order.paid_amount_paise = persistedOrder.paid_amount_paise;
+        order.payment_status = persistedOrder.payment_status;
+        order.payment_method = persistedOrder.payment_method;
+        order.updated_at = persistedOrder.updated_at;
       }
     }
 
@@ -958,23 +1221,29 @@ export class LaundryService {
     return all.filter(o => o.customer_phone.replace(/[^0-9]/g, '').slice(-10) === cleanPhone);
   }
 
-  static async getOrdersForDelivery(staffId: string): Promise<{ pickups: Order[]; deliveries: Order[] }> {
+  static async getOrdersForDelivery(staffId: string): Promise<{ pickups: Order[]; deliveries: Order[]; completed: Order[] }> {
     const all = await this.getOrders();
-    const isDevDemo = !isLiveMode || import.meta.env.DEV;
 
-    // Pickups: assigned for pickup to this staff member (or unassigned in dev/demo mode)
+    // Pickups: Strictly assigned for pickup to this staff member and awaiting collection
     const pickups = all.filter(o => {
-      const isAssigned = o.assigned_pickup_id === staffId || (isDevDemo && !o.assigned_pickup_id);
-      return isAssigned && (o.order_status === 'booked' || o.order_status === 'pickup_assigned');
+      const isAssigned = o.assigned_pickup_id === staffId;
+      return isAssigned && o.order_status === 'pickup_assigned';
     });
 
-    // Deliveries: assigned for delivery to this staff member (or unassigned in dev/demo mode)
+    // Deliveries: Strictly assigned for delivery to this staff member at delivery dispatch stage
     const deliveries = all.filter(o => {
-      const isAssigned = o.assigned_delivery_id === staffId || (isDevDemo && !o.assigned_delivery_id);
+      const isAssigned = o.assigned_delivery_id === staffId;
       return isAssigned && (o.order_status === 'ready_for_delivery' || o.order_status === 'out_for_delivery');
     });
 
-    return { pickups, deliveries };
+    // Completed: Pickups collected or final orders delivered by this staff member
+    const completed = all.filter(o => {
+      const wasPickup = o.assigned_pickup_id === staffId && ['collected', 'washing', 'ready_for_delivery', 'out_for_delivery', 'delivered'].includes(o.order_status);
+      const wasDelivery = o.assigned_delivery_id === staffId && o.order_status === 'delivered';
+      return wasPickup || wasDelivery;
+    });
+
+    return { pickups, deliveries, completed };
   }
 
   static async getOrdersForManager(): Promise<{
@@ -1034,13 +1303,13 @@ export class LaundryService {
         }
         const { data, error } = await query;
         if (error) {
-          console.warn('Notice loading customer orders:', error.message);
-          return [];
+          console.error('Error loading customer orders:', error.message);
+          throw new Error(`Failed to load customer orders from database: ${error.message}`);
         }
         return data || [];
       } catch (err: any) {
-        console.warn('Notice fetching customer orders:', err.message);
-        return [];
+        console.error('Error fetching customer orders:', err.message);
+        throw err;
       }
     }
 

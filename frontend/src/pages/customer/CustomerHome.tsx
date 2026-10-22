@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { Order, CustomerAddress, PickupSlot, BusinessSettings, OrderFeedback } from '../../types';
 import { LaundryService } from '../../services/laundryService';
+import { supabase } from '../../services/supabase';
 import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
 import { PaymentModal } from '../../components/PaymentModal';
 import { FeedbackModal } from '../../components/FeedbackModal';
@@ -68,6 +69,29 @@ export const CustomerHome: React.FC = () => {
       }
     }
     loadData();
+
+    // Auto-refresh when customer returns to the tab
+    const handleFocus = () => {
+      loadData();
+    };
+    window.addEventListener('focus', handleFocus);
+
+    // Live Realtime updates for customer tracking timeline
+    const channel = supabase
+      .channel('customer-orders-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders' },
+        () => {
+          loadData();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      supabase.removeChannel(channel);
+    };
   }, [currentUser]);
 
   const handleGetOnboardLocation = () => {

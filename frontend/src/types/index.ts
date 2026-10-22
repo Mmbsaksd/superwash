@@ -4,8 +4,10 @@ export type OrderStatus =
   | 'booked'
   | 'pickup_assigned'
   | 'collected'
+  | 'weighed'
   | 'washing'
   | 'ready_for_delivery'
+  | 'delivery_assigned'
   | 'out_for_delivery'
   | 'delivered'
   | 'cancelled';
@@ -179,8 +181,11 @@ export interface Order {
   service_id?: string;
   service_name?: string;
   pricing_unit?: string;
-  measured_weight?: number | null; // e.g. 4.50 kg
-  billable_weight?: number | null; // e.g. MAX(4.50, 3.00) = 4.50 kg
+  pickup_measured_weight?: number | null; // Doorstep portable scale weight
+  pickup_weighed_at?: string;
+  pickup_weighed_by?: string;
+  measured_weight?: number | null; // Store intake scale weight / authoritative measured kg
+  billable_weight?: number | null; // e.g. MAX(measured_weight, min_weight_kg)
   price_per_kg_paise: number;
   min_weight_kg: number;
   delivery_charge_paise: number;

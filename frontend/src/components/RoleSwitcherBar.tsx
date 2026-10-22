@@ -21,9 +21,16 @@ export const RoleSwitcherBar: React.FC = () => {
     { role: 'owner', label: 'Owner / Admin', icon: Shield, route: '/admin', color: 'bg-amber-600 text-white' },
   ];
 
-  const handleRoleChange = (role: UserRole, route: string) => {
-    switchDemoRole(role);
-    navigate(route);
+  const [isSwitching, setIsSwitching] = React.useState(false);
+
+  const handleRoleChange = async (role: UserRole, route: string) => {
+    setIsSwitching(true);
+    try {
+      await switchDemoRole(role);
+      navigate(route);
+    } finally {
+      setIsSwitching(false);
+    }
   };
 
   return (
