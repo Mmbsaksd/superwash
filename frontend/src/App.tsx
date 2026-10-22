@@ -1,74 +1,59 @@
 import React from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
-
-// Layouts
-import { PublicLayout } from './layouts/PublicLayout';
-import { CustomerLayout } from './layouts/CustomerLayout';
-import { AdminLayout } from './layouts/AdminLayout';
-
-// Public Pages
-import { Home } from './pages/public/Home';
-import { ServicesPage } from './pages/public/ServicesPage';
-import { HowItWorksPage } from './pages/public/HowItWorksPage';
-import { BookingPage } from './pages/public/BookingPage';
-import { OrderTrackingPage } from './pages/public/OrderTrackingPage';
-import { ContactPage } from './pages/public/ContactPage';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { useAuth } from './context/AuthContext';
+import { RoleSwitcherBar } from './components/RoleSwitcherBar';
+import { CustomerHome } from './pages/customer/CustomerHome';
+import { DeliveryDashboard } from './pages/delivery/DeliveryDashboard';
+import { ManagerDashboard } from './pages/manager/ManagerDashboard';
+import { OwnerDashboard } from './pages/admin/OwnerDashboard';
+import { LandingPage } from './pages/public/LandingPage';
 import { LoginPage } from './pages/public/LoginPage';
-import { RegisterPage } from './pages/public/RegisterPage';
-import { PrivacyPage, TermsPage } from './pages/public/LegalPages';
-
-// Customer Pages
-import { CustomerOrdersPage } from './pages/customer/CustomerOrdersPage';
-import { CustomerAddressesPage, CustomerProfilePage } from './pages/customer/CustomerAddressesPage';
-
-// Admin Pages
-import { AdminDashboard } from './pages/admin/AdminDashboard';
-import { AdminOrdersPage } from './pages/admin/AdminOrdersPage';
-import { AdminOrderDetailPage } from './pages/admin/AdminOrderDetailPage';
-import { AdminWalkInOrderPage } from './pages/admin/AdminWalkInOrderPage';
-import { AdminServicesPage } from './pages/admin/AdminServicesPage';
-import { AdminLogisticsPage } from './pages/admin/AdminLogisticsPage';
-import { AdminReportsPage } from './pages/admin/AdminReportsPage';
+import { Loader2 } from 'lucide-react';
 
 export const App: React.FC = () => {
+  const { currentUser, isLoading } = useAuth();
+  const location = useLocation();
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <Loader2 className="w-8 h-8 animate-spin text-brand-600" />
+      </div>
+    );
+  }
+
   return (
-    <Routes>
-      {/* Public Pages */}
-      <Route element={<PublicLayout />}>
-        <Route path="/" element={<Home />} />
-        <Route path="/services" element={<ServicesPage />} />
-        <Route path="/how-it-works" element={<HowItWorksPage />} />
-        <Route path="/book" element={<BookingPage />} />
-        <Route path="/track" element={<OrderTrackingPage />} />
-        <Route path="/contact" element={<ContactPage />} />
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/register" element={<RegisterPage />} />
-        <Route path="/privacy" element={<PrivacyPage />} />
-        <Route path="/terms" element={<TermsPage />} />
-      </Route>
+    <div className="min-h-screen bg-slate-100 flex flex-col font-sans">
+      {/* Top Test & Role Switcher Bar */}
+      {location.pathname !== '/login' && <RoleSwitcherBar />}
 
-      {/* Customer Protected Pages */}
-      <Route path="/customer" element={<CustomerLayout />}>
-        <Route index element={<Navigate to="/customer/orders" replace />} />
-        <Route path="orders" element={<CustomerOrdersPage />} />
-        <Route path="addresses" element={<CustomerAddressesPage />} />
-        <Route path="profile" element={<CustomerProfilePage />} />
-      </Route>
+      {/* Main Content Viewports */}
+      <main className="flex-1">
+        <Routes>
+          {/* Public Landing Page */}
+          <Route path="/" element={<LandingPage />} />
 
-      {/* Admin / Staff Protected Pages */}
-      <Route path="/admin" element={<AdminLayout />}>
-        <Route index element={<AdminDashboard />} />
-        <Route path="orders" element={<AdminOrdersPage />} />
-        <Route path="orders/:orderId" element={<AdminOrderDetailPage />} />
-        <Route path="walk-in" element={<AdminWalkInOrderPage />} />
-        <Route path="services" element={<AdminServicesPage />} />
-        <Route path="logistics" element={<AdminLogisticsPage />} />
-        <Route path="reports" element={<AdminReportsPage />} />
-      </Route>
+          {/* 1. Customer Role */}
+          <Route path="/customer" element={<CustomerHome />} />
 
-      {/* Fallback */}
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+          {/* 2. Delivery Person Role */}
+          <Route path="/delivery" element={<DeliveryDashboard />} />
+
+          {/* 3. Store Manager Role */}
+          <Route path="/manager" element={<ManagerDashboard />} />
+
+          {/* 4. Business Owner / Admin Role */}
+          <Route path="/admin" element={<OwnerDashboard />} />
+          <Route path="/owner" element={<Navigate to="/admin" replace />} />
+
+          {/* Authentication */}
+          <Route path="/login" element={<LoginPage />} />
+
+          {/* Fallback */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </main>
+    </div>
   );
 };
 

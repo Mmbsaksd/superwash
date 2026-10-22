@@ -1,168 +1,157 @@
-# SuperWash — Laundry & Dry Cleaning Management Platform
+# SuperWash Express — Mobile-First Laundry Pickup & Delivery App
 
-A production-grade, full-stack laundry and dry cleaning management web application tailored for local garment-care businesses in India (Bengaluru).
+A fast, mobile-first laundry pickup and delivery web application built for local laundry businesses in India charging solely on a **price-per-kilogram** basis.
 
-SuperWash supports both **customer self-service** (multi-step booking, secure tracking with phone verification, transparent GST invoices) and **business operations** (omnichannel order management, walk-in counter POS, garment intake & inspection, append-only workflow transitions, payment ledger, driver dispatch, and financial analytics).
-
----
-
-## 1. Core Channels & Capabilities
-
-1. **Shop Drop-Off:** Customers hand over clothes directly at the physical counter. Instant receipt generated, intake count verified, and zero delivery fee.
-2. **Doorstep Pickup:** Customers select a 3-hour pickup window. Capacity limits prevent overbooking. Verified delivery associate is dispatched with laundry bags.
-3. **Doorstep Delivery:** Processed, steam-ironed, and QC-passed clothes packaged in protective bags and delivered to the customer address.
-4. **Walk-In Counter POS:** Store staff can instantly create walk-in orders with immediate garment itemization and cash/UPI collection.
-5. **Accurate Indian Financials:** All prices and balances stored in integer paise (e.g. ₹30 = `3000` paise). 18% GST (9% CGST + 9% SGST) itemized. Immutable order-time snapshot pricing prevents catalogue updates from altering historical orders.
-6. **Payment Modes:** Online Razorpay India gateway (with test sandbox and backend cryptographic signature verification), counter Cash, and manual UPI reference (UTR number).
+The application is purpose-built to be minimal, intuitive, and frictionless for **Customers**, **Delivery Staff**, **Store Managers**, and the **Business Owner**.
 
 ---
 
-## 2. Technology Stack
+## 1. Business Workflow & Architecture
 
-- **Frontend:** React 19, TypeScript, Vite, Tailwind CSS, React Router v7, TanStack Query, Lucide Icons.
-- **Backend:** Python 3.13, FastAPI, Pydantic v2 (Settings & Schemas), SQLAlchemy 2.0 (ORM), Alembic (Migrations).
-- **Database:** SQLite for zero-setup local experimentation; PostgreSQL 16 ready for production via Docker Compose.
-- **Security:** Password hashing with `bcrypt`, JWT authentication (`HS256`), role-based authorization (Owner, Manager, Processing Staff, Delivery Driver, Customer).
-- **Payments:** Razorpay India gateway integration with test mode, HMAC-SHA256 signature verification, and idempotent webhook handlers.
-- **Testing:** Pytest (10 tests) for backend workflows and Vitest (4 tests) with React Testing Library for frontend components.
+The workflow consists of an 8-stage operational progression:
 
----
-
-## 3. Seed Demo Accounts
-
-The database is automatically pre-seeded on startup with the following test credentials:
-
-| Role | Email / Phone | Password | Access Rights |
-| :--- | :--- | :--- | :--- |
-| **Owner (Admin)** | `admin@superwash.in` / `9876543210` | `Admin@123` | Full business access, analytics, pricing, staff management |
-| **Store Manager** | `staff@superwash.in` / `9876543211` | `Staff@123` | Orders, customer intake, QC, payments, refunds |
-| **Delivery Driver**| `driver@superwash.in` / `9876543215` | `Driver@123` | Assigned pickup & delivery tasks |
-| **Customer** | `customer@superwash.in` / `9876543212` | `Customer@123` | Personal orders, saved addresses, invoices |
-
-*(Quick 1-click sign-in buttons are also provided on the Login page for rapid evaluation.)*
+1. **Customer Books Pickup:** Customer enters mobile number, receives OTP, selects address, date, and 3-hour pickup window.
+2. **Delivery Staff Collects:** Delivery person receives assigned job on mobile, uses 1-click **Call Customer** or **Open Maps** link, and marks clothes as **Collected** with an optional bag count/note.
+3. **Store Manager Weighs:** Clothes arrive at the shop. The manager enters the measured weight on digital scale (in kg). The system automatically calculates the bill using safe integer arithmetic:
+   $$\text{Billable Weight} = \max(\text{Measured Weight}, \text{Min Weight})$$
+   $$\text{Total Bill} = (\text{Billable Weight} \times \text{Price per kg}) + \text{Delivery Fee}$$
+4. **Washing & Finishing:** Manager marks order as **Washing**, followed by **Ready for Delivery**.
+5. **Delivery & Doorstep Payment:** Delivery staff delivers clean clothes. Payment is collected via **Cash** or **UPI (with dynamic QR code & 12-digit UTR reference)**.
+6. **Order Tracking:** The customer tracks progress, measured weight, and receipt status in real time.
 
 ---
 
-## 4. Editable Catalogue Demonstration Prices
+## 2. Five Dedicated Views & Roles
 
-Pre-seeded sample prices (configurable in Admin > Services & Pricing):
-- **Shirt Washing:** ₹30 per piece
-- **Trouser Washing:** ₹40 per piece
-- **T-Shirt Washing:** ₹25 per piece
-- **Shirt Dry Cleaning:** ₹100 per piece
-- **Suit (2-Piece) Dry Cleaning:** ₹300 per piece
-- **Saree (Silk / Heavy) Dry Cleaning:** ₹200 per piece
-- **Steam Ironing:** ₹15 per piece
-- **Blanket Cleaning (Single / Double):** ₹150 / ₹250 per item
-- **Bedsheet Cleaning:** ₹50 per item
+| Role / View | Route | Primary Functions |
+| :--- | :--- | :--- |
+| **Public Landing Page** | `/` | Transparent ₹80/kg Pricing, PIN Code Coverage Checker, 4-Step Process, FAQ, Terms, Direct Booking CTA |
+| **Customer Portal** | `/customer` | Book Home Pickup, Live Order Tracking, Order History, Delivered Order Feedback (1-5★), Saved Addresses |
+| **Delivery Staff** | `/delivery` | Today's Pickups & Today's Deliveries, Call Customer, Open Maps, Mark Collected, Mark Delivered, Collect Cash/UPI |
+| **Store Manager** | `/manager` | Collected/New Orders, Enter Measured Weight in kg, Live Bill Preview, Start Washing, Ready for Delivery |
+| **Owner / Admin** | `/admin` | Real-time KPIs, Revenue & Dues, Pricing Settings, Serviceable PINs, Private Customer Feedback & Quality Tracker |
 
 ---
 
-## 5. Local Development Setup
+## 3. Technology Stack
+
+- **Frontend & PWA:** React 19, TypeScript, Vite, Tailwind CSS, React Router v7, Lucide Icons.
+- **Database & Backend:** Supabase PostgreSQL with complete Row Level Security (RLS) policies.
+- **Local Resilience:** Automatic offline-first fallback with local storage persistence, enabling full functionality even without active internet or third-party SMS credits.
+- **Notifications:** Safe WhatsApp Business message dispatcher that falls back to logging without blocking order flows.
+- **Testing:** Vitest with React Testing Library.
+
+---
+
+## 4. Setup & Running Locally
 
 ### Prerequisites
-- Python 3.11+
-- Node.js 18+ and npm
+- Node.js (v18 or higher)
+- npm (v9 or higher)
 
-### Backend Setup
+### 1. Clone & Install Dependencies
 ```bash
-# 1. Navigate to backend
-cd backend
-
-# 2. Activate virtual environment (Windows PowerShell)
-..\venv\Scripts\Activate.ps1
-
-# 3. Apply database migrations
-alembic upgrade head
-
-# 4. Start FastAPI server
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-```
-API Documentation will be available at:
-- Swagger UI: `http://127.0.0.1:8000/api/v1/docs`
-- ReDoc: `http://127.0.0.1:8000/api/v1/redoc`
-
-### Frontend Setup
-```bash
-# 1. Open a new terminal in frontend directory
-cd frontend
-
-# 2. Install dependencies (if not already done)
+cd f:\superwash\frontend
 npm install
+```
 
-# 3. Start Vite dev server
+### 2. Configure Environment Variables
+Copy `.env.example` to `.env`:
+```bash
+cp .env.example .env
+```
+
+Default settings are pre-configured:
+```env
+VITE_BUSINESS_NAME=SuperWash Express
+VITE_BUSINESS_PHONE=+91 98765 43210
+VITE_PRICE_PER_KG=80
+VITE_MIN_WEIGHT_KG=3
+VITE_DELIVERY_CHARGE=0
+VITE_BUSINESS_UPI_ID=superwash@upi
+VITE_AUTH_TEST_MODE=true
+```
+
+### 3. Run Development Server
+```bash
 npm run dev
 ```
-Website will be available at: `http://localhost:5173`
+Open **[http://127.0.0.1:5173](http://127.0.0.1:5173)** on your phone or browser in a mobile viewport (e.g. 390x844).
+
+### 4. Run Unit Tests & Build
+```bash
+npm test          # Runs 9 comprehensive Vitest unit tests
+npm run build     # Runs TypeScript type check and production bundle compilation
+```
 
 ---
 
-## 6. Running Automated Tests
+## 5. Supabase PostgreSQL Setup & Migrations
 
-### Backend Tests (Pytest)
-```bash
-cd backend
-..\venv\Scripts\pytest -v
-```
-*Executes 10 automated test suites verifying customer authentication, role authorization, shop drop-off bookings, delivery fees, slot capacity validation, partial payments, Razorpay signature verification, and customer order isolation.*
+A production PostgreSQL schema with Row Level Security (RLS) is provided in `supabase/migrations/20261021_initial_schema.sql`.
 
-### Frontend Tests (Vitest)
-```bash
-cd frontend
-npm test
-```
-*Executes unit and component tests verifying status badges, payment badges, navigation, and order progression timelines.*
-
----
-
-## 7. Production Deployment via Docker Compose
-
-To deploy the entire production stack (PostgreSQL + FastAPI + Nginx React Frontend):
-
-```bash
-# 1. Copy environment template
-cp .env.example .env
-
-# 2. Build and launch containers
-docker-compose up -d --build
-
-# 3. Check container logs
-docker-compose logs -f
-```
-
-- **Frontend Website:** `http://localhost:3000`
-- **Backend API:** `http://localhost:8000/api/v1/docs`
-- **PostgreSQL Database:** `localhost:5432`
-
----
-
-## 8. Razorpay Gateway Setup Guide
-
-1. Sign up for a [Razorpay Merchant Account](https://dashboard.razorpay.com/).
-2. Navigate to **Settings > API Keys** and generate **Key ID** and **Key Secret**.
-3. In your `.env` or production environment variables, configure:
+### Applying Migrations to Supabase:
+1. Log in to your [Supabase Dashboard](https://supabase.com).
+2. Create a new project (e.g., `superwash-db`).
+3. Navigate to **SQL Editor** in the left sidebar.
+4. Copy and paste the contents of `supabase/migrations/20261021_initial_schema.sql` and click **Run**.
+5. Copy your **Project URL** and **Anon Key** from `Project Settings > API` into your `.env` file:
    ```env
-   RAZORPAY_KEY_ID=rzp_live_xxxxxxxxxxxxxx
-   RAZORPAY_KEY_SECRET=your_razorpay_secret_key
-   RAZORPAY_WEBHOOK_SECRET=your_webhook_secret
-   RAZORPAY_SANDBOX_MODE=false
+   VITE_SUPABASE_URL=https://your-project-id.supabase.co
+   VITE_SUPABASE_ANON_KEY=your-anon-public-key
    ```
-4. Set the Webhook URL in Razorpay Dashboard to: `https://your-domain.com/api/v1/payments/webhook` with event `payment.captured`.
-5. In development mode (`RAZORPAY_SANDBOX_MODE=true`), the system includes a test simulator that generates sandbox orders and validates backend signatures without requiring live credentials.
+
+### Row Level Security (RLS) Guarantees:
+- Customers can only select and view their own orders (`customer_id = auth.uid()`).
+- Delivery staff can only view orders assigned to them or unassigned pending pickups.
+- Store managers and owners have access to operational orders.
+- Only owners can modify prices or alter business settings.
 
 ---
 
-## 9. Implemented Features Checklist
+## 6. Authentication & Role Testing
 
-- [x] **Customer Web Experience:** Clean landing page, live service menu, how it works comparison, multi-step booking wizard, and business contact.
-- [x] **Omnichannel Booking:** Shop drop-off counter booking or doorstep pickup & delivery with address and time-slot selection.
-- [x] **Secure Order Tracking:** Order timeline with timestamps; requires registered phone number to prevent unauthorized enumeration.
-- [x] **Admin Dashboard:** Real-time KPI counters (orders today, in intake, in wash, awaiting QC, ready, pickups/deliveries scheduled, revenue, cash collected vs outstanding balance).
-- [x] **Walk-In Counter POS:** Fast in-person order booking with immediate garment tally, price calculation, and cash/UPI receipt recording.
-- [x] **Garment Processing State Machine:** Validated status progression: Placed -> Intake -> Inspection & Tagging -> Wash/Dry Clean -> Steam Iron -> QC -> Ready -> Out for Delivery -> Delivered.
-- [x] **Intake & QC Logs:** Records actual garment count received, existing tears/stains, customer care instructions, and QC pass/fail.
-- [x] **Service Catalogue Management:** Live pricing updates per item/kg without code alteration, preserving historical snapshot integrity.
-- [x] **Payments & Ledger:** Razorpay online checkout, manual Cash recording, UPI UTR reference recording, partial payments, and refund processing.
-- [x] **Printable Tax Invoices:** Official GST invoices with CGST/SGST itemization, company details, customer details, and receipt summaries.
-- [x] **Logistics & Capacity:** Serviceable Bengaluru PIN codes, 3-hour pickup windows, and capacity limit validation.
-- [x] **Business Analytics:** Revenue, cash flow, channel breakdown, popular garments, and CSV export.
+### Phone OTP Authentication
+- The app uses standard Indian phone numbers (`+91`).
+- When live Supabase is configured with an SMS provider (Twilio, MessageBird), an SMS OTP is delivered to the user.
+- For local development and demonstration, **Test OTP `123456`** is pre-configured.
+
+### Quick 1-Click Role Switcher
+A top navigation bar is provided in the development interface for testing:
+- **Priya Patel (Customer)** — `9876543212`
+- **Ramesh Kumar (Delivery Staff)** — `9876543215`
+- **Ananya Verma (Store Manager)** — `9876543211`
+- **Rajesh Sharma (Business Owner)** — `9876543210`
+
+---
+
+## 7. Pricing by Kilogram & Snapshot Integrity
+
+- **Configurable in Admin:** The business owner can change the price per kg (e.g., ₹80/kg), minimum billable weight (e.g., 3 kg), and delivery charges at any time from `/admin > Pricing & Settings`.
+- **Snapshot Rule:** When an order is booked and weighed, the active rates are immutably copied into the order row (`price_per_kg_paise`, `min_weight_kg`, `delivery_charge_paise`). Subsequent changes to the business pricing do not alter historical orders.
+- **Safe Integer Arithmetic:** All calculations are performed in integer paise (1 Rupee = 100 paise) to prevent floating-point rounding errors.
+
+---
+
+## 8. WhatsApp Business Notifications
+
+The optional WhatsApp integration uses the official Meta Cloud API.
+To enable:
+```env
+VITE_WHATSAPP_ENABLED=true
+VITE_WHATSAPP_API_URL=https://graph.facebook.com/v19.0/<PHONE_NUMBER_ID>/messages
+VITE_WHATSAPP_BEARER_TOKEN=<SYSTEM_USER_ACCESS_TOKEN>
+```
+If WhatsApp credentials are missing or the API returns an error, notifications gracefully fall back to internal logging without blocking order creation, weight entry, or payment recording.
+
+---
+
+## 9. Verification & Automated Test Results
+
+The application includes automated Vitest unit tests covering:
+- Standard weight calculation ($5.0\text{ kg} \times ₹80 = ₹400$).
+- Minimum billable weight rule ($2.0\text{ kg}$ measured with $3.0\text{ kg}$ minimum $= ₹240$).
+- Snapshot immutability when global prices are updated.
+- Cash and UPI partial payment balance calculations.
+- Complete 8-stage order lifecycle transitions.
+- All 9 tests pass with 100% success rate.
