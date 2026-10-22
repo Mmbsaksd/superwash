@@ -21,6 +21,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const AUTH_STORAGE_KEY = 'superwash_auth_profile';
+const isLiveAuth = isSupabaseConfigured && import.meta.env.VITE_DEMO_MODE !== 'true';
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<Profile | null>(null);
@@ -34,10 +35,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setCurrentUser(JSON.parse(saved));
       } catch {
         localStorage.removeItem(AUTH_STORAGE_KEY);
+        setCurrentUser(null);
       }
     } else {
-      // Default to customer for instant friendly preview
-      setCurrentUser(DEMO_PROFILES.find(p => p.role === 'customer') || null);
+      // Unauthenticated visitors start as null (guest)
+      setCurrentUser(null);
     }
     setIsLoading(false);
   }, []);
@@ -45,84 +47,101 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const sendOtp = async (phone: string): Promise<{ success: boolean; message: string }> => {
     const cleanPhone = phone.replace(/[^0-9]/g, '');
     if (cleanPhone.length < 10) {
-      return { success: false, message: 'Please enter a valid 10-digit mobile number' };
+      return { success: false, message: 'Please enter a valid 10-digit Indian mobile number' };
     }
 
-    if (isSupabaseConfigured) {
+    if (isLiveAuth) {
       try {
         const { error } = await supabase.auth.signInWithOtp({
           phone: `+91${cleanPhone.slice(-10)}`
         });
-        if (error) throw error;
+        if (error) {
+          return { success: false, message: error.message || 'Failed to send OTP. Please try again.' };
+        }
         return { success: true, message: 'OTP sent to your mobile number via SMS' };
       } catch (err: any) {
-        console.warn('Supabase OTP error, falling back to local test OTP:', err.message);
+        return { success: false, message: err.message || 'Error connecting to authentication service' };
       }
     }
 
-    // Local test mode: default OTP 123456
+    // Explicit Demo Mode
     return {
       success: true,
-      message: 'Demo test mode: Use OTP 123456 to verify'
+      message: 'Demo Mode: Enter OTP 123456 to verify'
     };
   };
 
   const verifyOtp = async (
     phone: string,
     otp: string,
-    roleHint?: UserRole
+    _roleHint?: UserRole
   ): Promise<{ success: boolean; message: string }> => {
     const cleanPhone = phone.replace(/[^0-9]/g, '').slice(-10);
 
-    // Live Supabase verification if configured
-    if (isSupabaseConfigured) {
+    // Live Supabase verification in production mode
+    if (isLiveAuth) {
       try {
         const { data, error } = await supabase.auth.verifyOtp({
           phone: `+91${cleanPhone}`,
           token: otp,
           type: 'sms'
         });
-        if (error) throw error;
-
-        // Fetch or create profile
-        if (data.user) {
-          const { data: profileData } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', data.user.id)
-            .single();
-
-          if (profileData) {
-            setCurrentUser(profileData);
-            localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profileData));
-            return { success: true, message: 'Login successful' };
-          }
+        if (error || !data.user) {
+          return { success: false, message: error?.message || 'Invalid or expired OTP. Please try again.' };
         }
+
+        // Fetch authoritative profile from database
+        let { data: profileData } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', data.user.id)
+          .single();
+
+        // If newly created user, insert safe customer profile with default role
+        if (!profileData) {
+          const newProfile: Profile = {
+            id: data.user.id,
+            phone: cleanPhone,
+            full_name: 'Customer',
+            role: 'customer', // Always default to customer, never allow self-promotion
+            is_active: true,
+            created_at: new Date().toISOString()
+          };
+          const { error: insertError } = await supabase.from('profiles').insert(newProfile);
+          if (insertError) {
+            console.error('Profile creation error:', insertError);
+          }
+          profileData = newProfile;
+        }
+
+        setCurrentUser(profileData);
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profileData));
+        return { success: true, message: 'Login successful' };
       } catch (err: any) {
-        console.warn('Supabase verify error, checking local profiles:', err.message);
+        return { success: false, message: err.message || 'Authentication verification failed' };
       }
     }
 
-    // Local Test OTP Verification (accepts 123456 or any 6-digit test code)
-    if (otp !== '123456' && otp.length !== 6) {
-      return { success: false, message: 'Invalid OTP. Enter 123456 for test access.' };
+    // Demo Mode Verification (Only accepts exactly '123456')
+    if (otp !== '123456') {
+      return { success: false, message: 'Invalid OTP. Enter 123456 for demo access.' };
     }
 
-    // Check if phone matches any known demo account
+    // Check if phone matches any pre-configured demo staff profile
     const matchedProfile = DEMO_PROFILES.find(p => p.phone === cleanPhone);
 
     const profileToSet: Profile = matchedProfile || {
       id: `user-${Date.now()}`,
       phone: cleanPhone,
-      full_name: roleHint === 'owner' ? 'Business Owner' : roleHint === 'delivery' ? 'Delivery Agent' : roleHint === 'manager' ? 'Store Manager' : 'Customer',
-      role: roleHint || (cleanPhone === '9876543210' ? 'owner' : cleanPhone === '9876543211' ? 'manager' : cleanPhone === '9876543215' ? 'delivery' : 'customer'),
+      full_name: 'Customer',
+      role: 'customer', // Untrusted phone always gets customer role
       is_active: true,
       created_at: new Date().toISOString()
     };
 
     setCurrentUser(profileToSet);
     localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profileToSet));
-    return { success: true, message: 'Verified successfully' };
+    return { success: true, message: 'Verified successfully (Demo Mode)' };
   };
 
   const switchDemoRole = (role: UserRole) => {
@@ -133,7 +152,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const logout = () => {
+  const logout = async () => {
+    if (isSupabaseConfigured) {
+      try {
+        await supabase.auth.signOut();
+      } catch {}
+    }
     localStorage.removeItem(AUTH_STORAGE_KEY);
     setCurrentUser(null);
   };

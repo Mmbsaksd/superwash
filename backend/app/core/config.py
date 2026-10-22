@@ -1,34 +1,34 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import List
-from decimal import Decimal
+from typing import List, Optional
+import os
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    PROJECT_NAME: str = "SuperWash - Laundry & Dry Cleaning Management"
+    PROJECT_NAME: str = "SuperWash Express - Operations & Management API"
     API_V1_STR: str = "/api/v1"
-    SECRET_KEY: str = "superwash_super_secure_jwt_secret_key_change_in_production_2026_xyz"
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "superwash_dev_secret_change_in_production")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
 
     # Database
-    DATABASE_URL: str = "sqlite:///./superwash.db"
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./superwash.db")
 
-    # Business Information (India localized)
-    BUSINESS_NAME: str = "SuperWash Express & Dry Cleaners"
+    # Business Information (India localized - real business defaults)
+    BUSINESS_NAME: str = "SuperWash Express"
     BUSINESS_PHONE: str = "+91 98765 43210"
     BUSINESS_EMAIL: str = "care@superwash.in"
-    BUSINESS_ADDRESS: str = "Shop #14, Metro Pillar 78, Indiranagar 100ft Road, Bengaluru, Karnataka 560038"
-    GSTIN: str = "29ABCDE1234F1Z5"
-    GST_PERCENT: float = 18.0  # 18% GST (9% CGST + 9% SGST)
-    DEFAULT_DELIVERY_FEE_PAISE: int = 5000  # Rs 50
-    MIN_ORDER_FOR_FREE_DELIVERY_PAISE: int = 50000  # Rs 500
+    BUSINESS_ADDRESS: str = "Shop #14, Metro Pillar 78, Indiranagar, Bengaluru, Karnataka 560038"
+    GSTIN: Optional[str] = None  # No fabricated GST claimed
+    GST_PERCENT: float = 0.0     # 0% tax until verified business registration
+    DEFAULT_DELIVERY_FEE_PAISE: int = 0  # Free home pickup & delivery standard
+    MIN_ORDER_FOR_FREE_DELIVERY_PAISE: int = 0
     TIMEZONE: str = "Asia/Kolkata"
 
-    # Payment Gateway (Razorpay India)
-    RAZORPAY_KEY_ID: str = "rzp_test_SuperWashMockKeyId123"
-    RAZORPAY_KEY_SECRET: str = "SuperWashMockSecretKey456"
-    RAZORPAY_WEBHOOK_SECRET: str = "SuperWashWebhookSecret789"
+    # Optional Payment Gateway
+    RAZORPAY_KEY_ID: Optional[str] = None
+    RAZORPAY_KEY_SECRET: Optional[str] = None
+    RAZORPAY_WEBHOOK_SECRET: Optional[str] = None
     RAZORPAY_SANDBOX_MODE: bool = True
 
     # Notification settings
@@ -36,13 +36,13 @@ class Settings(BaseSettings):
     WHATSAPP_PROVIDER_CONFIGURED: bool = False
     SMTP_CONFIGURED: bool = False
 
-    # CORS
+    # CORS - Restricted strictly to verified frontend origins (no wildcard '*')
     BACKEND_CORS_ORIGINS: List[str] = [
         "http://localhost:5173",
         "http://localhost:3000",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:3000",
-        "*"
+        "https://superwash.in"
     ]
 
 settings = Settings()

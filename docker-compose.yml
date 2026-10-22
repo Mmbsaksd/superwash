@@ -6,15 +6,15 @@ services:
     container_name: superwash_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: superwash_user
-      POSTGRES_PASSWORD: superwash_secure_password
-      POSTGRES_DB: superwash_db
+      POSTGRES_USER: ${POSTGRES_USER:-superwash_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-superwash_secure_password}
+      POSTGRES_DB: ${POSTGRES_DB:-superwash_db}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U superwash_user -d superwash_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-superwash_user} -d ${POSTGRES_DB:-superwash_db}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -29,12 +29,8 @@ services:
       db:
         condition: service_healthy
     environment:
-      - DATABASE_URL=postgresql://superwash_user:superwash_secure_password@db:5432/superwash_db
-      - SECRET_KEY=superwash_prod_super_secure_jwt_secret_key_2026
-      - RAZORPAY_KEY_ID=rzp_test_SuperWashMockKeyId123
-      - RAZORPAY_KEY_SECRET=SuperWashMockSecretKey456
-      - RAZORPAY_WEBHOOK_SECRET=SuperWashWebhookSecret789
-      - RAZORPAY_SANDBOX_MODE=true
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-superwash_user}:${POSTGRES_PASSWORD:-superwash_secure_password}@db:5432/${POSTGRES_DB:-superwash_db}
+      - SECRET_KEY=${SECRET_KEY:-superwash_prod_secret_must_be_set_in_env}
     ports:
       - "8000:8000"
 

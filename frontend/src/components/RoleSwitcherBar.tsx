@@ -8,6 +8,12 @@ export const RoleSwitcherBar: React.FC = () => {
   const { currentUser, switchDemoRole, logout } = useAuth();
   const navigate = useNavigate();
 
+  // Role switching controls are enabled strictly in development/demo mode
+  const isDemoOrDev = import.meta.env.DEV || import.meta.env.VITE_DEMO_MODE === 'true';
+  if (!isDemoOrDev) {
+    return null;
+  }
+
   const roles: { role: UserRole; label: string; icon: any; route: string; color: string }[] = [
     { role: 'customer', label: 'Customer', icon: User, route: '/customer', color: 'bg-blue-600 text-white' },
     { role: 'delivery', label: 'Delivery Staff', icon: Truck, route: '/delivery', color: 'bg-emerald-600 text-white' },

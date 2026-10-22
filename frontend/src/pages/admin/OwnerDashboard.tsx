@@ -10,11 +10,14 @@ import { AssignStaffModal } from '../../components/AssignStaffModal';
 import { PaymentModal } from '../../components/PaymentModal';
 import { WeightEntryModal } from '../../components/WeightEntryModal';
 import {
-  DollarSign, Package, CheckCircle2,
+  IndianRupee, Package, CheckCircle2,
   Users, Settings, Plus, RefreshCw,
   Search, Shield, Phone, Sparkles, Star, MessageSquareHeart,
-  Calendar, Check, AlertCircle, X, MapPin
+  Calendar, Check, AlertCircle, X, MapPin, Download, TrendingUp, TrendingDown
 } from 'lucide-react';
+import {
+  ServiceArea, LaundryServiceItem, PeriodFilter, DashboardPeriodAnalytics
+} from '../../types';
 
 export const OwnerDashboard: React.FC = () => {
   const { currentUser } = useAuth();
@@ -26,6 +29,10 @@ export const OwnerDashboard: React.FC = () => {
   const [payments, setPayments] = useState<Payment[]>([]);
   const [feedbacks, setFeedbacks] = useState<OrderFeedback[]>([]);
   const [feedbackMetrics, setFeedbackMetrics] = useState<FeedbackSummaryMetrics | null>(null);
+  const [serviceAreasList, setServiceAreasList] = useState<ServiceArea[]>([]);
+  const [servicesList, setServicesList] = useState<LaundryServiceItem[]>([]);
+  const [selectedPeriod, setSelectedPeriod] = useState<PeriodFilter>('today');
+  const [periodAnalytics, setPeriodAnalytics] = useState<DashboardPeriodAnalytics | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   // Search & Filters
@@ -50,6 +57,13 @@ export const OwnerDashboard: React.FC = () => {
   const [pincodesInput, setPincodesInput] = useState<string>('560038, 560008, 560103, 560075, 560001, 560066, 560037');
   const [settingsSavedMsg, setSettingsSavedMsg] = useState<string | null>(null);
 
+  // Service Area Creation State
+  const [isAddingArea, setIsAddingArea] = useState<boolean>(false);
+  const [newAreaPin, setNewAreaPin] = useState<string>('');
+  const [newAreaName, setNewAreaName] = useState<string>('');
+  const [newAreaCity, setNewAreaCity] = useState<string>('Bengaluru');
+  const [areaSearchQuery, setAreaSearchQuery] = useState<string>('');
+
   // Add Staff State
   const [isAddingStaff, setIsAddingStaff] = useState<boolean>(false);
   const [newStaffName, setNewStaffName] = useState<string>('');
@@ -70,17 +84,33 @@ export const OwnerDashboard: React.FC = () => {
     loadAllData();
   }, [currentUser]);
 
+  useEffect(() => {
+    loadPeriodAnalytics(selectedPeriod);
+  }, [selectedPeriod, orders]);
+
+  const loadPeriodAnalytics = async (p: PeriodFilter) => {
+    try {
+      const pa = await LaundryService.getPeriodAnalytics(p);
+      setPeriodAnalytics(pa);
+    } catch (e) {
+      console.warn('Analytics loading error:', e);
+    }
+  };
+
   const loadAllData = async () => {
     setIsLoading(true);
     try {
-      const [allOrds, s, st, sl, p, fb, fm] = await Promise.all([
+      const [allOrds, s, st, sl, p, fb, fm, sa, srv, pa] = await Promise.all([
         LaundryService.getAllOrders(),
         LaundryService.getSettings(),
         LaundryService.getStaffProfiles(),
         LaundryService.getPickupSlots(),
         LaundryService.getAllPayments(),
         LaundryService.getAllFeedback(),
-        LaundryService.getFeedbackMetrics()
+        LaundryService.getFeedbackMetrics(),
+        LaundryService.getServiceAreas(),
+        LaundryService.getServices(),
+        LaundryService.getPeriodAnalytics(selectedPeriod)
       ]);
       setOrders(allOrds);
       setSettings(s);
@@ -89,6 +119,9 @@ export const OwnerDashboard: React.FC = () => {
       setPayments(p);
       setFeedbacks(fb);
       setFeedbackMetrics(fm);
+      setServiceAreasList(sa);
+      setServicesList(srv);
+      setPeriodAnalytics(pa);
 
       setPricePerKgInput((s.price_per_kg_paise / 100).toString());
       setMinWeightInput(s.min_weight_kg.toString());
@@ -107,6 +140,85 @@ export const OwnerDashboard: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleToggleServiceArea = async (areaId: string, currentActive: boolean) => {
+    try {
+      const updated = await LaundryService.updateServiceArea(areaId, { is_active: !currentActive });
+      if (updated) {
+        setServiceAreasList((prev) => prev.map((a) => (a.id === areaId ? updated : a)));
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error updating service area');
+    }
+  };
+
+  const handleAddServiceArea = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newAreaPin.trim() || !newAreaName.trim()) return;
+
+    try {
+      const added = await LaundryService.addServiceArea({
+        pincode: newAreaPin.trim(),
+        area_name: newAreaName.trim(),
+        city: newAreaCity.trim() || 'Bengaluru',
+        state: 'Karnataka',
+        is_active: true
+      });
+      setServiceAreasList((prev) => [...prev, added]);
+      setIsAddingArea(false);
+      setNewAreaPin('');
+      setNewAreaName('');
+    } catch (err: any) {
+      alert(err.message || 'Error adding service area');
+    }
+  };
+
+  const handleExportCSV = () => {
+    if (orders.length === 0) {
+      alert('No orders to export');
+      return;
+    }
+    const headers = [
+      'Order Number',
+      'Customer Name',
+      'Customer Phone',
+      'Address',
+      'PIN Code',
+      'Pickup Date',
+      'Slot',
+      'Weight (kg)',
+      'Total Amount (INR)',
+      'Paid Amount (INR)',
+      'Payment Status',
+      'Payment Method',
+      'Order Status',
+      'Created At'
+    ];
+    const rows = orders.map((o) => [
+      `"${o.order_number}"`,
+      `"${o.customer_name.replace(/"/g, '""')}"`,
+      `"${o.customer_phone}"`,
+      `"${o.pickup_address.replace(/"/g, '""')}"`,
+      `"${o.pickup_pincode}"`,
+      `"${o.pickup_date}"`,
+      `"${o.pickup_slot}"`,
+      o.measured_weight || '',
+      o.total_amount_paise ? (o.total_amount_paise / 100).toFixed(2) : '',
+      (o.paid_amount_paise / 100).toFixed(2),
+      `"${o.payment_status}"`,
+      `"${o.payment_method}"`,
+      `"${o.order_status}"`,
+      `"${o.created_at}"`
+    ]);
+    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `superwash_orders_${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   // KPIs
@@ -294,73 +406,140 @@ export const OwnerDashboard: React.FC = () => {
         {/* ================= TAB 1: EXECUTIVE DASHBOARD ================= */}
         {activeTab === 'overview' && (
           <div className="space-y-6">
-            {/* Daily Operational KPIs */}
+            {/* Period Selector & CSV Export */}
+            <div className="bg-white p-4 rounded-3xl border border-slate-200 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+              <div className="flex items-center gap-1.5 overflow-x-auto w-full md:w-auto pb-1 md:pb-0 scrollbar-none">
+                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mr-1">Period:</span>
+                {[
+                  { key: 'today', label: 'Today' },
+                  { key: 'yesterday', label: 'Yesterday' },
+                  { key: 'this_week', label: 'This Week' },
+                  { key: 'last_week', label: 'Last Week' },
+                  { key: 'this_month', label: 'This Month' },
+                  { key: 'last_month', label: 'Last Month' }
+                ].map((p) => (
+                  <button
+                    key={p.key}
+                    type="button"
+                    onClick={() => setSelectedPeriod(p.key as PeriodFilter)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap ${
+                      selectedPeriod === p.key
+                        ? 'bg-slate-900 text-white shadow-xs'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-3 self-end md:self-center">
+                <span className="text-[11px] text-slate-500 font-mono hidden sm:inline">
+                  {periodAnalytics?.startDate} to {periodAnalytics?.endDate} (IST)
+                </span>
+                <button
+                  type="button"
+                  onClick={handleExportCSV}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs shadow-xs transition"
+                  title="Export orders as CSV"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Export Orders (CSV)</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Operational KPIs */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
-                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Today's Orders</span>
-                <span className="text-3xl font-black text-slate-900 block mt-1">{todaysOrders.length}</span>
+                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Orders in Period</span>
+                <span className="text-3xl font-black text-slate-900 block mt-1">{periodAnalytics?.ordersBooked ?? todaysOrders.length}</span>
                 <span className="text-xs text-slate-500">{orders.length} total lifetime orders</span>
               </div>
 
               <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
-                <span className="text-[11px] font-bold text-blue-600 uppercase tracking-wider block">New Pickups</span>
-                <span className="text-3xl font-black text-blue-600 block mt-1">{newPickups.length}</span>
-                <span className="text-xs text-slate-500">Require courier pickup</span>
+                <span className="text-[11px] font-bold text-blue-600 uppercase tracking-wider block">In Progress</span>
+                <span className="text-3xl font-black text-blue-600 block mt-1">{periodAnalytics?.ordersInProgress ?? newPickups.length}</span>
+                <span className="text-xs text-slate-500">Pickups, washing & delivery</span>
               </div>
 
               <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
-                <span className="text-[11px] font-bold text-purple-600 uppercase tracking-wider block">Washing Stage</span>
-                <span className="text-3xl font-black text-purple-600 block mt-1">{washingOrders.length}</span>
-                <span className="text-xs text-slate-500">In machines at store</span>
+                <span className="text-[11px] font-bold text-purple-600 uppercase tracking-wider block">Awaiting Weighing</span>
+                <span className="text-3xl font-black text-purple-600 block mt-1">{periodAnalytics?.ordersAwaitingWeight ?? washingOrders.length}</span>
+                <span className="text-xs text-slate-500">Waiting for store scale</span>
               </div>
 
               <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
-                <span className="text-[11px] font-bold text-emerald-600 uppercase tracking-wider block">Ready / Out</span>
-                <span className="text-3xl font-black text-emerald-600 block mt-1">{readyOrders.length}</span>
-                <span className="text-xs text-slate-500">{deliveredOrders.length} delivered successfully</span>
+                <span className="text-[11px] font-bold text-emerald-600 uppercase tracking-wider block">Delivered</span>
+                <span className="text-3xl font-black text-emerald-600 block mt-1">{periodAnalytics?.ordersDelivered ?? deliveredOrders.length}</span>
+                <span className="text-xs text-slate-500">{periodAnalytics?.ordersReadyForDelivery ?? readyOrders.length} ready for dispatch</span>
               </div>
             </div>
 
-            {/* Collections & Quality Summary */}
+            {/* Financial Collections & Dues Summary */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="bg-emerald-50 border border-emerald-200 rounded-3xl p-5 space-y-1">
+              {/* Money Collected in Period */}
+              <div className="bg-emerald-50 border border-emerald-200 rounded-3xl p-5 space-y-1.5">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-emerald-800 uppercase tracking-wider">
-                    Total Money Collected
+                    Collected in Period
                   </span>
-                  <DollarSign className="w-5 h-5 text-emerald-600" />
+                  <IndianRupee className="w-5 h-5 text-emerald-600" />
                 </div>
-                <span className="text-3xl font-black text-emerald-950 block">
-                  ₹{(totalCollectedPaise / 100).toFixed(2)}
-                </span>
-                <p className="text-xs text-emerald-700">Cash and verified UPI receipts</p>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-3xl font-black text-emerald-950">
+                    ₹{(((periodAnalytics?.actualCollectedPaise ?? totalCollectedPaise) / 100)).toFixed(2)}
+                  </span>
+                  {periodAnalytics && periodAnalytics.collectedGrowthPercent !== 0 && (
+                    <span className={`text-[11px] font-bold flex items-center ${periodAnalytics.collectedGrowthPercent > 0 ? 'text-emerald-700' : 'text-slate-500'}`}>
+                      {periodAnalytics.collectedGrowthPercent > 0 ? <TrendingUp className="w-3 h-3 mr-0.5" /> : <TrendingDown className="w-3 h-3 mr-0.5" />}
+                      {periodAnalytics.collectedGrowthPercent > 0 ? `+${periodAnalytics.collectedGrowthPercent}%` : `${periodAnalytics.collectedGrowthPercent}%`}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-emerald-700 pt-1 border-t border-emerald-200/60 font-medium">
+                  <span>Cash: ₹{(((periodAnalytics?.cashCollectedPaise ?? 0) / 100)).toFixed(0)}</span>
+                  <span>UPI: ₹{(((periodAnalytics?.upiCollectedPaise ?? 0) / 100)).toFixed(0)}</span>
+                </div>
               </div>
 
-              <div className="bg-amber-50 border border-amber-200 rounded-3xl p-5 space-y-1">
+              {/* Billed Value in Period */}
+              <div className="bg-blue-50 border border-blue-200 rounded-3xl p-5 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-blue-800 uppercase tracking-wider">
+                    Billed Value in Period
+                  </span>
+                  <IndianRupee className="w-5 h-5 text-blue-600" />
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-3xl font-black text-blue-950">
+                    ₹{(((periodAnalytics?.billedOrderValuePaise ?? 0) / 100)).toFixed(2)}
+                  </span>
+                  {periodAnalytics && periodAnalytics.billedGrowthPercent !== 0 && (
+                    <span className={`text-[11px] font-bold flex items-center ${periodAnalytics.billedGrowthPercent > 0 ? 'text-blue-700' : 'text-slate-500'}`}>
+                      {periodAnalytics.billedGrowthPercent > 0 ? <TrendingUp className="w-3 h-3 mr-0.5" /> : <TrendingDown className="w-3 h-3 mr-0.5" />}
+                      {periodAnalytics.billedGrowthPercent > 0 ? `+${periodAnalytics.billedGrowthPercent}%` : `${periodAnalytics.billedGrowthPercent}%`}
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-blue-700 pt-1 border-t border-blue-200/60">
+                  Total confirmed order value billed
+                </p>
+              </div>
+
+              {/* Outstanding Balance */}
+              <div className="bg-amber-50 border border-amber-200 rounded-3xl p-5 space-y-1.5">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-amber-800 uppercase tracking-wider">
                     Outstanding Balances
                   </span>
-                  <DollarSign className="w-5 h-5 text-amber-600" />
+                  <IndianRupee className="w-5 h-5 text-amber-600" />
                 </div>
                 <span className="text-3xl font-black text-amber-950 block">
-                  ₹{(totalDuePaise / 100).toFixed(2)}
+                  ₹{(((periodAnalytics?.outstandingBalancePaise ?? totalDuePaise) / 100)).toFixed(2)}
                 </span>
-                <p className="text-xs text-amber-700">Pending customer balance payments</p>
-              </div>
-
-              <div className="bg-blue-50 border border-blue-200 rounded-3xl p-5 space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-blue-800 uppercase tracking-wider">
-                    Service Quality Rating
-                  </span>
-                  <Star className="w-5 h-5 text-amber-500 fill-amber-500" />
-                </div>
-                <span className="text-3xl font-black text-blue-950 block">
-                  {feedbackMetrics?.averageOverall ? `${feedbackMetrics.averageOverall} / 5.0` : 'No ratings yet'}
-                </span>
-                <p className="text-xs text-blue-700">
-                  {feedbackMetrics?.totalCount || 0} private customer reviews
+                <p className="text-[11px] text-amber-700 pt-1 border-t border-amber-200/60">
+                  {periodAnalytics?.ordersAwaitingPayment ?? 0} orders awaiting payment
                 </p>
               </div>
             </div>
@@ -835,133 +1014,260 @@ export const OwnerDashboard: React.FC = () => {
 
         {/* ================= TAB 6: PRICING & SETTINGS ================= */}
         {activeTab === 'settings' && (
-          <form onSubmit={handleSaveSettings} className="bg-white rounded-3xl border border-slate-200 p-6 sm:p-8 space-y-6 shadow-sm text-xs max-w-4xl">
-            <div className="border-b border-slate-100 pb-4">
-              <h2 className="font-black text-slate-900 text-lg">Business Pricing & Operational Settings</h2>
-              <p className="text-slate-500 text-xs mt-0.5">Configure live price-per-kg, minimum weight thresholds, and serviceable PIN codes.</p>
-            </div>
-
-            {settingsSavedMsg && (
-              <div className="p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl font-semibold flex items-center gap-2">
-                <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-                <span>{settingsSavedMsg}</span>
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-              <div>
-                <label className="block font-bold text-slate-700 mb-1.5">
-                  Laundry Price per Kilogram (₹) <span className="text-red-500">*</span>
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3.5 top-3 font-bold text-slate-400">₹</span>
-                  <input
-                    type="number"
-                    step="1"
-                    min="10"
-                    value={pricePerKgInput}
-                    onChange={(e) => setPricePerKgInput(e.target.value)}
-                    className="w-full pl-8 pr-3 py-2.5 rounded-xl border border-slate-300 font-bold text-slate-900 text-sm"
-                    required
-                  />
-                </div>
-                <p className="text-[11px] text-slate-400 mt-1">Normal clothes washing rate charged per kg.</p>
+          <div className="space-y-6 max-w-4xl">
+            <form onSubmit={handleSaveSettings} className="bg-white rounded-3xl border border-slate-200 p-6 sm:p-8 space-y-6 shadow-sm text-xs">
+              <div className="border-b border-slate-100 pb-4">
+                <h2 className="font-black text-slate-900 text-lg">Business Pricing & Operational Settings</h2>
+                <p className="text-slate-500 text-xs mt-0.5">Configure live price-per-kg, minimum weight thresholds, and serviceable PIN codes.</p>
               </div>
 
-              <div>
-                <label className="block font-bold text-slate-700 mb-1.5">
-                  Minimum Billable Weight (kg) <span className="text-red-500">*</span>
-                </label>
-                <div className="relative">
+              {settingsSavedMsg && (
+                <div className="p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl font-semibold flex items-center gap-2">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                  <span>{settingsSavedMsg}</span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1.5">
+                    Laundry Price per Kilogram (₹) <span className="text-red-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3.5 top-3 font-bold text-slate-400">₹</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="10"
+                      value={pricePerKgInput}
+                      onChange={(e) => setPricePerKgInput(e.target.value)}
+                      className="w-full pl-8 pr-3 py-2.5 rounded-xl border border-slate-300 font-bold text-slate-900 text-sm"
+                      required
+                    />
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-1">Normal clothes washing rate charged per kg.</p>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1.5">
+                    Minimum Billable Weight (kg) <span className="text-red-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="1"
+                      value={minWeightInput}
+                      onChange={(e) => setMinWeightInput(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 font-bold text-slate-900 text-sm"
+                      required
+                    />
+                    <span className="absolute right-3.5 top-3 font-bold text-slate-400 text-xs">KG</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Orders below this weight are billed for the minimum weight.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1.5">
+                    Home Pickup & Delivery Charge (₹)
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3.5 top-3 font-bold text-slate-400">₹</span>
+                    <input
+                      type="number"
+                      step="5"
+                      min="0"
+                      value={deliveryChargeInput}
+                      onChange={(e) => setDeliveryChargeInput(e.target.value)}
+                      className="w-full pl-8 pr-3 py-2.5 rounded-xl border border-slate-300 font-bold text-slate-900 text-sm"
+                      required
+                    />
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-1">Set to 0 for Free Pickup & Delivery.</p>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1.5">
+                    Business UPI ID (for QR Code) <span className="text-red-500">*</span>
+                  </label>
                   <input
-                    type="number"
-                    step="0.5"
-                    min="1"
-                    value={minWeightInput}
-                    onChange={(e) => setMinWeightInput(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 font-bold text-slate-900 text-sm"
+                    type="text"
+                    value={upiIdInput}
+                    onChange={(e) => setUpiIdInput(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 font-mono text-slate-900 text-sm"
                     required
                   />
-                  <span className="absolute right-3.5 top-3 font-bold text-slate-400 text-xs">KG</span>
+                  <p className="text-[11px] text-slate-400 mt-1">Used to generate dynamic QR codes for customers.</p>
                 </div>
+              </div>
+
+              {/* Serviceable PIN codes */}
+              <div>
+                <label className="block font-bold text-slate-700 mb-1.5">
+                  Serviceable PIN Codes (Comma-separated)
+                </label>
+                <textarea
+                  rows={2}
+                  value={pincodesInput}
+                  onChange={(e) => setPincodesInput(e.target.value)}
+                  placeholder="560038, 560008, 560103, 560075, 560001"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 font-mono text-xs text-slate-900"
+                />
                 <p className="text-[11px] text-slate-400 mt-1">
-                  Orders below this weight are billed for the minimum weight.
+                  Used by the Landing Page coverage checker and customer booking validation.
                 </p>
               </div>
 
-              <div>
-                <label className="block font-bold text-slate-700 mb-1.5">
-                  Home Pickup & Delivery Charge (₹)
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3.5 top-3 font-bold text-slate-400">₹</span>
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer font-bold text-slate-700">
                   <input
-                    type="number"
-                    step="5"
-                    min="0"
-                    value={deliveryChargeInput}
-                    onChange={(e) => setDeliveryChargeInput(e.target.value)}
-                    className="w-full pl-8 pr-3 py-2.5 rounded-xl border border-slate-300 font-bold text-slate-900 text-sm"
-                    required
+                    type="checkbox"
+                    checked={allowDeliveryPay}
+                    onChange={(e) => setAllowDeliveryPay(e.target.checked)}
+                    className="rounded text-brand-600 focus:ring-brand-500 w-4 h-4"
                   />
-                </div>
-                <p className="text-[11px] text-slate-400 mt-1">Set to 0 for Free Pickup & Delivery.</p>
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-700 mb-1.5">
-                  Business UPI ID (for QR Code) <span className="text-red-500">*</span>
+                  <span>Allow Delivery Staff to Record Payments at Doorstep</span>
                 </label>
-                <input
-                  type="text"
-                  value={upiIdInput}
-                  onChange={(e) => setUpiIdInput(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 font-mono text-slate-900 text-sm"
-                  required
-                />
-                <p className="text-[11px] text-slate-400 mt-1">Used to generate dynamic QR codes for customers.</p>
+                <p className="text-[11px] text-slate-500 pl-6">
+                  When enabled, delivery associates can collect cash or verify UPI at the doorstep and record payment.
+                </p>
+              </div>
+
+              <button
+                type="submit"
+                className="py-3 px-8 bg-slate-900 hover:bg-slate-800 text-white font-black rounded-2xl text-xs shadow-md transition"
+              >
+                Save Configuration
+              </button>
+            </form>
+
+            {/* Service Areas Management */}
+            <div className="bg-white rounded-3xl border border-slate-200 p-6 sm:p-8 space-y-5 shadow-sm text-xs">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-100 pb-4">
+                <div>
+                  <h2 className="font-black text-slate-900 text-base">Service Areas & PIN Coverage</h2>
+                  <p className="text-slate-500 text-xs mt-0.5">Manage operational zones with active coverage enforcement.</p>
+                </div>
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <div className="relative flex-1 sm:w-48">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder="Search PIN / area..."
+                      value={areaSearchQuery}
+                      onChange={(e) => setAreaSearchQuery(e.target.value)}
+                      className="w-full pl-8 pr-3 py-1.5 rounded-xl border border-slate-300 text-xs"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsAddingArea(true)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-xl text-xs shadow-xs transition whitespace-nowrap"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Area</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-slate-400 text-[11px] uppercase font-bold tracking-wider">
+                      <th className="pb-3">PIN Code</th>
+                      <th className="pb-3">Locality / Area</th>
+                      <th className="pb-3">City</th>
+                      <th className="pb-3">Status</th>
+                      <th className="pb-3 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {serviceAreasList.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="py-4 text-center text-slate-400">
+                          No dedicated service areas configured yet. Falling back to settings PIN list.
+                        </td>
+                      </tr>
+                    ) : (
+                      serviceAreasList
+                        .filter((a) => {
+                          const q = areaSearchQuery.toLowerCase();
+                          const aName = (a.area_name || a.name || '').toLowerCase();
+                          return a.pincode.includes(q) || aName.includes(q) || a.city.toLowerCase().includes(q);
+                        })
+                        .map((area) => (
+                          <tr key={area.id} className="hover:bg-slate-50/60 transition">
+                            <td className="py-3 font-mono font-bold text-slate-900 text-xs">{area.pincode}</td>
+                            <td className="py-3 font-medium text-slate-700">{area.area_name || area.name}</td>
+                            <td className="py-3 text-slate-500">{area.city}</td>
+                            <td className="py-3">
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                                  area.is_active
+                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                    : 'bg-slate-100 text-slate-500 border border-slate-200'
+                                }`}
+                              >
+                                {area.is_active ? 'Active' : 'Inactive'}
+                              </span>
+                            </td>
+                            <td className="py-3 text-right">
+                              <button
+                                type="button"
+                                onClick={() => handleToggleServiceArea(area.id, area.is_active)}
+                                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition ${
+                                  area.is_active
+                                    ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                                    : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                                }`}
+                              >
+                                {area.is_active ? 'Deactivate' : 'Activate'}
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
 
-            {/* Serviceable PIN codes */}
-            <div>
-              <label className="block font-bold text-slate-700 mb-1.5">
-                Serviceable PIN Codes (Comma-separated)
-              </label>
-              <textarea
-                rows={2}
-                value={pincodesInput}
-                onChange={(e) => setPincodesInput(e.target.value)}
-                placeholder="560038, 560008, 560103, 560075, 560001"
-                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 font-mono text-xs text-slate-900"
-              />
-              <p className="text-[11px] text-slate-400 mt-1">
-                Used by the Landing Page coverage checker and customer booking validation.
-              </p>
-            </div>
+            {/* Extensible Services Catalog */}
+            <div className="bg-white rounded-3xl border border-slate-200 p-6 sm:p-8 space-y-4 shadow-sm text-xs">
+              <div className="border-b border-slate-100 pb-4">
+                <h2 className="font-black text-slate-900 text-base">Service Catalogue & Pricing Units</h2>
+                <p className="text-slate-500 text-xs mt-0.5">Authoritative service catalogue supporting extensible units (per-kg baseline).</p>
+              </div>
 
-            <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-2">
-              <label className="flex items-center gap-2 cursor-pointer font-bold text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={allowDeliveryPay}
-                  onChange={(e) => setAllowDeliveryPay(e.target.checked)}
-                  className="rounded text-brand-600 focus:ring-brand-500 w-4 h-4"
-                />
-                <span>Allow Delivery Staff to Record Payments at Doorstep</span>
-              </label>
-              <p className="text-[11px] text-slate-500 pl-6">
-                When enabled, delivery associates can collect cash or verify UPI at the doorstep and record payment.
-              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {servicesList.length === 0 ? (
+                  <div className="col-span-2 p-4 text-center text-slate-400 bg-slate-50 rounded-2xl">
+                    Standard Wash & Fold (Normal) configured at ₹{(settings?.price_per_kg_paise ? settings.price_per_kg_paise / 100 : 80)} / kg.
+                  </div>
+                ) : (
+                  servicesList.map((srv) => (
+                    <div key={srv.id} className="p-4 rounded-2xl border border-slate-200 bg-slate-50/50 space-y-2">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <h4 className="font-black text-slate-900 text-sm">{srv.name}</h4>
+                          <span className="text-[11px] text-slate-500">{srv.description || 'Standard wash and iron/fold'}</span>
+                        </div>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          {srv.is_active ? 'Active' : 'Inactive'}
+                        </span>
+                      </div>
+                      <div className="pt-2 flex items-baseline justify-between border-t border-slate-200/60">
+                        <span className="text-slate-500 text-[11px]">Unit: per {srv.pricing_unit}</span>
+                        <span className="font-black text-slate-900 text-base">₹{((srv.unit_price_paise || srv.price_paise || 8000) / 100).toFixed(0)} <span className="text-xs text-slate-400 font-normal">/ {srv.pricing_unit}</span></span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
-
-            <button
-              type="submit"
-              className="py-3 px-8 bg-slate-900 hover:bg-slate-800 text-white font-black rounded-2xl text-xs shadow-md transition"
-            >
-              Save Configuration
-            </button>
-          </form>
+          </div>
         )}
       </div>
 
@@ -1164,6 +1470,69 @@ export const OwnerDashboard: React.FC = () => {
           }}
           managerName={currentUser?.full_name || 'Owner'}
         />
+      )}
+
+      {/* Add Service Area Modal */}
+      {isAddingArea && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-3xl w-full max-w-sm shadow-2xl border border-slate-200 p-6 space-y-4 text-xs">
+            <div className="flex justify-between items-center pb-2 border-b">
+              <h3 className="font-black text-sm text-slate-900">Add Service Area</h3>
+              <button onClick={() => setIsAddingArea(false)} className="p-1 hover:bg-slate-100 rounded-full">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleAddServiceArea} className="space-y-3">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">6-Digit PIN Code *</label>
+                <input
+                  type="text"
+                  maxLength={6}
+                  placeholder="560038"
+                  value={newAreaPin}
+                  onChange={(e) => setNewAreaPin(e.target.value.replace(/\D/g, ''))}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono text-sm"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Area / Locality Name *</label>
+                <input
+                  type="text"
+                  placeholder="Indiranagar"
+                  value={newAreaName}
+                  onChange={(e) => setNewAreaName(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">City</label>
+                <input
+                  type="text"
+                  value={newAreaCity}
+                  onChange={(e) => setNewAreaCity(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm"
+                />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsAddingArea(false)}
+                  className="flex-1 py-2.5 px-3 border border-slate-200 rounded-xl font-bold text-slate-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-2.5 px-3 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-xl shadow-md"
+                >
+                  Save Area
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

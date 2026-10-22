@@ -31,7 +31,35 @@ export interface CustomerAddress {
   landmark?: string;
   pincode: string;
   is_default: boolean;
+  latitude?: number | null;
+  longitude?: number | null;
   created_at?: string;
+}
+
+export interface ServiceArea {
+  id: string;
+  pincode: string;
+  area_name: string;
+  name?: string;
+  city: string;
+  state: string;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface LaundryServiceItem {
+  id: string;
+  name: string;
+  description?: string;
+  pricing_unit: string; // 'per_kg', 'per_piece'
+  unit_price_paise: number;
+  price_paise?: number;
+  min_weight_kg: number;
+  is_active: boolean;
+  display_order: number;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface BusinessSettings {
@@ -50,6 +78,33 @@ export interface BusinessSettings {
   whatsapp_enabled: boolean;
   serviceable_pincodes?: string[];
   updated_at?: string;
+}
+
+export type PeriodFilter = 'today' | 'yesterday' | 'this_week' | 'last_week' | 'this_month' | 'last_month' | 'custom';
+
+export interface DashboardPeriodAnalytics {
+  period: PeriodFilter;
+  startDate: string;
+  endDate: string;
+  // Operations
+  ordersBooked: number;
+  ordersInProgress: number;
+  ordersDelivered: number;
+  ordersCancelled: number;
+  ordersAwaitingWeight: number;
+  ordersReadyForDelivery: number;
+  // Financials
+  billedOrderValuePaise: number;
+  actualCollectedPaise: number;
+  outstandingBalancePaise: number;
+  cashCollectedPaise: number;
+  upiCollectedPaise: number;
+  ordersAwaitingPayment: number;
+  // Comparisons vs previous period
+  previousPeriodBilledPaise: number;
+  previousPeriodCollectedPaise: number;
+  billedGrowthPercent: number;
+  collectedGrowthPercent: number;
 }
 
 export type FeedbackStatus = 'new' | 'reviewed' | 'resolved';
@@ -108,12 +163,17 @@ export interface Order {
   pickup_pincode: string;
   pickup_date: string;
   pickup_slot: string;
+  pickup_latitude?: number | null;
+  pickup_longitude?: number | null;
   
   assigned_delivery_id?: string;
   assigned_delivery_name?: string;
   assigned_delivery_phone?: string;
   
-  // Weight & Pricing Snapshot
+  // Service & Pricing Snapshot
+  service_id?: string;
+  service_name?: string;
+  pricing_unit?: string;
   measured_weight?: number | null; // e.g. 4.50 kg
   billable_weight?: number | null; // e.g. MAX(4.50, 3.00) = 4.50 kg
   price_per_kg_paise: number;

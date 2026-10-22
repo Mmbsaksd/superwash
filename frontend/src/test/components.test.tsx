@@ -12,7 +12,12 @@ beforeEach(async () => {
   await LaundryService.updateSettings({
     price_per_kg_paise: 8000,
     min_weight_kg: 3.0,
-    delivery_charge_paise: 0
+    delivery_charge_paise: 0,
+    serviceable_pincodes: [
+      '560001', '560008', '560025', '560034', '560038',
+      '560066', '560075', '560076', '560095', '560099',
+      '560102', '560103'
+    ]
   });
 });
 
@@ -315,4 +320,158 @@ describe('PIN Code Coverage & Capacity Protection', () => {
     expect(secondBooking.order_number).toBe(firstBooking.order_number);
   });
 });
+
+describe('Google Maps Navigation & Directions URL', () => {
+  it('builds navigation URL prioritizing GPS coordinates when available', () => {
+    const orderWithGps: any = {
+      pickup_address: '14th Cross, 100ft Rd',
+      pickup_landmark: 'Near Metro Pillar 78',
+      pickup_pincode: '560038',
+      pickup_latitude: 12.9715987,
+      pickup_longitude: 77.5945627
+    };
+
+    const url = LaundryService.getGoogleMapsDirectionsUrl(orderWithGps);
+    expect(url).toContain('https://www.google.com/maps/dir/?api=1&destination=');
+    expect(url).toContain('12.9715987,77.5945627');
+    expect(url).toContain('travelmode=driving');
+  });
+
+  it('builds directions URL using structured address fallback when coordinates are missing', () => {
+    const orderWithoutGps: any = {
+      pickup_address: 'Flat 402, Sunshine Apartments, Indiranagar',
+      pickup_landmark: 'Opposite BDA Complex',
+      pickup_pincode: '560038'
+    };
+
+    const url = LaundryService.getGoogleMapsDirectionsUrl(orderWithoutGps);
+    expect(url).toContain('https://www.google.com/maps/dir/?api=1&destination=');
+    expect(url).toContain('Indiranagar');
+    expect(url).toContain('560038');
+    expect(url).toContain('travelmode=driving');
+  });
+});
+
+describe('Financial Payment Ledger Integrity', () => {
+  it('rejects negative or zero payment amounts', async () => {
+    const order = await LaundryService.createOrder({
+      customer_name: 'Zero Pay Tester',
+      customer_phone: '9876543201',
+      pickup_address: 'Test Address',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-22',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+    await LaundryService.enterMeasuredWeight(order.id, 4.0); // 32000 paise
+
+    await expect(
+      LaundryService.recordPayment(order.id, 0, 'cash')
+    ).rejects.toThrow(/greater than zero/i);
+
+    await expect(
+      LaundryService.recordPayment(order.id, -500, 'cash')
+    ).rejects.toThrow(/greater than zero/i);
+  });
+
+  it('prevents overpayments exceeding remaining order balance', async () => {
+    const order = await LaundryService.createOrder({
+      customer_name: 'Overpay Tester',
+      customer_phone: '9876543202',
+      pickup_address: 'Test Address 2',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-22',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+    await LaundryService.enterMeasuredWeight(order.id, 4.0); // 32000 paise bill
+
+    // Attempting to pay 40000 paise should reject
+    await expect(
+      LaundryService.recordPayment(order.id, 40000, 'cash')
+    ).rejects.toThrow(/exceeds the remaining balance/i);
+  });
+
+  it('requires a valid transaction reference for manual UPI payment', async () => {
+    const order = await LaundryService.createOrder({
+      customer_name: 'UPI Tester',
+      customer_phone: '9876543203',
+      pickup_address: 'Test Address 3',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-22',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+    await LaundryService.enterMeasuredWeight(order.id, 3.0); // 24000 paise
+
+    await expect(
+      LaundryService.recordPayment(order.id, 24000, 'upi_manual', '')
+    ).rejects.toThrow(/valid UPI transaction reference/i);
+
+    const validUpi = await LaundryService.recordPayment(order.id, 24000, 'upi_manual', '123456789012');
+    expect(validUpi.payment_status).toBe('paid');
+  });
+});
+
+describe('Service Areas & Dynamic Coverage Management', () => {
+  it('allows owner to add new service areas with 6-digit PIN validation', async () => {
+    await expect(
+      LaundryService.addServiceArea({
+        pincode: '560',
+        area_name: 'Short PIN',
+        city: 'Bengaluru',
+        state: 'Karnataka',
+        is_active: true
+      })
+    ).rejects.toThrow(/valid 6-digit Indian PIN/i);
+
+    const added = await LaundryService.addServiceArea({
+      pincode: '560076',
+      area_name: 'BTM Layout 2nd Stage',
+      city: 'Bengaluru',
+      state: 'Karnataka',
+      is_active: true
+    });
+    expect(added.id).toBeDefined();
+    expect(added.pincode).toBe('560076');
+    expect(added.is_active).toBe(true);
+
+    // Verify that the newly added PIN code is immediately serviceable
+    expect(await LaundryService.isPincodeServiceable('560076')).toBe(true);
+  });
+
+  it('allows deactivating and activating service areas dynamically', async () => {
+    const area = await LaundryService.addServiceArea({
+      pincode: '560099',
+      area_name: 'Electronic City Phase 2',
+      city: 'Bengaluru',
+      state: 'Karnataka',
+      is_active: true
+    });
+
+    expect(await LaundryService.isPincodeServiceable('560099')).toBe(true);
+
+    // Deactivate area
+    await LaundryService.updateServiceArea(area.id, { is_active: false });
+    expect(await LaundryService.isPincodeServiceable('560099')).toBe(false);
+
+    // Reactivate area
+    await LaundryService.updateServiceArea(area.id, { is_active: true });
+    expect(await LaundryService.isPincodeServiceable('560099')).toBe(true);
+  });
+});
+
+describe('Period Analytics Calculations in Asia/Kolkata', () => {
+  it('computes period analytics with operations and financial totals without division by zero', async () => {
+    const analytics = await LaundryService.getPeriodAnalytics('today');
+    expect(analytics).toBeDefined();
+    expect(analytics.period).toBe('today');
+    expect(analytics.startDate).toBeDefined();
+    expect(analytics.endDate).toBeDefined();
+    expect(typeof analytics.ordersBooked).toBe('number');
+    expect(typeof analytics.billedOrderValuePaise).toBe('number');
+    expect(typeof analytics.actualCollectedPaise).toBe('number');
+    expect(typeof analytics.outstandingBalancePaise).toBe('number');
+    expect(typeof analytics.billedGrowthPercent).toBe('number');
+    expect(typeof analytics.collectedGrowthPercent).toBe('number');
+  });
+});
+
 

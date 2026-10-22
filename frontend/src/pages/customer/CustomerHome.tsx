@@ -28,6 +28,10 @@ export const CustomerHome: React.FC = () => {
   const [newAddressLine, setNewAddressLine] = useState<string>('');
   const [newLandmark, setNewLandmark] = useState<string>('');
   const [newPincode, setNewPincode] = useState<string>('560103');
+  const [newLatitude, setNewLatitude] = useState<number | null>(null);
+  const [newLongitude, setNewLongitude] = useState<number | null>(null);
+  const [isLocating, setIsLocating] = useState<boolean>(false);
+
   const [pickupDate, setPickupDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [selectedSlotName, setSelectedSlotName] = useState<string>('');
   const [customerPhone, setCustomerPhone] = useState<string>(currentUser?.phone || '');
@@ -44,6 +48,27 @@ export const CustomerHome: React.FC = () => {
   useEffect(() => {
     loadData();
   }, [currentUser]);
+
+  const handleGetCurrentLocation = () => {
+    if (!navigator.geolocation) {
+      alert('Geolocation is not supported by your browser.');
+      return;
+    }
+    setIsLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setNewLatitude(pos.coords.latitude);
+        setNewLongitude(pos.coords.longitude);
+        setIsLocating(false);
+      },
+      (err) => {
+        console.warn('Geolocation error:', err);
+        setIsLocating(false);
+        alert('Could not retrieve current location. Please enter your address manually.');
+      },
+      { timeout: 8000, enableHighAccuracy: true }
+    );
+  };
 
   const loadData = async () => {
     setIsLoading(true);
@@ -91,6 +116,8 @@ export const CustomerHome: React.FC = () => {
     let addressLine = '';
     let landmark = '';
     let pincode = '';
+    let latitude: number | null = null;
+    let longitude: number | null = null;
 
     if (isEnteringNewAddress || addresses.length === 0) {
       if (!newAddressLine.trim()) {
@@ -100,6 +127,8 @@ export const CustomerHome: React.FC = () => {
       addressLine = newAddressLine.trim();
       landmark = newLandmark.trim();
       pincode = newPincode.trim() || '560001';
+      latitude = newLatitude;
+      longitude = newLongitude;
 
       if (currentUser) {
         try {
@@ -109,6 +138,8 @@ export const CustomerHome: React.FC = () => {
             address_line: addressLine,
             landmark,
             pincode,
+            latitude,
+            longitude,
             is_default: addresses.length === 0
           });
           setAddresses((prev) => [...prev, savedAddr]);
@@ -127,6 +158,8 @@ export const CustomerHome: React.FC = () => {
       addressLine = chosen.address_line;
       landmark = chosen.landmark || '';
       pincode = chosen.pincode;
+      latitude = chosen.latitude || null;
+      longitude = chosen.longitude || null;
     }
 
     if (!selectedSlotName) {
@@ -146,6 +179,8 @@ export const CustomerHome: React.FC = () => {
         pickup_pincode: pincode,
         pickup_date: pickupDate,
         pickup_slot: selectedSlotName,
+        pickup_latitude: latitude,
+        pickup_longitude: longitude,
       });
 
       setBookingSuccessOrder(order);
@@ -351,6 +386,22 @@ export const CustomerHome: React.FC = () => {
                         className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-medium"
                         required
                       />
+                      <div className="flex items-center justify-between pt-0.5">
+                        <button
+                          type="button"
+                          onClick={handleGetCurrentLocation}
+                          disabled={isLocating}
+                          className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 px-3 py-1.5 rounded-lg border border-brand-200 transition"
+                        >
+                          <MapPin className="w-3.5 h-3.5 text-brand-600" />
+                          <span>{isLocating ? 'Locating...' : '📍 Use current location'}</span>
+                        </button>
+                        {newLatitude && newLongitude && (
+                          <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
+                            ✓ GPS Attached
+                          </span>
+                        )}
+                      </div>
                       <div className="grid grid-cols-2 gap-2">
                         <input
                           type="text"

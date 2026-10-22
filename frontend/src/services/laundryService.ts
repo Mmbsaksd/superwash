@@ -1,10 +1,24 @@
 import {
   Order, OrderStatus, PaymentStatus, PaymentMethod, BusinessSettings,
   PickupSlot, Profile, CustomerAddress, Payment, WeightChangeHistory, OrderStatusHistory,
-  OrderFeedback, FeedbackStatus, FeedbackSummaryMetrics
+  OrderFeedback, FeedbackStatus, FeedbackSummaryMetrics,
+  ServiceArea, LaundryServiceItem, PeriodFilter, DashboardPeriodAnalytics
 } from '../types';
 import { supabase, isSupabaseConfigured } from './supabase';
 import { WhatsAppService } from './whatsappService';
+
+export const isLiveMode = isSupabaseConfigured && import.meta.env.VITE_DEMO_MODE !== 'true';
+
+const generateUUID = (): string => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+};
 
 // Default Business Settings
 const DEFAULT_SETTINGS: BusinessSettings = {
@@ -25,6 +39,29 @@ const DEFAULT_SLOTS: PickupSlot[] = [
   { id: 'slot-2', name: 'Noon (11:00 AM - 02:00 PM)', start_time: '11:00', end_time: '14:00', max_capacity: 15, is_active: true },
   { id: 'slot-3', name: 'Afternoon (02:00 PM - 05:00 PM)', start_time: '14:00', end_time: '17:00', max_capacity: 15, is_active: true },
   { id: 'slot-4', name: 'Evening (05:00 PM - 08:00 PM)', start_time: '17:00', end_time: '20:00', max_capacity: 15, is_active: true },
+];
+
+export const DEFAULT_SERVICE_AREAS: ServiceArea[] = [
+  { id: 'sa-1', pincode: '560038', area_name: 'Indiranagar', city: 'Bengaluru', state: 'Karnataka', is_active: true },
+  { id: 'sa-2', pincode: '560008', area_name: 'Ulsoor / Halasuru', city: 'Bengaluru', state: 'Karnataka', is_active: true },
+  { id: 'sa-3', pincode: '560103', area_name: 'Bellandur', city: 'Bengaluru', state: 'Karnataka', is_active: true },
+  { id: 'sa-4', pincode: '560075', area_name: 'HAL / Airport Road', city: 'Bengaluru', state: 'Karnataka', is_active: true },
+  { id: 'sa-5', pincode: '560001', area_name: 'MG Road / Central Bengaluru', city: 'Bengaluru', state: 'Karnataka', is_active: true },
+  { id: 'sa-6', pincode: '560066', area_name: 'Whitefield', city: 'Bengaluru', state: 'Karnataka', is_active: true },
+  { id: 'sa-7', pincode: '560037', area_name: 'Marathahalli', city: 'Bengaluru', state: 'Karnataka', is_active: true },
+];
+
+export const DEFAULT_SERVICES: LaundryServiceItem[] = [
+  {
+    id: 'srv-1',
+    name: 'Wash & Fold (Normal)',
+    description: 'Everyday clothes washed with premium gentle detergent, tumble-dried, and neatly steam-iron folded',
+    pricing_unit: 'per_kg',
+    unit_price_paise: 8000,
+    min_weight_kg: 3.0,
+    is_active: true,
+    display_order: 1
+  }
 ];
 
 // Pre-seeded Profiles for 4 Roles
@@ -74,6 +111,8 @@ const STORAGE_KEYS = {
   WEIGHT_HISTORY: 'superwash_weight_history',
   STATUS_HISTORY: 'superwash_status_history',
   FEEDBACK: 'superwash_feedback',
+  SERVICE_AREAS: 'superwash_service_areas',
+  SERVICES: 'superwash_services',
 };
 
 // Initial Sample Orders
@@ -226,11 +265,12 @@ export class LaundryService {
   // Customer Addresses
   // ----------------------------------------------------
   static async getAddresses(userId: string): Promise<CustomerAddress[]> {
-    if (isSupabaseConfigured) {
-      try {
-        const { data } = await supabase.from('customer_addresses').select('*').eq('user_id', userId);
-        if (data) return data;
-      } catch {}
+    if (isLiveMode) {
+      const { data, error } = await supabase.from('customer_addresses').select('*').eq('user_id', userId);
+      if (error) {
+        throw new Error(`Failed to load saved addresses: ${error.message}`);
+      }
+      return data || [];
     }
 
     const saved = localStorage.getItem(`${STORAGE_KEYS.ADDRESSES}_${userId}`);
@@ -245,6 +285,8 @@ export class LaundryService {
         address_line: 'Flat 402, Green Glen Layout, Bellandur',
         landmark: 'Near Central Mall',
         pincode: '560103',
+        latitude: 12.9260,
+        longitude: 77.6762,
         is_default: true,
         created_at: new Date().toISOString()
       }
@@ -254,14 +296,16 @@ export class LaundryService {
   static async saveAddress(address: Omit<CustomerAddress, 'id'>): Promise<CustomerAddress> {
     const newAddress: CustomerAddress = {
       ...address,
-      id: `addr-${Date.now()}`
+      id: generateUUID(),
+      created_at: new Date().toISOString()
     };
 
-    if (isSupabaseConfigured) {
-      try {
-        const { data } = await supabase.from('customer_addresses').insert(newAddress).select().single();
-        if (data) return data;
-      } catch {}
+    if (isLiveMode) {
+      const { data, error } = await supabase.from('customer_addresses').insert(newAddress).select().single();
+      if (error) {
+        throw new Error(`Failed to save address: ${error.message}`);
+      }
+      return data || newAddress;
     }
 
     const list = await this.getAddresses(address.user_id);
@@ -274,13 +318,12 @@ export class LaundryService {
   // Order Operations
   // ----------------------------------------------------
   static async getOrders(): Promise<Order[]> {
-    if (isSupabaseConfigured) {
-      try {
-        const { data } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
-        if (data && data.length > 0) return data;
-      } catch (e) {
-        console.warn('Falling back to local orders cache:', e);
+    if (isLiveMode) {
+      const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
+      if (error) {
+        throw new Error(`Failed to fetch orders from database: ${error.message}`);
       }
+      return data || []; // Authoritative empty list when real database has 0 orders
     }
 
     const saved = localStorage.getItem(STORAGE_KEYS.ORDERS);
@@ -305,18 +348,26 @@ export class LaundryService {
     pickup_pincode: string;
     pickup_date: string;
     pickup_slot: string;
+    pickup_latitude?: number | null;
+    pickup_longitude?: number | null;
     notes?: string;
   }): Promise<Order> {
+    // 1. Coverage validation: Authoritatively check PIN code serviceability
+    const isServiceable = await this.isPincodeServiceable(data.pickup_pincode);
+    if (!isServiceable) {
+      throw new Error(`PIN code ${data.pickup_pincode} is currently outside our service coverage. Please verify your PIN code or contact support.`);
+    }
+
     const settings = await this.getSettings();
     const existingOrders = await this.getOrders();
 
-    // Check slot capacity
+    // 2. Check slot capacity
     const slotCheck = await this.checkSlotAvailability(data.pickup_date, data.pickup_slot);
     if (!slotCheck.available) {
       throw new Error(`The pickup slot '${data.pickup_slot}' on ${data.pickup_date} is fully booked (${slotCheck.bookedCount}/${slotCheck.maxCapacity}). Please choose another slot.`);
     }
 
-    // Anti-duplicate protection: check if identical booking created in last 15 seconds
+    // 3. Anti-duplicate protection: check if identical booking created in last 15 seconds
     const now = Date.now();
     const duplicate = existingOrders.find(o => 
       o.customer_phone.replace(/[^0-9]/g, '') === data.customer_phone.replace(/[^0-9]/g, '') &&
@@ -331,7 +382,7 @@ export class LaundryService {
     const orderNumber = `SW-${1000 + existingOrders.length + 1}`;
 
     const newOrder: Order = {
-      id: `ord-${Date.now()}`,
+      id: generateUUID(),
       order_number: orderNumber,
       customer_id: data.customer_id,
       customer_name: data.customer_name,
@@ -341,8 +392,12 @@ export class LaundryService {
       pickup_pincode: data.pickup_pincode,
       pickup_date: data.pickup_date,
       pickup_slot: data.pickup_slot,
+      pickup_latitude: data.pickup_latitude || null,
+      pickup_longitude: data.pickup_longitude || null,
       
-      // Price snapshots (immutable once booked)
+      // Extensible Service & Pricing Snapshots (immutable once booked)
+      service_name: 'Wash & Fold (Normal)',
+      pricing_unit: 'per_kg',
       price_per_kg_paise: settings.price_per_kg_paise,
       min_weight_kg: settings.min_weight_kg,
       delivery_charge_paise: settings.delivery_charge_paise,
@@ -361,12 +416,12 @@ export class LaundryService {
       updated_at: new Date().toISOString()
     };
 
-    if (isSupabaseConfigured) {
-      try {
-        await supabase.from('orders').insert(newOrder);
-      } catch (e) {
-        console.warn('Supabase booking insert error:', e);
+    if (isLiveMode) {
+      const { data: inserted, error } = await supabase.from('orders').insert(newOrder).select().single();
+      if (error) {
+        throw new Error(`Failed to save booking to database: ${error.message}`);
       }
+      return inserted || newOrder;
     }
 
     const updatedList = [newOrder, ...existingOrders];
@@ -570,6 +625,23 @@ export class LaundryService {
   }
 
   // ----------------------------------------------------
+  // Maps & Navigation URL Helper
+  // ----------------------------------------------------
+  static getGoogleMapsDirectionsUrl(order: Order): string {
+    if (order.pickup_latitude && order.pickup_longitude) {
+      return `https://www.google.com/maps/dir/?api=1&destination=${order.pickup_latitude},${order.pickup_longitude}&travelmode=driving`;
+    }
+    const destinationParts = [
+      order.pickup_address,
+      order.pickup_landmark,
+      order.pickup_pincode,
+      'Bengaluru',
+      'Karnataka'
+    ].filter(Boolean).join(', ');
+    return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destinationParts)}&travelmode=driving`;
+  }
+
+  // ----------------------------------------------------
   // Payment Recording (Cash / Manual UPI)
   // ----------------------------------------------------
   static async recordPayment(
@@ -580,13 +652,26 @@ export class LaundryService {
     notes?: string,
     recordedByName?: string
   ): Promise<Order & { payment: Payment }> {
+    if (!amountPaise || amountPaise <= 0) {
+      throw new Error('Payment amount must be a positive value greater than zero.');
+    }
+
     const orders = await this.getOrders();
     const order = orders.find(o => o.id === orderId);
     if (!order) throw new Error('Order not found');
 
     const totalDue = order.total_amount_paise || 0;
-    const newPaidAmount = order.paid_amount_paise + amountPaise;
+    const remainingBalance = Math.max(0, totalDue - order.paid_amount_paise);
 
+    if (totalDue > 0 && amountPaise > remainingBalance) {
+      throw new Error(`Payment amount (₹${amountPaise / 100}) exceeds the remaining balance of ₹${remainingBalance / 100}.`);
+    }
+
+    if (paymentMethod === 'upi_manual' && (!transactionReference || transactionReference.trim().length < 4)) {
+      throw new Error('A valid UPI transaction reference (UTR) is required for manual UPI verification.');
+    }
+
+    const newPaidAmount = order.paid_amount_paise + amountPaise;
     order.paid_amount_paise = newPaidAmount;
     order.payment_method = paymentMethod;
 
@@ -599,15 +684,31 @@ export class LaundryService {
     order.updated_at = new Date().toISOString();
 
     const payment: Payment = {
-      id: `pay-${Date.now()}`,
+      id: generateUUID(),
       order_id: order.id,
       amount_paise: amountPaise,
       payment_method: paymentMethod,
-      transaction_reference: transactionReference,
-      notes,
+      transaction_reference: transactionReference?.trim(),
+      notes: notes?.trim(),
       recorded_by: recordedByName,
       created_at: new Date().toISOString()
     };
+
+    if (isLiveMode) {
+      const { error: payError } = await supabase.from('payments').insert(payment);
+      if (payError) {
+        throw new Error(`Failed to record payment in database ledger: ${payError.message}`);
+      }
+      const { error: orderError } = await supabase.from('orders').update({
+        paid_amount_paise: order.paid_amount_paise,
+        payment_status: order.payment_status,
+        payment_method: order.payment_method,
+        updated_at: order.updated_at
+      }).eq('id', order.id);
+      if (orderError) {
+        throw new Error(`Failed to update order payment balance: ${orderError.message}`);
+      }
+    }
 
     const prevPayments = JSON.parse(localStorage.getItem(STORAGE_KEYS.PAYMENTS) || '[]');
     localStorage.setItem(STORAGE_KEYS.PAYMENTS, JSON.stringify([payment, ...prevPayments]));
@@ -678,6 +779,8 @@ export class LaundryService {
     pickup_pincode: string;
     pickup_date: string;
     pickup_slot: string;
+    pickup_latitude?: number | null;
+    pickup_longitude?: number | null;
     notes?: string;
   }): Promise<Order> {
     return this.createBooking(data);
@@ -750,10 +853,98 @@ export class LaundryService {
   }
 
   // ----------------------------------------------------
-  // Coverage & Capacity Validation
+  // Service Areas Management (Dedicated Table & Validation)
   // ----------------------------------------------------
+  static async getServiceAreas(): Promise<ServiceArea[]> {
+    if (isLiveMode) {
+      const { data, error } = await supabase.from('service_areas').select('*').order('pincode', { ascending: true });
+      if (error) throw new Error(`Failed to load service areas: ${error.message}`);
+      return data || [];
+    }
+
+    const saved = localStorage.getItem(STORAGE_KEYS.SERVICE_AREAS);
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
+    }
+    localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(DEFAULT_SERVICE_AREAS));
+    return DEFAULT_SERVICE_AREAS;
+  }
+
+  static async addServiceArea(data: Omit<ServiceArea, 'id' | 'created_at' | 'updated_at'>): Promise<ServiceArea> {
+    const cleanPin = (data.pincode || '').trim().replace(/[^0-9]/g, '');
+    if (cleanPin.length !== 6) {
+      throw new Error('Please enter a valid 6-digit Indian PIN code.');
+    }
+
+    const areaName = (data.area_name || (data as any).name || '').trim();
+    if (!areaName) {
+      throw new Error('Please provide an area or locality name.');
+    }
+
+    const areas = await this.getServiceAreas();
+    if (areas.some(a => a.pincode === cleanPin)) {
+      throw new Error(`PIN code ${cleanPin} is already registered.`);
+    }
+
+    const newArea: ServiceArea = {
+      id: generateUUID(),
+      pincode: cleanPin,
+      area_name: areaName,
+      name: areaName,
+      city: (data.city || 'Bengaluru').trim(),
+      state: (data.state || 'Karnataka').trim(),
+      is_active: data.is_active !== undefined ? data.is_active : true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    if (isLiveMode) {
+      const { data: inserted, error } = await supabase.from('service_areas').insert(newArea).select().single();
+      if (error) throw new Error(`Failed to save service area: ${error.message}`);
+      return inserted || newArea;
+    }
+
+    const updated = [...areas, newArea];
+    localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(updated));
+    return newArea;
+  }
+
+  static async updateServiceArea(id: string, updates: Partial<ServiceArea>): Promise<ServiceArea> {
+    const areas = await this.getServiceAreas();
+    const item = areas.find(a => a.id === id);
+    if (!item) throw new Error('Service area not found');
+
+    const updatedItem = {
+      ...item,
+      ...updates,
+      updated_at: new Date().toISOString()
+    };
+
+    if (isLiveMode) {
+      const { data: updatedDb, error } = await supabase.from('service_areas').update(updatedItem).eq('id', id).select().single();
+      if (error) throw new Error(`Failed to update service area: ${error.message}`);
+      return updatedDb || updatedItem;
+    }
+
+    const updatedList = areas.map(a => a.id === id ? updatedItem : a);
+    localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(updatedList));
+    return updatedItem;
+  }
+
   static async isPincodeServiceable(pincode: string): Promise<boolean> {
     const cleanPin = pincode.trim().replace(/[^0-9]/g, '');
+    if (cleanPin.length !== 6) return false;
+
+    try {
+      const areas = await this.getServiceAreas();
+      if (areas && areas.length > 0) {
+        const found = areas.find(a => a.pincode === cleanPin);
+        if (found) {
+          return found.is_active;
+        }
+      }
+    } catch {}
+
     const settings = await this.getSettings();
     const supported = settings.serviceable_pincodes || ['560038', '560008', '560103', '560075', '560001', '560066', '560037'];
     return supported.includes(cleanPin);
@@ -772,6 +963,216 @@ export class LaundryService {
       available: bookedCount < maxCapacity,
       bookedCount,
       maxCapacity
+    };
+  }
+
+  // ----------------------------------------------------
+  // Services Catalog Management
+  // ----------------------------------------------------
+  static async getServices(): Promise<LaundryServiceItem[]> {
+    if (isLiveMode) {
+      const { data, error } = await supabase.from('services').select('*').order('display_order', { ascending: true });
+      if (error) throw new Error(`Failed to load services: ${error.message}`);
+      return data || [];
+    }
+
+    const saved = localStorage.getItem(STORAGE_KEYS.SERVICES);
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
+    }
+    localStorage.setItem(STORAGE_KEYS.SERVICES, JSON.stringify(DEFAULT_SERVICES));
+    return DEFAULT_SERVICES;
+  }
+
+  static async updateService(id: string, updates: Partial<LaundryServiceItem>): Promise<LaundryServiceItem> {
+    const services = await this.getServices();
+    const item = services.find(s => s.id === id);
+    if (!item) throw new Error('Service not found');
+
+    const updatedItem = { ...item, ...updates, updated_at: new Date().toISOString() };
+
+    if (isLiveMode) {
+      const { data: updatedDb, error } = await supabase.from('services').update(updatedItem).eq('id', id).select().single();
+      if (error) throw new Error(`Failed to update service: ${error.message}`);
+      return updatedDb || updatedItem;
+    }
+
+    const updatedList = services.map(s => s.id === id ? updatedItem : s);
+    localStorage.setItem(STORAGE_KEYS.SERVICES, JSON.stringify(updatedList));
+    return updatedItem;
+  }
+
+  // ----------------------------------------------------
+  // Sales & Operations Period Analytics (Asia/Kolkata Business Timezone)
+  // ----------------------------------------------------
+  static async getPeriodAnalytics(
+    period: PeriodFilter,
+    customStart?: string,
+    customEnd?: string
+  ): Promise<DashboardPeriodAnalytics> {
+    const [orders, allPayments] = await Promise.all([
+      this.getOrders(),
+      this.getAllPayments()
+    ]);
+
+    // Format YYYY-MM-DD in Asia/Kolkata
+    const getISTDate = (d: Date): string => {
+      return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d);
+    };
+
+    const now = new Date();
+    const todayStr = getISTDate(now);
+    const d = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+
+    let startDate = todayStr;
+    let endDate = todayStr;
+    let prevStartDate = todayStr;
+    let prevEndDate = todayStr;
+
+    if (period === 'today') {
+      startDate = todayStr;
+      endDate = todayStr;
+      const y = new Date(d);
+      y.setDate(y.getDate() - 1);
+      prevStartDate = getISTDate(y);
+      prevEndDate = prevStartDate;
+    } else if (period === 'yesterday') {
+      const y = new Date(d);
+      y.setDate(y.getDate() - 1);
+      startDate = getISTDate(y);
+      endDate = startDate;
+      const dayBefore = new Date(d);
+      dayBefore.setDate(dayBefore.getDate() - 2);
+      prevStartDate = getISTDate(dayBefore);
+      prevEndDate = prevStartDate;
+    } else if (period === 'this_week') {
+      const dayOfWeek = (d.getDay() + 6) % 7;
+      const mon = new Date(d);
+      mon.setDate(mon.getDate() - dayOfWeek);
+      startDate = getISTDate(mon);
+      endDate = todayStr;
+      const prevMon = new Date(mon);
+      prevMon.setDate(prevMon.getDate() - 7);
+      const prevSun = new Date(mon);
+      prevSun.setDate(prevSun.getDate() - 1);
+      prevStartDate = getISTDate(prevMon);
+      prevEndDate = getISTDate(prevSun);
+    } else if (period === 'last_week') {
+      const dayOfWeek = (d.getDay() + 6) % 7;
+      const thisMon = new Date(d);
+      thisMon.setDate(thisMon.getDate() - dayOfWeek);
+      const lastMon = new Date(thisMon);
+      lastMon.setDate(lastMon.getDate() - 7);
+      const lastSun = new Date(thisMon);
+      lastSun.setDate(lastSun.getDate() - 1);
+      startDate = getISTDate(lastMon);
+      endDate = getISTDate(lastSun);
+      const prevLastMon = new Date(lastMon);
+      prevLastMon.setDate(prevLastMon.getDate() - 7);
+      const prevLastSun = new Date(lastMon);
+      prevLastSun.setDate(prevLastSun.getDate() - 1);
+      prevStartDate = getISTDate(prevLastMon);
+      prevEndDate = getISTDate(prevLastSun);
+    } else if (period === 'this_month') {
+      const firstDay = new Date(d.getFullYear(), d.getMonth(), 1);
+      startDate = getISTDate(firstDay);
+      endDate = todayStr;
+      const prevMonthFirst = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+      const prevMonthLast = new Date(d.getFullYear(), d.getMonth(), 0);
+      prevStartDate = getISTDate(prevMonthFirst);
+      prevEndDate = getISTDate(prevMonthLast);
+    } else if (period === 'last_month') {
+      const prevMonthFirst = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+      const prevMonthLast = new Date(d.getFullYear(), d.getMonth(), 0);
+      startDate = getISTDate(prevMonthFirst);
+      endDate = getISTDate(prevMonthLast);
+      const twoMonthsAgoFirst = new Date(d.getFullYear(), d.getMonth() - 2, 1);
+      const twoMonthsAgoLast = new Date(d.getFullYear(), d.getMonth() - 1, 0);
+      prevStartDate = getISTDate(twoMonthsAgoFirst);
+      prevEndDate = getISTDate(twoMonthsAgoLast);
+    } else if (period === 'custom' && customStart && customEnd) {
+      startDate = customStart;
+      endDate = customEnd;
+      prevStartDate = customStart;
+      prevEndDate = customEnd;
+    }
+
+    const orderInPeriod = (o: Order, start: string, end: string) => {
+      const dt = o.pickup_date || o.created_at.slice(0, 10);
+      return dt >= start && dt <= end;
+    };
+
+    const paymentInPeriod = (p: Payment, start: string, end: string) => {
+      const dt = p.created_at.slice(0, 10);
+      return dt >= start && dt <= end;
+    };
+
+    const currentOrders = orders.filter(o => orderInPeriod(o, startDate, endDate));
+    const prevOrders = orders.filter(o => orderInPeriod(o, prevStartDate, prevEndDate));
+
+    // Operational Metrics
+    const ordersBooked = currentOrders.length;
+    const ordersInProgress = orders.filter(o => 
+      ['pickup_assigned', 'collected', 'washing', 'ready_for_delivery', 'out_for_delivery'].includes(o.order_status)
+    ).length;
+    const ordersDelivered = currentOrders.filter(o => o.order_status === 'delivered').length;
+    const ordersCancelled = currentOrders.filter(o => o.order_status === 'cancelled').length;
+    const ordersAwaitingWeight = orders.filter(o => 
+      o.order_status !== 'cancelled' && (o.measured_weight === null || o.measured_weight === undefined)
+    ).length;
+    const ordersReadyForDelivery = orders.filter(o => o.order_status === 'ready_for_delivery').length;
+
+    // Financial Metrics
+    const nonCancelledCurrent = currentOrders.filter(o => o.order_status !== 'cancelled');
+    const billedOrderValuePaise = nonCancelledCurrent.reduce((acc, o) => acc + (o.total_amount_paise || 0), 0);
+
+    const nonCancelledPrev = prevOrders.filter(o => o.order_status !== 'cancelled');
+    const previousPeriodBilledPaise = nonCancelledPrev.reduce((acc, o) => acc + (o.total_amount_paise || 0), 0);
+
+    const currentPayments = allPayments.filter(p => paymentInPeriod(p, startDate, endDate));
+    const prevPayments = allPayments.filter(p => paymentInPeriod(p, prevStartDate, prevEndDate));
+
+    const actualCollectedPaise = currentPayments.reduce((acc, p) => acc + p.amount_paise, 0);
+    const previousPeriodCollectedPaise = prevPayments.reduce((acc, p) => acc + p.amount_paise, 0);
+
+    const cashCollectedPaise = currentPayments.filter(p => p.payment_method === 'cash').reduce((acc, p) => acc + p.amount_paise, 0);
+    const upiCollectedPaise = currentPayments.filter(p => p.payment_method === 'upi_manual').reduce((acc, p) => acc + p.amount_paise, 0);
+
+    const nonCancelledAll = orders.filter(o => o.order_status !== 'cancelled');
+    const outstandingBalancePaise = nonCancelledAll.reduce((acc, o) => {
+      const bill = o.total_amount_paise || 0;
+      return acc + Math.max(0, bill - o.paid_amount_paise);
+    }, 0);
+
+    const ordersAwaitingPayment = nonCancelledAll.filter(o => 
+      o.payment_status !== 'paid' && (o.total_amount_paise || 0) > 0
+    ).length;
+
+    const calcGrowth = (curr: number, prev: number): number => {
+      if (prev === 0) return curr > 0 ? 100 : 0;
+      return Number((((curr - prev) / prev) * 100).toFixed(1));
+    };
+
+    return {
+      period,
+      startDate,
+      endDate,
+      ordersBooked,
+      ordersInProgress,
+      ordersDelivered,
+      ordersCancelled,
+      ordersAwaitingWeight,
+      ordersReadyForDelivery,
+      billedOrderValuePaise,
+      actualCollectedPaise,
+      outstandingBalancePaise,
+      cashCollectedPaise,
+      upiCollectedPaise,
+      ordersAwaitingPayment,
+      previousPeriodBilledPaise,
+      previousPeriodCollectedPaise,
+      billedGrowthPercent: calcGrowth(billedOrderValuePaise, previousPeriodBilledPaise),
+      collectedGrowthPercent: calcGrowth(actualCollectedPaise, previousPeriodCollectedPaise)
     };
   }
 

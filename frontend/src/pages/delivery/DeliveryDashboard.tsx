@@ -6,7 +6,7 @@ import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
 import { PaymentModal } from '../../components/PaymentModal';
 import {
   Phone, MapPin, CheckCircle, Package, Truck,
-  AlertCircle, DollarSign, RefreshCw, X, Search, Calendar
+  AlertCircle, IndianRupee, RefreshCw, X, Search, Calendar
 } from 'lucide-react';
 
 export const DeliveryDashboard: React.FC = () => {
@@ -245,13 +245,14 @@ export const DeliveryDashboard: React.FC = () => {
                           </a>
 
                           <a
-                            href={`https://www.google.com/maps/search/?api=1&query=${mapQuery}`}
+                            href={LaundryService.getGoogleMapsDirectionsUrl(order)}
                             target="_blank"
                             rel="noreferrer"
                             className="py-2.5 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl font-bold flex items-center justify-center gap-1.5 transition text-center"
+                            title="Open driving directions in Google Maps"
                           >
                             <MapPin className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                            <span>Maps</span>
+                            <span>Directions</span>
                           </a>
                         </div>
                       </div>
@@ -342,13 +343,14 @@ export const DeliveryDashboard: React.FC = () => {
                           </a>
 
                           <a
-                            href={`https://www.google.com/maps/search/?api=1&query=${mapQuery}`}
+                            href={LaundryService.getGoogleMapsDirectionsUrl(order)}
                             target="_blank"
                             rel="noreferrer"
                             className="py-2.5 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl font-bold flex items-center justify-center gap-1.5 transition text-center"
+                            title="Open driving directions in Google Maps"
                           >
                             <MapPin className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                            <span>Maps</span>
+                            <span>Directions</span>
                           </a>
                         </div>
                       </div>
@@ -360,7 +362,7 @@ export const DeliveryDashboard: React.FC = () => {
                             onClick={() => setPaymentOrder(order)}
                             className="w-full py-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs rounded-xl shadow-sm transition flex items-center justify-center gap-1.5"
                           >
-                            <DollarSign className="w-4 h-4" />
+                            <IndianRupee className="w-4 h-4" />
                             <span>Collect Doorstep Payment (Cash / UPI)</span>
                           </button>
                         )}
