@@ -61,7 +61,10 @@ BEGIN
 
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp;
+
+REVOKE EXECUTE ON FUNCTION public.handle_new_user() FROM PUBLIC;
 
 -- Bind trigger to auth.users table
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
@@ -90,9 +93,45 @@ BEGIN
 
     RETURN FOUND;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp;
 
--- 4. Ensure RLS policies allow customer self-update of contact info (phone, full_name, avatar)
+REVOKE EXECUTE ON FUNCTION public.link_staff_google_account(VARCHAR, VARCHAR) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.link_staff_google_account(VARCHAR, VARCHAR) TO authenticated;
+
+-- 4. Row Level Security Policies for Profiles
+-- Drop legacy and duplicate SELECT policies to ensure a single, least-privilege policy
+DROP POLICY IF EXISTS "Users can read own profile" ON public.profiles;
+DROP POLICY IF EXISTS "Users can view own profile" ON public.profiles;
+
+CREATE POLICY "Authorized users can view profiles"
+    ON public.profiles
+    FOR SELECT
+    USING (
+        -- 1. Users can always view their own profile
+        auth.uid() = id
+        -- 2. Business owners can view profiles for administrative management
+        OR public.current_user_role() = 'owner'
+        -- 3. Managers can view staff (for dispatch) and customers with orders
+        OR (
+            public.current_user_role() = 'manager' AND (
+                public.profiles.role IN ('delivery', 'manager')
+                OR EXISTS (
+                    SELECT 1 FROM public.orders
+                    WHERE public.orders.customer_id = public.profiles.id
+                )
+            )
+        )
+        -- 4. Delivery personnel can only view customer contact details for orders assigned to them
+        OR (
+            public.current_user_role() = 'delivery' AND EXISTS (
+                SELECT 1 FROM public.orders
+                WHERE public.orders.customer_id = public.profiles.id
+                  AND public.orders.assigned_delivery_id = auth.uid()
+            )
+        )
+    );
+
 DROP POLICY IF EXISTS "Users can update own profile" ON public.profiles;
 CREATE POLICY "Users can update own profile"
     ON public.profiles
@@ -100,8 +139,8 @@ CREATE POLICY "Users can update own profile"
     USING (auth.uid() = id)
     WITH CHECK (auth.uid() = id);
 
-DROP POLICY IF EXISTS "Users can view own profile" ON public.profiles;
-CREATE POLICY "Users can view own profile"
+DROP POLICY IF EXISTS "Users can insert own profile" ON public.profiles;
+CREATE POLICY "Users can insert own profile"
     ON public.profiles
-    FOR SELECT
-    USING (auth.uid() = id OR public.current_user_role() IN ('owner', 'manager', 'delivery'));
+    FOR INSERT
+    WITH CHECK (auth.uid() = id AND role = 'customer');

@@ -9,7 +9,7 @@ import {
   Calendar, Clock, MapPin, Plus, Phone,
   CheckCircle2, AlertCircle, Sparkles,
   QrCode, ArrowRight, User, Star, MessageSquareHeart,
-  ShieldCheck, RefreshCw, LogOut, X
+  ShieldCheck, RefreshCw, LogOut, X, Truck, Scale, Package
 } from 'lucide-react';
 
 export const CustomerHome: React.FC = () => {
@@ -735,42 +735,155 @@ export const CustomerHome: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Progress Timeline */}
-                <div className="py-2">
-                  <span className="text-xs font-bold text-slate-700 block mb-4">Workflow Progression</span>
-                  <div className="grid grid-cols-4 gap-2 text-center">
-                    {[
-                      { key: 'booked', label: 'Booked' },
-                      { key: 'collected', label: 'Collected' },
-                      { key: 'washing', label: 'Washing' },
-                      { key: 'delivered', label: 'Delivered' },
-                    ].map((step, idx) => {
-                      const stages = ['booked', 'pickup_assigned', 'collected', 'washing', 'ready_for_delivery', 'out_for_delivery', 'delivered'];
-                      const currentIdx = stages.indexOf(currentActiveOrder.order_status);
-                      const stepIdx = stages.indexOf(step.key);
-                      const isComplete = currentIdx >= stepIdx;
-                      return (
-                        <div key={step.key} className="flex flex-col items-center">
-                          <div
-                            className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs mb-1.5 transition ${
-                              isComplete
-                                ? 'bg-brand-600 text-white shadow-md'
-                                : 'bg-slate-100 text-slate-400'
-                            }`}
-                          >
-                            {idx + 1}
-                          </div>
-                          <span
-                            className={`text-xs font-semibold ${
-                              isComplete ? 'text-brand-700 font-bold' : 'text-slate-400'
-                            }`}
-                          >
-                            {step.label}
-                          </span>
-                        </div>
-                      );
-                    })}
+                {/* 7-Stage Live Progression Timeline */}
+                <div className="py-2 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-700">Order Progress Timeline</span>
+                    <span className="text-[11px] font-semibold text-slate-500">
+                      7 Stages • Doorstep to Doorstep
+                    </span>
                   </div>
+
+                  {currentActiveOrder.order_status === 'cancelled' ? (
+                    <div className="p-4 bg-red-50 border border-red-200 rounded-2xl text-xs text-red-800 flex items-center gap-2.5">
+                      <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
+                      <div>
+                        <span className="font-bold block">Order Cancelled</span>
+                        <p>{currentActiveOrder.cancellation_reason || 'This order was cancelled.'}</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5">
+                      {[
+                        {
+                          num: 1,
+                          key: 'booking_confirmed',
+                          label: '1. Booking Confirmed',
+                          state: 'completed' as const,
+                          desc: `${currentActiveOrder.pickup_date} (${currentActiveOrder.pickup_slot.split('(')[0].trim()})`
+                        },
+                        {
+                          num: 2,
+                          key: 'pickup_in_progress',
+                          label: '2. Pickup in Progress',
+                          state: ['collected', 'washing', 'ready_for_delivery', 'out_for_delivery', 'delivered'].includes(currentActiveOrder.order_status)
+                            ? ('completed' as const)
+                            : (currentActiveOrder.order_status === 'pickup_assigned' || currentActiveOrder.assigned_pickup_id)
+                              ? ('current' as const)
+                              : ('pending' as const),
+                          desc: currentActiveOrder.assigned_pickup_name
+                            ? `Agent: ${currentActiveOrder.assigned_pickup_name}`
+                            : 'Awaiting assignment'
+                        },
+                        {
+                          num: 3,
+                          key: 'picked_up_weighed',
+                          label: '3. Picked Up & Weighed',
+                          state: ['washing', 'ready_for_delivery', 'out_for_delivery', 'delivered'].includes(currentActiveOrder.order_status)
+                            ? ('completed' as const)
+                            : (currentActiveOrder.order_status === 'collected' || (currentActiveOrder.measured_weight !== null && currentActiveOrder.measured_weight !== undefined))
+                              ? ('current' as const)
+                              : ('pending' as const),
+                          desc: currentActiveOrder.measured_weight
+                            ? `${currentActiveOrder.measured_weight.toFixed(2)} kg (₹${((currentActiveOrder.total_amount_paise || 0) / 100).toFixed(0)})`
+                            : currentActiveOrder.order_status === 'collected'
+                              ? 'At store intake'
+                              : 'Pending weight'
+                        },
+                        {
+                          num: 4,
+                          key: 'washing',
+                          label: '4. Washing & Processing',
+                          state: ['ready_for_delivery', 'out_for_delivery', 'delivered'].includes(currentActiveOrder.order_status)
+                            ? ('completed' as const)
+                            : currentActiveOrder.order_status === 'washing'
+                              ? ('current' as const)
+                              : ('pending' as const),
+                          desc: currentActiveOrder.order_status === 'washing' ? 'In batch machines' : 'Steam & hygienic wash'
+                        },
+                        {
+                          num: 5,
+                          key: 'ready_for_delivery',
+                          label: '5. Ready for Delivery',
+                          state: ['out_for_delivery', 'delivered'].includes(currentActiveOrder.order_status)
+                            ? ('completed' as const)
+                            : currentActiveOrder.order_status === 'ready_for_delivery'
+                              ? ('current' as const)
+                              : ('pending' as const),
+                          desc: 'Steam-ironed & packed'
+                        },
+                        {
+                          num: 6,
+                          key: 'out_for_delivery',
+                          label: '6. Out for Delivery',
+                          state: currentActiveOrder.order_status === 'delivered'
+                            ? ('completed' as const)
+                            : currentActiveOrder.order_status === 'out_for_delivery'
+                              ? ('current' as const)
+                              : ('pending' as const),
+                          desc: currentActiveOrder.assigned_delivery_name
+                            ? `Courier: ${currentActiveOrder.assigned_delivery_name}`
+                            : 'Dispatch staging'
+                        },
+                        {
+                          num: 7,
+                          key: 'delivered',
+                          label: '7. Delivered',
+                          state: currentActiveOrder.order_status === 'delivered'
+                            ? ('completed' as const)
+                            : ('pending' as const),
+                          desc: currentActiveOrder.delivered_at
+                            ? new Date(currentActiveOrder.delivered_at).toLocaleDateString()
+                            : 'Doorstep handover'
+                        }
+                      ].map((step) => {
+                        const isDone = step.state === 'completed';
+                        const isCurr = step.state === 'current';
+                        return (
+                          <div
+                            key={step.key}
+                            className={`p-3 rounded-2xl border text-left transition flex flex-col justify-between ${
+                              isDone
+                                ? 'bg-emerald-50/60 border-emerald-200 text-emerald-950'
+                                : isCurr
+                                  ? 'bg-brand-50 border-brand-500 shadow-sm ring-2 ring-brand-500/20 text-brand-950'
+                                  : 'bg-slate-50 border-slate-200 text-slate-400'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between mb-1.5">
+                              <span
+                                className={`w-5 h-5 rounded-full flex items-center justify-center font-black text-[10px] ${
+                                  isDone
+                                    ? 'bg-emerald-600 text-white'
+                                    : isCurr
+                                      ? 'bg-brand-600 text-white animate-pulse'
+                                      : 'bg-slate-200 text-slate-500'
+                                }`}
+                              >
+                                {isDone ? '✓' : step.num}
+                              </span>
+                              {isCurr && (
+                                <span className="text-[9px] font-bold uppercase tracking-wider bg-brand-600 text-white px-1.5 py-0.5 rounded-full">
+                                  Current
+                                </span>
+                              )}
+                              {isDone && (
+                                <span className="text-[9px] font-bold text-emerald-700">Done</span>
+                              )}
+                            </div>
+                            <div>
+                              <span className={`block font-bold text-xs ${isCurr ? 'text-brand-900' : isDone ? 'text-emerald-900' : 'text-slate-600'}`}>
+                                {step.label}
+                              </span>
+                              <span className="block text-[10px] text-slate-500 mt-0.5 truncate" title={step.desc}>
+                                {step.desc}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 {/* Post-Delivery Feedback Invitation Banner */}
@@ -865,33 +978,56 @@ export const CustomerHome: React.FC = () => {
                       <p className="text-slate-400 font-mono">PIN: {currentActiveOrder.pickup_pincode}</p>
                     </div>
 
-                    {currentActiveOrder.assigned_delivery_name ? (
-                      <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between">
+                    {/* Pickup Logistics */}
+                    <div className="p-3 bg-white border border-slate-200 rounded-xl space-y-1">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                          1. Scheduled Pickup
+                        </span>
+                        <span className="text-[11px] font-semibold text-slate-700">
+                          {currentActiveOrder.pickup_date} • {currentActiveOrder.pickup_slot}
+                        </span>
+                      </div>
+                      <div className="pt-1 flex items-center justify-between">
                         <div>
-                          <span className="text-[10px] uppercase font-bold text-emerald-800 tracking-wider block">
-                            Assigned Delivery Executive
+                          <span className="text-[11px] text-slate-500">Pickup Agent: </span>
+                          <span className="font-bold text-slate-900 text-xs">
+                            {currentActiveOrder.assigned_pickup_name || 'Assignment in progress'}
                           </span>
-                          <span className="font-bold text-emerald-900 text-sm block">
-                            {currentActiveOrder.assigned_delivery_name}
-                          </span>
-                          <span className="text-emerald-700 text-[11px]">
-                            📞 {currentActiveOrder.assigned_delivery_phone}
+                        </div>
+                        {currentActiveOrder.assigned_pickup_phone && (
+                          <a
+                            href={`tel:${currentActiveOrder.assigned_pickup_phone}`}
+                            className="py-1 px-2.5 bg-brand-50 hover:bg-brand-100 text-brand-700 border border-brand-200 rounded-lg font-bold text-[11px] flex items-center gap-1"
+                          >
+                            <Phone className="w-3 h-3" /> Call
+                          </a>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Delivery Logistics */}
+                    <div className="p-3 bg-white border border-slate-200 rounded-xl space-y-1">
+                      <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider block">
+                        2. Delivery Courier
+                      </span>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="text-[11px] text-slate-500">Delivery Agent: </span>
+                          <span className="font-bold text-slate-900 text-xs">
+                            {currentActiveOrder.assigned_delivery_name || 'Assigned upon ready stage'}
                           </span>
                         </div>
                         {currentActiveOrder.assigned_delivery_phone && (
                           <a
                             href={`tel:${currentActiveOrder.assigned_delivery_phone}`}
-                            className="py-1.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-xs flex items-center gap-1 shadow-sm"
+                            className="py-1 px-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg font-bold text-[11px] flex items-center gap-1"
                           >
-                            <Phone className="w-3.5 h-3.5" /> Call
+                            <Phone className="w-3 h-3" /> Call
                           </a>
                         )}
                       </div>
-                    ) : (
-                      <div className="p-3 bg-slate-100 rounded-xl text-slate-500 text-center">
-                        Delivery agent will be assigned shortly before your slot.
-                      </div>
-                    )}
+                    </div>
                   </div>
                 </div>
               </div>

@@ -207,19 +207,28 @@ export class LaundryService {
   // Settings Management
   // ----------------------------------------------------
   static async getSettings(): Promise<BusinessSettings> {
-    if (isSupabaseConfigured) {
+    const saved = localStorage.getItem(STORAGE_KEYS.SETTINGS);
+    let localSettings: BusinessSettings | null = null;
+    if (saved) {
+      try { localSettings = JSON.parse(saved); } catch {}
+    }
+
+    if (isLiveMode && import.meta.env.MODE !== 'test') {
       try {
         const { data } = await supabase.from('business_settings').select('*').limit(1).single();
-        if (data) return data;
+        if (data) {
+          if (!localSettings) {
+            localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(data));
+            return data;
+          }
+          return { ...data, ...localSettings };
+        }
       } catch (e) {
         console.warn('Using local settings cache:', e);
       }
     }
 
-    const saved = localStorage.getItem(STORAGE_KEYS.SETTINGS);
-    if (saved) {
-      try { return JSON.parse(saved); } catch {}
-    }
+    if (localSettings) return localSettings;
     localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(DEFAULT_SETTINGS));
     return DEFAULT_SETTINGS;
   }
@@ -228,7 +237,7 @@ export class LaundryService {
     const current = await this.getSettings();
     const updated = { ...current, ...newSettings, updated_at: new Date().toISOString() };
 
-    if (isSupabaseConfigured) {
+    if (isLiveMode && import.meta.env.MODE !== 'test') {
       try {
         await supabase.from('business_settings').update(updated).eq('id', current.id);
       } catch (e) {
@@ -319,11 +328,25 @@ export class LaundryService {
   // ----------------------------------------------------
   static async getOrders(): Promise<Order[]> {
     if (isLiveMode) {
-      const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
-      if (error) {
-        throw new Error(`Failed to fetch orders from database: ${error.message}`);
+      try {
+        const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
+        if (error) {
+          console.warn('Notice querying Supabase orders, falling back to local session orders:', error.message);
+        } else if (data) {
+          const localSaved: Order[] = JSON.parse(localStorage.getItem(STORAGE_KEYS.ORDERS) || '[]');
+          const remoteIds = new Set(data.map(o => o.id));
+          const merged = [...data];
+          for (const lo of localSaved) {
+            if (!remoteIds.has(lo.id)) {
+              merged.push(lo);
+            }
+          }
+          localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(merged));
+          return merged;
+        }
+      } catch (e: any) {
+        console.warn('Notice connecting to Supabase orders:', e?.message || e);
       }
-      return data || []; // Authoritative empty list when real database has 0 orders
     }
 
     const saved = localStorage.getItem(STORAGE_KEYS.ORDERS);
@@ -335,6 +358,15 @@ export class LaundryService {
   }
 
   static async getOrderById(id: string): Promise<Order | null> {
+    if (isLiveMode) {
+      try {
+        const { data, error } = await supabase.from('orders').select('*').eq('id', id).single();
+        if (error || !data) return null;
+        return data;
+      } catch {
+        return null;
+      }
+    }
     const all = await this.getOrders();
     return all.find(o => o.id === id) || null;
   }
@@ -421,7 +453,10 @@ export class LaundryService {
       if (error) {
         throw new Error(`Failed to save booking to database: ${error.message}`);
       }
-      return inserted || newOrder;
+      const orderToReturn = inserted || newOrder;
+      const existing = JSON.parse(localStorage.getItem(STORAGE_KEYS.ORDERS) || '[]');
+      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify([orderToReturn, ...existing.filter((o: Order) => o.id !== orderToReturn.id)]));
+      return orderToReturn;
     }
 
     const updatedList = [newOrder, ...existingOrders];
@@ -441,7 +476,7 @@ export class LaundryService {
   // ----------------------------------------------------
   // Delivery Person Actions
   // ----------------------------------------------------
-  static async assignDeliveryStaff(
+  static async assignPickupStaff(
     orderId: string,
     staffId: string,
     staffName: string,
@@ -451,13 +486,103 @@ export class LaundryService {
     const order = orders.find(o => o.id === orderId);
     if (!order) throw new Error('Order not found');
 
+    const previousStatus = order.order_status;
+    order.assigned_pickup_id = staffId;
+    order.assigned_pickup_name = staffName;
+    order.assigned_pickup_phone = staffPhone;
+    order.order_status = 'pickup_assigned';
+    order.updated_at = new Date().toISOString();
+
+    if (isLiveMode) {
+      try {
+        const { error } = await supabase.from('orders').update({
+          assigned_pickup_id: staffId,
+          assigned_pickup_name: staffName,
+          assigned_pickup_phone: staffPhone,
+          order_status: 'pickup_assigned',
+          updated_at: order.updated_at
+        }).eq('id', orderId);
+        if (error) console.warn('Could not persist pickup assignment to Supabase:', error.message);
+
+        await supabase.from('order_status_history').insert({
+          order_id: orderId,
+          previous_status: previousStatus,
+          new_status: 'pickup_assigned',
+          notes: `Pickup assigned to ${staffName} (${staffPhone})`
+        });
+      } catch (err: any) {
+        console.warn('Notice updating pickup assignment:', err.message);
+      }
+    }
+
+    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
+
+    await WhatsAppService.sendNotification(
+      order.customer_phone,
+      'pickup_assigned',
+      `Hello ${order.customer_name}, our pickup executive ${staffName} (${staffPhone}) has been assigned for Order #${order.order_number}. They will arrive at your address during the scheduled slot (${order.pickup_slot}).`,
+      order.id
+    );
+
+    return order;
+  }
+
+  static async assignDeliveryStaff(
+    orderId: string,
+    staffId: string,
+    staffName: string = 'Delivery Associate',
+    staffPhone: string = '9876543215'
+  ): Promise<Order> {
+    const orders = await this.getOrders();
+    const order = orders.find(o => o.id === orderId);
+    if (!order) throw new Error('Order not found');
+
+    const previousStatus = order.order_status;
     order.assigned_delivery_id = staffId;
     order.assigned_delivery_name = staffName;
     order.assigned_delivery_phone = staffPhone;
+
+    // Backward compatibility: if order is booked, assign pickup staff as well and transition to pickup_assigned
     if (order.order_status === 'booked') {
       order.order_status = 'pickup_assigned';
+      if (!order.assigned_pickup_id) {
+        order.assigned_pickup_id = staffId;
+        order.assigned_pickup_name = staffName;
+        order.assigned_pickup_phone = staffPhone;
+      }
+    } else if (order.order_status === 'ready_for_delivery') {
+      order.order_status = 'out_for_delivery';
     }
     order.updated_at = new Date().toISOString();
+
+    if (isLiveMode) {
+      try {
+        const updatePayload: any = {
+          assigned_delivery_id: staffId,
+          assigned_delivery_name: staffName,
+          assigned_delivery_phone: staffPhone,
+          order_status: order.order_status,
+          updated_at: order.updated_at
+        };
+        if (order.order_status === 'pickup_assigned') {
+          updatePayload.assigned_pickup_id = order.assigned_pickup_id;
+          updatePayload.assigned_pickup_name = order.assigned_pickup_name;
+          updatePayload.assigned_pickup_phone = order.assigned_pickup_phone;
+        }
+
+        const { error } = await supabase.from('orders').update(updatePayload).eq('id', orderId);
+        if (error) console.warn('Could not persist delivery assignment to Supabase:', error.message);
+
+        await supabase.from('order_status_history').insert({
+          order_id: orderId,
+          previous_status: previousStatus,
+          new_status: order.order_status,
+          notes: `Delivery associate assigned: ${staffName} (${staffPhone})`
+        });
+      } catch (err: any) {
+        console.warn('Notice updating delivery assignment:', err.message);
+      }
+    }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
     return order;
@@ -468,12 +593,34 @@ export class LaundryService {
     const order = orders.find(o => o.id === orderId);
     if (!order) throw new Error('Order not found');
 
+    const previousStatus = order.order_status;
     order.order_status = 'collected';
     order.collected_at = new Date().toISOString();
     if (notes) {
       order.delivery_notes = notes;
     }
     order.updated_at = new Date().toISOString();
+
+    if (isLiveMode) {
+      try {
+        const { error } = await supabase.from('orders').update({
+          order_status: 'collected',
+          collected_at: order.collected_at,
+          delivery_notes: notes || null,
+          updated_at: order.updated_at
+        }).eq('id', orderId);
+        if (error) console.warn('Could not persist collected status to Supabase:', error.message);
+
+        await supabase.from('order_status_history').insert({
+          order_id: orderId,
+          previous_status: previousStatus,
+          new_status: 'collected',
+          notes: notes || 'Clothes collected from doorstep'
+        });
+      } catch (err: any) {
+        console.warn('Notice updating collected status:', err.message);
+      }
+    }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
 
@@ -492,12 +639,34 @@ export class LaundryService {
     const order = orders.find(o => o.id === orderId);
     if (!order) throw new Error('Order not found');
 
+    const previousStatus = order.order_status;
     order.order_status = 'delivered';
     order.delivered_at = new Date().toISOString();
     if (notes) {
       order.delivery_notes = notes;
     }
     order.updated_at = new Date().toISOString();
+
+    if (isLiveMode) {
+      try {
+        const { error } = await supabase.from('orders').update({
+          order_status: 'delivered',
+          delivered_at: order.delivered_at,
+          delivery_notes: notes || null,
+          updated_at: order.updated_at
+        }).eq('id', orderId);
+        if (error) console.warn('Could not persist delivered status to Supabase:', error.message);
+
+        await supabase.from('order_status_history').insert({
+          order_id: orderId,
+          previous_status: previousStatus,
+          new_status: 'delivered',
+          notes: notes || 'Clean clothes delivered to customer'
+        });
+      } catch (err: any) {
+        console.warn('Notice updating delivered status:', err.message);
+      }
+    }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
 
@@ -561,6 +730,38 @@ export class LaundryService {
     const prevHistory = JSON.parse(localStorage.getItem(STORAGE_KEYS.WEIGHT_HISTORY) || '[]');
     localStorage.setItem(STORAGE_KEYS.WEIGHT_HISTORY, JSON.stringify([weightHistory, ...prevHistory]));
 
+    if (isLiveMode) {
+      try {
+        const { error } = await supabase.from('orders').update({
+          measured_weight: measuredWeightKg,
+          billable_weight: billableWeightKg,
+          total_amount_paise: totalAmountPaise,
+          weighed_at: order.weighed_at,
+          order_status: order.order_status,
+          updated_at: order.updated_at
+        }).eq('id', order.id);
+        if (error) console.warn('Could not persist measured weight to Supabase:', error.message);
+
+        await supabase.from('weight_change_history').insert({
+          order_id: order.id,
+          old_weight: oldWeight,
+          new_weight: measuredWeightKg,
+          old_amount_paise: oldAmount,
+          new_amount_paise: totalAmountPaise,
+          reason: correctionReason || (oldWeight ? 'Weight correction by manager' : 'Initial intake weight')
+        });
+
+        await supabase.from('order_status_history').insert({
+          order_id: order.id,
+          previous_status: 'collected',
+          new_status: order.order_status,
+          notes: `Weighed: ${measuredWeightKg.toFixed(2)} kg (Billable: ${billableWeightKg.toFixed(2)} kg @ ₹${order.price_per_kg_paise / 100}/kg = ₹${totalAmountPaise / 100})`
+        });
+      } catch (err: any) {
+        console.warn('Notice updating weight in Supabase:', err.message);
+      }
+    }
+
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
 
     // Send WhatsApp notification
@@ -608,6 +809,30 @@ export class LaundryService {
     };
     const prevStatusHistory = JSON.parse(localStorage.getItem(STORAGE_KEYS.STATUS_HISTORY) || '[]');
     localStorage.setItem(STORAGE_KEYS.STATUS_HISTORY, JSON.stringify([statusHistory, ...prevStatusHistory]));
+
+    if (isLiveMode) {
+      try {
+        const updates: any = {
+          order_status: newStatus,
+          updated_at: order.updated_at
+        };
+        if (cancellationReason) updates.cancellation_reason = cancellationReason;
+        if (notes) updates.notes = notes;
+        if (newStatus === 'delivered') updates.delivered_at = new Date().toISOString();
+
+        const { error } = await supabase.from('orders').update(updates).eq('id', order.id);
+        if (error) console.warn('Could not persist status transition to Supabase:', error.message);
+
+        await supabase.from('order_status_history').insert({
+          order_id: order.id,
+          previous_status: previousStatus,
+          new_status: newStatus,
+          notes
+        });
+      } catch (err: any) {
+        console.warn('Notice updating status transition in Supabase:', err.message);
+      }
+    }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
 
@@ -735,17 +960,19 @@ export class LaundryService {
 
   static async getOrdersForDelivery(staffId: string): Promise<{ pickups: Order[]; deliveries: Order[] }> {
     const all = await this.getOrders();
-    const assigned = all.filter(o => o.assigned_delivery_id === staffId || !o.assigned_delivery_id);
+    const isDevDemo = !isLiveMode || import.meta.env.DEV;
 
-    // Pickups: Booked or Pickup Assigned
-    const pickups = assigned.filter(o => 
-      o.order_status === 'booked' || o.order_status === 'pickup_assigned'
-    );
+    // Pickups: assigned for pickup to this staff member (or unassigned in dev/demo mode)
+    const pickups = all.filter(o => {
+      const isAssigned = o.assigned_pickup_id === staffId || (isDevDemo && !o.assigned_pickup_id);
+      return isAssigned && (o.order_status === 'booked' || o.order_status === 'pickup_assigned');
+    });
 
-    // Deliveries: Ready for Delivery or Out for Delivery
-    const deliveries = assigned.filter(o =>
-      o.order_status === 'ready_for_delivery' || o.order_status === 'out_for_delivery'
-    );
+    // Deliveries: assigned for delivery to this staff member (or unassigned in dev/demo mode)
+    const deliveries = all.filter(o => {
+      const isAssigned = o.assigned_delivery_id === staffId || (isDevDemo && !o.assigned_delivery_id);
+      return isAssigned && (o.order_status === 'ready_for_delivery' || o.order_status === 'out_for_delivery');
+    });
 
     return { pickups, deliveries };
   }
@@ -799,6 +1026,24 @@ export class LaundryService {
   }
 
   static async getCustomerOrders(userId?: string, phone?: string | null): Promise<Order[]> {
+    if (isLiveMode) {
+      try {
+        let query = supabase.from('orders').select('*').order('created_at', { ascending: false });
+        if (userId) {
+          query = query.eq('customer_id', userId);
+        }
+        const { data, error } = await query;
+        if (error) {
+          console.warn('Notice loading customer orders:', error.message);
+          return [];
+        }
+        return data || [];
+      } catch (err: any) {
+        console.warn('Notice fetching customer orders:', err.message);
+        return [];
+      }
+    }
+
     const all = await this.getOrders();
     const cleanPhone = phone ? phone.replace(/[^0-9]/g, '').slice(-10) : '';
     return all.filter(o => 
@@ -816,6 +1061,21 @@ export class LaundryService {
   }
 
   static async getStaffProfiles(): Promise<Profile[]> {
+    if (isLiveMode) {
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('*')
+          .neq('role', 'customer')
+          .eq('is_active', true);
+        if (!error && data && data.length > 0) {
+          return data;
+        }
+      } catch (err) {
+        console.warn('Notice querying remote staff profiles:', err);
+      }
+    }
+
     const saved = localStorage.getItem(STORAGE_KEYS.PROFILES);
     if (saved) {
       try { return JSON.parse(saved); } catch {}
@@ -945,7 +1205,7 @@ export class LaundryService {
       if (areas && areas.length > 0) {
         const found = areas.find(a => a.pincode === cleanPin);
         if (found) {
-          return found.is_active;
+          return Boolean(found.is_active);
         }
       }
     } catch {}

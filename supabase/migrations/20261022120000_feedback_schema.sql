@@ -75,20 +75,12 @@ CREATE POLICY "Customers can view their own feedback"
 CREATE POLICY "Staff can view all private feedback"
     ON public.order_feedback FOR SELECT
     USING (
-        EXISTS (
-            SELECT 1 FROM public.profiles
-            WHERE public.profiles.id = auth.uid()
-              AND public.profiles.role IN ('owner', 'manager')
-        )
+        public.current_user_role() IN ('owner', 'manager')
     );
 
 -- Only Owners and Store Managers can update feedback status and resolution notes
 CREATE POLICY "Staff can review and resolve feedback"
     ON public.order_feedback FOR UPDATE
     USING (
-        EXISTS (
-            SELECT 1 FROM public.profiles
-            WHERE public.profiles.id = auth.uid()
-              AND public.profiles.role IN ('owner', 'manager')
-        )
+        public.current_user_role() IN ('owner', 'manager')
     );

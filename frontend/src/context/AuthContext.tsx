@@ -66,6 +66,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (insertError) {
         console.warn('Profile provisioning notice (handled):', insertError.message);
+        // If database trigger on_auth_user_created already provisioned the record, re-fetch it
+        const { data: reFetched } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', authUser.id)
+          .single();
+        if (reFetched) {
+          return reFetched;
+        }
       }
       return inserted || newProfile;
     } catch (e) {

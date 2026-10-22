@@ -20,7 +20,13 @@ export const LoginPage: React.FC = () => {
   // Check URL query parameters for OAuth error / cancellation callbacks
   useEffect(() => {
     const params = new URLSearchParams(location.search);
-    const errorDesc = params.get('error_description') || params.get('error');
+    const hashParams = new URLSearchParams(location.hash.replace(/^#/, ''));
+    const errorDesc =
+      params.get('error_description') ||
+      params.get('error') ||
+      hashParams.get('error_description') ||
+      hashParams.get('error');
+
     if (errorDesc) {
       setError(decodeURIComponent(errorDesc).replace(/\+/g, ' '));
     }

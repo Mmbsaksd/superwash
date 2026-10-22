@@ -175,7 +175,20 @@ ALTER TABLE public.pickup_slots ENABLE ROW LEVEL SECURITY;
 CREATE OR REPLACE FUNCTION public.current_user_role()
 RETURNS VARCHAR AS $$
     SELECT role FROM public.profiles WHERE id = auth.uid();
-$$ LANGUAGE sql STABLE SECURITY DEFINER;
+$$ LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp;
+
+REVOKE EXECUTE ON FUNCTION public.current_user_role() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.current_user_role() TO authenticated, anon;
+
+-- Enable RLS on notification_logs and protect recipient contact data
+ALTER TABLE public.notification_logs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Owner and manager can view notification logs" ON public.notification_logs
+    FOR SELECT USING (public.current_user_role() IN ('owner', 'manager'));
+
+CREATE POLICY "Staff can insert notification logs" ON public.notification_logs
+    FOR INSERT WITH CHECK (public.current_user_role() IN ('owner', 'manager', 'delivery'));
 
 -- Profiles: Users can read their own profile; Owner and Manager can read all
 CREATE POLICY "Users can read own profile" ON public.profiles

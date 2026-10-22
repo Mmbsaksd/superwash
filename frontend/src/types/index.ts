@@ -168,6 +168,9 @@ export interface Order {
   pickup_latitude?: number | null;
   pickup_longitude?: number | null;
   
+  assigned_pickup_id?: string;
+  assigned_pickup_name?: string;
+  assigned_pickup_phone?: string;
   assigned_delivery_id?: string;
   assigned_delivery_name?: string;
   assigned_delivery_phone?: string;

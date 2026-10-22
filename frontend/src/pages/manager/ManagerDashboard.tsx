@@ -21,6 +21,7 @@ export const ManagerDashboard: React.FC = () => {
   // Modals
   const [weighingOrder, setWeighingOrder] = useState<Order | null>(null);
   const [assigningOrder, setAssigningOrder] = useState<Order | null>(null);
+  const [assignmentType, setAssignmentType] = useState<'pickup' | 'delivery'>('pickup');
 
   useEffect(() => {
     loadData();
@@ -121,6 +122,21 @@ export const ManagerDashboard: React.FC = () => {
       }
     } catch (err) {
       console.error('Error dispatching order:', err);
+    }
+  };
+
+  const handleMarkCollectedAtStore = async (order: Order) => {
+    try {
+      const updated = await LaundryService.markOrderCollected(
+        order.id,
+        currentUser?.full_name || 'Store Manager',
+        'Clothes received at store intake'
+      );
+      if (updated) {
+        setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
+      }
+    } catch (err) {
+      console.error('Error marking collected:', err);
     }
   };
 
@@ -294,27 +310,80 @@ export const ManagerDashboard: React.FC = () => {
                       </div>
 
                       {/* Action buttons */}
-                      <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
-                        <button
-                          onClick={() => setWeighingOrder(order)}
-                          className={`flex-1 py-2.5 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition ${
-                            hasWeight
-                              ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200'
-                              : 'bg-brand-600 hover:bg-brand-700 text-white shadow-md shadow-brand-500/20'
-                          }`}
-                        >
-                          <Scale className="w-4 h-4" />
-                          {hasWeight ? 'Edit Weight' : 'Enter Weight (kg)'}
-                        </button>
+                      <div className="flex flex-col gap-2 pt-2 border-t border-slate-100">
+                        {order.order_status === 'booked' && (
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => {
+                                setAssigningOrder(order);
+                                setAssignmentType('pickup');
+                              }}
+                              className="flex-1 py-2.5 px-3 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5"
+                            >
+                              <UserPlus className="w-4 h-4" />
+                              {order.assigned_pickup_id ? 'Reassign Pickup' : 'Assign Pickup Staff'}
+                            </button>
+                            <button
+                              onClick={() => handleMarkCollectedAtStore(order)}
+                              className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 transition"
+                              title="Mark customer store drop-off"
+                            >
+                              Intake at Store
+                            </button>
+                          </div>
+                        )}
 
-                        {hasWeight && (
-                          <button
-                            onClick={() => handleStartWashing(order)}
-                            className="flex-1 py-2.5 px-3 bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5"
-                          >
-                            <Sparkles className="w-4 h-4" />
-                            Start Washing
-                          </button>
+                        {order.order_status === 'pickup_assigned' && (
+                          <div className="space-y-2">
+                            <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-[11px] text-emerald-900 flex justify-between items-center">
+                              <div>
+                                <span className="font-bold block">Assigned Pickup:</span>
+                                <span>🛵 {order.assigned_pickup_name || 'Agent'} ({order.assigned_pickup_phone || ''})</span>
+                              </div>
+                              <button
+                                onClick={() => {
+                                  setAssigningOrder(order);
+                                  setAssignmentType('pickup');
+                                }}
+                                className="px-2.5 py-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-bold text-[10px] rounded-lg shadow-sm"
+                              >
+                                Reassign
+                              </button>
+                            </div>
+                            <button
+                              onClick={() => handleMarkCollectedAtStore(order)}
+                              className="w-full py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-sm transition flex items-center justify-center gap-1"
+                            >
+                              <CheckCircle className="w-3.5 h-3.5" />
+                              Mark Collected & Intake
+                            </button>
+                          </div>
+                        )}
+
+                        {(order.order_status === 'collected' || (order.measured_weight !== null && order.measured_weight !== undefined)) && (
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => setWeighingOrder(order)}
+                              className={`flex-1 py-2.5 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition ${
+                                hasWeight
+                                  ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200'
+                                  : 'bg-brand-600 hover:bg-brand-700 text-white shadow-md shadow-brand-500/20'
+                              }`}
+                            >
+                              <Scale className="w-4 h-4" />
+                              {hasWeight ? 'Edit Weight' : 'Enter Weight (kg)'}
+                            </button>
+
+                            {hasWeight && (
+                              <button
+                                onClick={() => handleStartWashing(order)}
+                                className="flex-1 py-2.5 px-3 bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5"
+                              >
+                                <Sparkles className="w-4 h-4" />
+                                Start Washing
+                              </button>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -409,7 +478,10 @@ export const ManagerDashboard: React.FC = () => {
                           </span>
                         </div>
                         <button
-                          onClick={() => setAssigningOrder(order)}
+                          onClick={() => {
+                            setAssigningOrder(order);
+                            setAssignmentType('delivery');
+                          }}
                           className="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-xl font-bold text-[11px] flex items-center gap-1 shadow-sm"
                         >
                           <UserPlus className="w-3 h-3" />
@@ -465,6 +537,7 @@ export const ManagerDashboard: React.FC = () => {
             setAssigningOrder(null);
           }}
           assignedByName={currentUser?.full_name || 'Store Manager'}
+          assignmentType={assignmentType}
         />
       )}
     </div>

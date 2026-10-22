@@ -497,4 +497,78 @@ describe('Google OAuth & Profile Management Workflow', () => {
   });
 });
 
+describe('End-to-End Workflow Transitions & Staff Task Queues', () => {
+  it('executes the full 7-stage lifecycle with independent pickup and delivery staff assignments', async () => {
+    // 1. Customer creates booking
+    const booking = await LaundryService.createBooking({
+      customer_id: 'cust-uuid-1',
+      customer_name: 'Workflow Tester',
+      customer_phone: '9876543212',
+      pickup_address: 'Flat 101, 12th Main Indiranagar',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-22',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    expect(booking.order_status).toBe('booked');
+    expect(booking.assigned_pickup_id).toBeUndefined();
+    expect(booking.assigned_delivery_id).toBeUndefined();
+
+    // 2. Manager assigns Pickup Agent (Ramesh Kumar)
+    const pickupAssigned = await LaundryService.assignPickupStaff(
+      booking.id,
+      'staff-pickup-1',
+      'Ramesh Kumar',
+      '9876543215'
+    );
+    expect(pickupAssigned.order_status).toBe('pickup_assigned');
+    expect(pickupAssigned.assigned_pickup_id).toBe('staff-pickup-1');
+    expect(pickupAssigned.assigned_pickup_name).toBe('Ramesh Kumar');
+
+    // Verify task is visible to Ramesh
+    const rameshTasks = await LaundryService.getOrdersForDelivery('staff-pickup-1');
+    expect(rameshTasks.pickups.some(o => o.id === booking.id)).toBe(true);
+
+    // 3. Pickup Associate marks order as collected
+    const collected = await LaundryService.markAsCollected(booking.id, 'Collected from porch');
+    expect(collected.order_status).toBe('collected');
+    expect(collected.collected_at).toBeDefined();
+
+    // 4. Store Manager weighs the clothes at intake scale
+    // 4.0 kg @ Rs 80/kg = Rs 320.00 (32000 paise)
+    const weighed = await LaundryService.enterMeasuredWeight(booking.id, 4.0, 'Store Manager');
+    expect(weighed.order_status).toBe('washing');
+    expect(weighed.measured_weight).toBe(4.0);
+    expect(weighed.total_amount_paise).toBe(32000);
+
+    // 5. Manager marks washing complete and ready for delivery
+    const ready = await LaundryService.updateOrderStatus(booking.id, 'ready_for_delivery');
+    expect(ready.order_status).toBe('ready_for_delivery');
+
+    // 6. Manager assigns a DIFFERENT staff member (Suresh) for final delivery
+    const deliveryAssigned = await LaundryService.assignDeliveryStaff(
+      booking.id,
+      'staff-delivery-2',
+      'Suresh Delivery',
+      '9876543216'
+    );
+    expect(deliveryAssigned.assigned_delivery_id).toBe('staff-delivery-2');
+    // Ensure pickup agent remains preserved!
+    expect(deliveryAssigned.assigned_pickup_id).toBe('staff-pickup-1');
+
+    // Dispatch out for delivery
+    const dispatched = await LaundryService.updateOrderStatus(booking.id, 'out_for_delivery');
+    expect(dispatched.order_status).toBe('out_for_delivery');
+
+    // Verify task appears under Suresh's deliveries
+    const sureshTasks = await LaundryService.getOrdersForDelivery('staff-delivery-2');
+    expect(sureshTasks.deliveries.some(o => o.id === booking.id)).toBe(true);
+
+    // 7. Complete final delivery
+    const delivered = await LaundryService.markAsDelivered(booking.id, 'Delivered to customer');
+    expect(delivered.order_status).toBe('delivered');
+    expect(delivered.delivered_at).toBeDefined();
+  });
+});
+
 

@@ -9,6 +9,7 @@ interface AssignStaffModalProps {
   onClose: () => void;
   onSuccess: (updatedOrder: Order) => void;
   assignedByName?: string;
+  assignmentType?: 'pickup' | 'delivery';
 }
 
 export const AssignStaffModal: React.FC<AssignStaffModalProps> = ({
@@ -16,10 +17,18 @@ export const AssignStaffModal: React.FC<AssignStaffModalProps> = ({
   isOpen,
   onClose,
   onSuccess,
-  assignedByName = 'Owner'
+  assignedByName = 'Owner',
+  assignmentType
 }) => {
+  const isPickup = assignmentType
+    ? assignmentType === 'pickup'
+    : (order.order_status === 'booked' || order.order_status === 'pickup_assigned');
+
   const [staffList, setStaffList] = useState<Profile[]>([]);
-  const [selectedStaffId, setSelectedStaffId] = useState<string>(order.assigned_delivery_id || '');
+  const initialSelected = isPickup
+    ? (order.assigned_pickup_id || '')
+    : (order.assigned_delivery_id || '');
+  const [selectedStaffId, setSelectedStaffId] = useState<string>(initialSelected);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,15 +37,16 @@ export const AssignStaffModal: React.FC<AssignStaffModalProps> = ({
       LaundryService.getStaffProfiles().then((profiles) => {
         const deliveryStaff = profiles.filter((p) => p.role === 'delivery' && p.is_active);
         setStaffList(deliveryStaff);
-        if (order.assigned_delivery_id) {
-          setSelectedStaffId(order.assigned_delivery_id);
+        const currentTargetId = isPickup ? order.assigned_pickup_id : order.assigned_delivery_id;
+        if (currentTargetId) {
+          setSelectedStaffId(currentTargetId);
         } else if (deliveryStaff.length > 0) {
           setSelectedStaffId(deliveryStaff[0].id);
         }
       });
       setError(null);
     }
-  }, [isOpen, order]);
+  }, [isOpen, order, isPickup]);
 
   if (!isOpen) return null;
 
@@ -57,12 +67,19 @@ export const AssignStaffModal: React.FC<AssignStaffModalProps> = ({
     setError(null);
 
     try {
-      const updated = await LaundryService.assignDeliveryStaff(
-        order.id,
-        staff.id,
-        staff.full_name,
-        staff.phone
-      );
+      const updated = isPickup
+        ? await LaundryService.assignPickupStaff(
+            order.id,
+            staff.id,
+            staff.full_name,
+            staff.phone
+          )
+        : await LaundryService.assignDeliveryStaff(
+            order.id,
+            staff.id,
+            staff.full_name,
+            staff.phone
+          );
 
       if (updated) {
         onSuccess(updated);
@@ -83,7 +100,9 @@ export const AssignStaffModal: React.FC<AssignStaffModalProps> = ({
         <div className="bg-slate-900 p-4 text-white flex justify-between items-center">
           <div className="flex items-center gap-2">
             <Truck className="w-5 h-5 text-emerald-400" />
-            <h3 className="font-bold text-sm">Assign Delivery Staff</h3>
+            <h3 className="font-bold text-sm">
+              {isPickup ? 'Assign Pickup Agent' : 'Assign Delivery Staff'}
+            </h3>
           </div>
           <button onClick={onClose} className="p-1 rounded-full hover:bg-white/20 text-white">
             <X className="w-4 h-4" />

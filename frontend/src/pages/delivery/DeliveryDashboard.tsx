@@ -38,11 +38,12 @@ export const DeliveryDashboard: React.FC = () => {
       ]);
       setSettings(s);
 
-      // Filter orders assigned to this delivery person, or all pending pickups/deliveries if unassigned demo
+      // Filter orders assigned to this delivery associate for pickup OR delivery
       const assigned = allOrds.filter((o) => {
         if (currentUser?.role === 'owner') return true;
-        if (!o.assigned_delivery_id) return true; // show unassigned as available for delivery driver
-        return o.assigned_delivery_id === currentUser?.id;
+        const isAssignedPickup = o.assigned_pickup_id === currentUser?.id;
+        const isAssignedDelivery = o.assigned_delivery_id === currentUser?.id;
+        return isAssignedPickup || isAssignedDelivery;
       });
       setOrders(assigned);
     } catch (err) {
@@ -63,14 +64,16 @@ export const DeliveryDashboard: React.FC = () => {
     );
   });
 
-  // Pickups: Booked or Pickup Assigned
+  // Pickups: Assigned to this associate for pickup (booked or pickup_assigned)
   const pickups = filteredOrders.filter((o) =>
-    o.order_status === 'booked' || o.order_status === 'pickup_assigned'
+    (currentUser?.role === 'owner' || o.assigned_pickup_id === currentUser?.id) &&
+    (o.order_status === 'booked' || o.order_status === 'pickup_assigned')
   );
 
-  // Deliveries: Ready for Delivery or Out for Delivery
+  // Deliveries: Assigned to this associate for final delivery (ready_for_delivery or out_for_delivery)
   const deliveries = filteredOrders.filter((o) =>
-    o.order_status === 'ready_for_delivery' || o.order_status === 'out_for_delivery'
+    (currentUser?.role === 'owner' || o.assigned_delivery_id === currentUser?.id) &&
+    (o.order_status === 'ready_for_delivery' || o.order_status === 'out_for_delivery')
   );
 
   const handleMarkCollected = async (e: React.FormEvent) => {

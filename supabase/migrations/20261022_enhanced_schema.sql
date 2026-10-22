@@ -85,7 +85,11 @@ BEGIN
     END IF;
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp;
+
+REVOKE EXECUTE ON FUNCTION public.set_order_number() FROM PUBLIC;
+GRANT USAGE, SELECT ON SEQUENCE public.order_number_seq TO authenticated;
 
 DROP TRIGGER IF EXISTS trigger_set_order_number ON public.orders;
 CREATE TRIGGER trigger_set_order_number
@@ -97,20 +101,32 @@ CREATE TRIGGER trigger_set_order_number
 CREATE OR REPLACE FUNCTION public.check_profile_role_update()
 RETURNS TRIGGER AS $$
 BEGIN
-    -- If role is being changed and user is not an owner, reject
-    IF OLD.role IS DISTINCT FROM NEW.role THEN
-        IF public.current_user_role() != 'owner' THEN
-            RAISE EXCEPTION 'Only business owners are authorized to change user roles.';
+    IF TG_OP = 'INSERT' THEN
+        -- Prevent non-owners from creating accounts with privileged roles
+        IF NEW.role IS NOT NULL AND NEW.role != 'customer' THEN
+            IF COALESCE(public.current_user_role(), '') != 'owner' THEN
+                RAISE EXCEPTION 'New profiles must have the customer role. Only business owners can assign staff roles.';
+            END IF;
+        END IF;
+    ELSIF TG_OP = 'UPDATE' THEN
+        -- If role is being changed and user is not an owner, reject
+        IF OLD.role IS DISTINCT FROM NEW.role THEN
+            IF COALESCE(public.current_user_role(), '') != 'owner' THEN
+                RAISE EXCEPTION 'Only business owners are authorized to change user roles.';
+            END IF;
         END IF;
     END IF;
     NEW.updated_at := timezone('utc', now());
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp;
+
+REVOKE EXECUTE ON FUNCTION public.check_profile_role_update() FROM PUBLIC;
 
 DROP TRIGGER IF EXISTS trigger_check_profile_role ON public.profiles;
 CREATE TRIGGER trigger_check_profile_role
-    BEFORE UPDATE ON public.profiles
+    BEFORE INSERT OR UPDATE ON public.profiles
     FOR EACH ROW
     EXECUTE FUNCTION public.check_profile_role_update();
 
@@ -154,7 +170,10 @@ BEGIN
 
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp;
+
+REVOKE EXECUTE ON FUNCTION public.sync_order_payment_summary() FROM PUBLIC;
 
 DROP TRIGGER IF EXISTS trigger_sync_payment_summary ON public.payments;
 CREATE TRIGGER trigger_sync_payment_summary
@@ -181,19 +200,35 @@ CREATE POLICY "Owner can manage services" ON public.services
     FOR ALL USING (public.current_user_role() = 'owner');
 
 -- Payments RLS Policies
-CREATE POLICY "Customers can view payments for own orders" ON public.payments
+DROP POLICY IF EXISTS "Customers can view payments for own orders" ON public.payments;
+CREATE POLICY "Customers and staff can view relevant payments" ON public.payments
     FOR SELECT USING (
-        EXISTS (
+        public.current_user_role() IN ('owner', 'manager')
+        OR (
+            public.current_user_role() = 'delivery' AND EXISTS (
+                SELECT 1 FROM public.orders
+                WHERE public.orders.id = payments.order_id
+                  AND public.orders.assigned_delivery_id = auth.uid()
+            )
+        )
+        OR EXISTS (
             SELECT 1 FROM public.orders
             WHERE public.orders.id = payments.order_id
               AND public.orders.customer_id = auth.uid()
         )
-        OR public.current_user_role() IN ('owner', 'manager', 'delivery')
     );
 
+DROP POLICY IF EXISTS "Staff can record payments" ON public.payments;
 CREATE POLICY "Staff can record payments" ON public.payments
     FOR INSERT WITH CHECK (
-        public.current_user_role() IN ('owner', 'manager', 'delivery')
+        public.current_user_role() IN ('owner', 'manager')
+        OR (
+            public.current_user_role() = 'delivery' AND EXISTS (
+                SELECT 1 FROM public.orders
+                WHERE public.orders.id = payments.order_id
+                  AND public.orders.assigned_delivery_id = auth.uid()
+            )
+        )
     );
 
 -- Order Status History RLS
