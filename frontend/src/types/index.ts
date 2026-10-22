@@ -16,8 +16,10 @@ export type PaymentMethod = 'cash' | 'upi_manual';
 
 export interface Profile {
   id: string;
-  phone: string;
+  phone?: string | null;
+  email?: string | null;
   full_name: string;
+  avatar_url?: string | null;
   role: UserRole;
   is_active: boolean;
   created_at: string;

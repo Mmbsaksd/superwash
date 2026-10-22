@@ -7,11 +7,11 @@ import { WeightEntryModal } from '../../components/WeightEntryModal';
 import { AssignStaffModal } from '../../components/AssignStaffModal';
 import {
   Scale, RefreshCw, Sparkles, CheckCircle,
-  Truck, ArrowRight, UserPlus, Search, Phone, Calendar
+  Truck, ArrowRight, UserPlus, Search, Phone, Calendar, LogOut
 } from 'lucide-react';
 
 export const ManagerDashboard: React.FC = () => {
-  const { currentUser } = useAuth();
+  const { currentUser, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<'collected' | 'washing' | 'ready'>('collected');
   const [orders, setOrders] = useState<Order[]>([]);
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
@@ -144,11 +144,19 @@ export const ManagerDashboard: React.FC = () => {
           <div className="flex items-center gap-2">
             <button
               onClick={loadData}
-              className="p-2 rounded-xl bg-purple-800 hover:bg-purple-700 transition text-purple-200 flex items-center gap-1.5 text-xs font-semibold"
+              className="p-2 rounded-xl bg-purple-800 hover:bg-purple-700 transition text-purple-200 flex items-center gap-1.5 text-xs font-semibold cursor-pointer"
               title="Refresh"
             >
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
               <span className="hidden sm:inline">Refresh</span>
+            </button>
+            <button
+              onClick={logout}
+              className="p-2 rounded-xl bg-purple-800 hover:bg-purple-700 transition text-purple-200 flex items-center gap-1.5 text-xs font-semibold cursor-pointer"
+              title="Sign Out"
+            >
+              <LogOut className="w-4 h-4" />
+              <span className="hidden sm:inline">Sign Out</span>
             </button>
           </div>
         </div>

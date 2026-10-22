@@ -7,10 +7,13 @@ interface AuthContextType {
   currentUser: Profile | null;
   user: Profile | null;
   isLoading: boolean;
+  signInWithGoogle: () => Promise<{ success: boolean; message?: string }>;
+  updateProfile: (updates: { phone?: string; full_name?: string }) => Promise<{ success: boolean; message: string }>;
+  needsPhonePrompt: boolean;
   sendOtp: (phone: string) => Promise<{ success: boolean; message: string }>;
   verifyOtp: (phone: string, otp: string, roleHint?: UserRole) => Promise<{ success: boolean; message: string }>;
   switchDemoRole: (role: UserRole) => void;
-  logout: () => void;
+  logout: () => Promise<void>;
   isCustomer: boolean;
   isDelivery: boolean;
   isManager: boolean;
@@ -27,23 +30,214 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [currentUser, setCurrentUser] = useState<Profile | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  useEffect(() => {
-    // Check saved session
-    const saved = localStorage.getItem(AUTH_STORAGE_KEY);
-    if (saved) {
-      try {
-        setCurrentUser(JSON.parse(saved));
-      } catch {
-        localStorage.removeItem(AUTH_STORAGE_KEY);
-        setCurrentUser(null);
+  // Helper to load or provision profile from Supabase user
+  const syncSupabaseProfile = async (authUser: any): Promise<Profile> => {
+    try {
+      const { data: existingProfile, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', authUser.id)
+        .single();
+
+      if (existingProfile && !error) {
+        return existingProfile;
       }
-    } else {
-      // Unauthenticated visitors start as null (guest)
-      setCurrentUser(null);
+
+      // Provision new customer profile with default 'customer' role
+      const newProfile: Profile = {
+        id: authUser.id,
+        email: authUser.email || null,
+        phone: authUser.phone ? authUser.phone.replace(/[^0-9]/g, '').slice(-10) : null,
+        full_name:
+          authUser.user_metadata?.full_name ||
+          authUser.user_metadata?.name ||
+          (authUser.email ? authUser.email.split('@')[0] : 'Customer'),
+        avatar_url: authUser.user_metadata?.avatar_url || null,
+        role: 'customer', // Untrusted public OAuth sign-ins strictly default to customer
+        is_active: true,
+        created_at: new Date().toISOString()
+      };
+
+      const { data: inserted, error: insertError } = await supabase
+        .from('profiles')
+        .insert(newProfile)
+        .select()
+        .single();
+
+      if (insertError) {
+        console.warn('Profile provisioning notice (handled):', insertError.message);
+      }
+      return inserted || newProfile;
+    } catch (e) {
+      console.error('Error synchronizing profile:', e);
+      return {
+        id: authUser.id,
+        email: authUser.email || null,
+        phone: null,
+        full_name: authUser.user_metadata?.full_name || 'Customer',
+        avatar_url: authUser.user_metadata?.avatar_url || null,
+        role: 'customer',
+        is_active: true,
+        created_at: new Date().toISOString()
+      };
     }
-    setIsLoading(false);
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const initializeAuth = async () => {
+      setIsLoading(true);
+
+      if (isSupabaseConfigured) {
+        try {
+          const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+          if (session?.user && !sessionError) {
+            const profile = await syncSupabaseProfile(session.user);
+            if (isMounted) {
+              setCurrentUser(profile);
+              localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profile));
+              setIsLoading(false);
+              return;
+            }
+          }
+        } catch (err) {
+          console.warn('Session restoration notice:', err);
+        }
+      }
+
+      // Check local storage session (demo or offline cached)
+      const saved = localStorage.getItem(AUTH_STORAGE_KEY);
+      if (saved) {
+        try {
+          if (isMounted) setCurrentUser(JSON.parse(saved));
+        } catch {
+          localStorage.removeItem(AUTH_STORAGE_KEY);
+          if (isMounted) setCurrentUser(null);
+        }
+      } else {
+        if (isMounted) setCurrentUser(null);
+      }
+
+      if (isMounted) setIsLoading(false);
+    };
+
+    initializeAuth();
+
+    // Subscribe to Supabase Auth state events (OAuth callback, token refresh, logout)
+    let authListener: any = null;
+    if (isSupabaseConfigured) {
+      const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'SIGNED_IN' && session?.user) {
+          const profile = await syncSupabaseProfile(session.user);
+          if (isMounted) {
+            setCurrentUser(profile);
+            localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profile));
+          }
+        } else if (event === 'SIGNED_OUT') {
+          if (isMounted) {
+            setCurrentUser(null);
+            localStorage.removeItem(AUTH_STORAGE_KEY);
+          }
+        } else if (event === 'TOKEN_REFRESHED' && session?.user) {
+          const profile = await syncSupabaseProfile(session.user);
+          if (isMounted) {
+            setCurrentUser(profile);
+            localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profile));
+          }
+        }
+      });
+      authListener = data.subscription;
+    }
+
+    return () => {
+      isMounted = false;
+      if (authListener) authListener.unsubscribe();
+    };
   }, []);
 
+  const signInWithGoogle = async (): Promise<{ success: boolean; message?: string }> => {
+    if (isLiveAuth) {
+      try {
+        const redirectUrl = `${window.location.origin}/customer`;
+        const { error } = await supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: {
+            redirectTo: redirectUrl,
+            queryParams: {
+              access_type: 'offline',
+              prompt: 'select_account'
+            }
+          }
+        });
+
+        if (error) {
+          return { success: false, message: error.message || 'Google sign-in could not be initiated.' };
+        }
+        return { success: true };
+      } catch (err: any) {
+        return { success: false, message: err.message || 'Failed to connect to Google OAuth provider' };
+      }
+    }
+
+    // Explicit Demo Mode: Instant Google Sign-In with Demo Profile
+    const demoGoogleProfile: Profile = {
+      id: 'demo-google-customer-1',
+      email: 'priya.patel@gmail.com',
+      phone: null, // Initial missing phone to test seamless onboarding prompt
+      full_name: 'Priya Patel (Google)',
+      avatar_url: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150',
+      role: 'customer',
+      is_active: true,
+      created_at: new Date().toISOString()
+    };
+
+    setCurrentUser(demoGoogleProfile);
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(demoGoogleProfile));
+    return { success: true, message: 'Signed in with Google (Demo Mode)' };
+  };
+
+  const updateProfile = async (updates: { phone?: string; full_name?: string }): Promise<{ success: boolean; message: string }> => {
+    if (!currentUser) {
+      return { success: false, message: 'Not authenticated' };
+    }
+
+    const cleanPhone = updates.phone ? updates.phone.replace(/[^0-9]/g, '').slice(-10) : currentUser.phone;
+    if (updates.phone && (!cleanPhone || cleanPhone.length < 10)) {
+      return { success: false, message: 'Please enter a valid 10-digit Indian mobile number.' };
+    }
+
+    const updatedProfile: Profile = {
+      ...currentUser,
+      phone: cleanPhone || null,
+      full_name: updates.full_name?.trim() || currentUser.full_name
+    };
+
+    if (isLiveAuth) {
+      try {
+        const { error } = await supabase
+          .from('profiles')
+          .update({
+            phone: cleanPhone || null,
+            full_name: updatedProfile.full_name,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', currentUser.id);
+
+        if (error) {
+          return { success: false, message: error.message || 'Database error updating profile.' };
+        }
+      } catch (err: any) {
+        return { success: false, message: err.message || 'Connection error updating profile.' };
+      }
+    }
+
+    setCurrentUser(updatedProfile);
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(updatedProfile));
+    return { success: true, message: 'Profile updated successfully.' };
+  };
+
+  // Legacy/Demo helper methods kept for backward compatibility and test isolation
   const sendOtp = async (phone: string): Promise<{ success: boolean; message: string }> => {
     const cleanPhone = phone.replace(/[^0-9]/g, '');
     if (cleanPhone.length < 10) {
@@ -56,7 +250,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           phone: `+91${cleanPhone.slice(-10)}`
         });
         if (error) {
-          return { success: false, message: error.message || 'Failed to send OTP. Please try again.' };
+          return { success: false, message: error.message || 'Failed to send OTP.' };
         }
         return { success: true, message: 'OTP sent to your mobile number via SMS' };
       } catch (err: any) {
@@ -64,7 +258,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    // Explicit Demo Mode
     return {
       success: true,
       message: 'Demo Mode: Enter OTP 123456 to verify'
@@ -78,7 +271,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   ): Promise<{ success: boolean; message: string }> => {
     const cleanPhone = phone.replace(/[^0-9]/g, '').slice(-10);
 
-    // Live Supabase verification in production mode
     if (isLiveAuth) {
       try {
         const { data, error } = await supabase.auth.verifyOtp({
@@ -90,51 +282,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return { success: false, message: error?.message || 'Invalid or expired OTP. Please try again.' };
         }
 
-        // Fetch authoritative profile from database
-        let { data: profileData } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', data.user.id)
-          .single();
-
-        // If newly created user, insert safe customer profile with default role
-        if (!profileData) {
-          const newProfile: Profile = {
-            id: data.user.id,
-            phone: cleanPhone,
-            full_name: 'Customer',
-            role: 'customer', // Always default to customer, never allow self-promotion
-            is_active: true,
-            created_at: new Date().toISOString()
-          };
-          const { error: insertError } = await supabase.from('profiles').insert(newProfile);
-          if (insertError) {
-            console.error('Profile creation error:', insertError);
-          }
-          profileData = newProfile;
-        }
-
-        setCurrentUser(profileData);
-        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profileData));
+        const profile = await syncSupabaseProfile(data.user);
+        setCurrentUser(profile);
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profile));
         return { success: true, message: 'Login successful' };
       } catch (err: any) {
         return { success: false, message: err.message || 'Authentication verification failed' };
       }
     }
 
-    // Demo Mode Verification (Only accepts exactly '123456')
     if (otp !== '123456') {
       return { success: false, message: 'Invalid OTP. Enter 123456 for demo access.' };
     }
 
-    // Check if phone matches any pre-configured demo staff profile
     const matchedProfile = DEMO_PROFILES.find(p => p.phone === cleanPhone);
-
     const profileToSet: Profile = matchedProfile || {
       id: `user-${Date.now()}`,
       phone: cleanPhone,
       full_name: 'Customer',
-      role: 'customer', // Untrusted phone always gets customer role
+      role: 'customer',
       is_active: true,
       created_at: new Date().toISOString()
     };
@@ -156,11 +322,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (isSupabaseConfigured) {
       try {
         await supabase.auth.signOut();
-      } catch {}
+      } catch (err) {
+        console.warn('Sign-out error:', err);
+      }
     }
     localStorage.removeItem(AUTH_STORAGE_KEY);
     setCurrentUser(null);
   };
+
+  // Phone onboarding prompt needed if customer is missing mobile number
+  const needsPhonePrompt = Boolean(
+    currentUser &&
+    currentUser.role === 'customer' &&
+    (!currentUser.phone || currentUser.phone.trim().length < 10)
+  );
 
   const isCustomer = currentUser?.role === 'customer';
   const isDelivery = currentUser?.role === 'delivery';
@@ -174,6 +349,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         currentUser,
         user: currentUser,
         isLoading,
+        signInWithGoogle,
+        updateProfile,
+        needsPhonePrompt,
         sendOtp,
         verifyOtp,
         switchDemoRole,

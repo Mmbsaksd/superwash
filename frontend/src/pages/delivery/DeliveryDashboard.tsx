@@ -6,11 +6,11 @@ import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
 import { PaymentModal } from '../../components/PaymentModal';
 import {
   Phone, MapPin, CheckCircle, Package, Truck,
-  AlertCircle, IndianRupee, RefreshCw, X, Search, Calendar
+  AlertCircle, IndianRupee, RefreshCw, X, Search, Calendar, LogOut
 } from 'lucide-react';
 
 export const DeliveryDashboard: React.FC = () => {
-  const { currentUser } = useAuth();
+  const { currentUser, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<'pickups' | 'deliveries'>('pickups');
   const [orders, setOrders] = useState<Order[]>([]);
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
@@ -138,11 +138,19 @@ export const DeliveryDashboard: React.FC = () => {
           <div className="flex items-center gap-2">
             <button
               onClick={loadData}
-              className="p-2 rounded-xl bg-emerald-800 hover:bg-emerald-600 transition text-emerald-100 flex items-center gap-1.5 text-xs font-semibold"
+              className="p-2 rounded-xl bg-emerald-800 hover:bg-emerald-600 transition text-emerald-100 flex items-center gap-1.5 text-xs font-semibold cursor-pointer"
               title="Refresh Orders"
             >
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
               <span className="hidden sm:inline">Refresh</span>
+            </button>
+            <button
+              onClick={logout}
+              className="p-2 rounded-xl bg-emerald-800 hover:bg-emerald-600 transition text-emerald-100 flex items-center gap-1.5 text-xs font-semibold cursor-pointer"
+              title="Sign Out"
+            >
+              <LogOut className="w-4 h-4" />
+              <span className="hidden sm:inline">Sign Out</span>
             </button>
           </div>
         </div>

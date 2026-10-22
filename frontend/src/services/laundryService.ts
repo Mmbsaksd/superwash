@@ -798,8 +798,13 @@ export class LaundryService {
     return this.saveAddress(address);
   }
 
-  static async getCustomerOrders(userId: string, phone: string): Promise<Order[]> {
-    return this.getOrdersForCustomer(phone);
+  static async getCustomerOrders(userId?: string, phone?: string | null): Promise<Order[]> {
+    const all = await this.getOrders();
+    const cleanPhone = phone ? phone.replace(/[^0-9]/g, '').slice(-10) : '';
+    return all.filter(o => 
+      (userId && o.customer_id === userId) || 
+      (cleanPhone && o.customer_phone.replace(/[^0-9]/g, '').slice(-10) === cleanPhone)
+    );
   }
 
   static async markOrderCollected(orderId: string, _staffName?: string, notes?: string): Promise<Order> {

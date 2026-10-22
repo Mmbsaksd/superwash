@@ -9,11 +9,11 @@ import {
   Calendar, Clock, MapPin, Plus, Phone,
   CheckCircle2, AlertCircle, Sparkles,
   QrCode, ArrowRight, User, Star, MessageSquareHeart,
-  ShieldCheck, RefreshCw
+  ShieldCheck, RefreshCw, LogOut, X
 } from 'lucide-react';
 
 export const CustomerHome: React.FC = () => {
-  const { currentUser } = useAuth();
+  const { currentUser, needsPhonePrompt, updateProfile, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<'book' | 'current' | 'history' | 'addresses' | 'contact'>('book');
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [slots, setSlots] = useState<PickupSlot[]>([]);
@@ -41,13 +41,103 @@ export const CustomerHome: React.FC = () => {
   const [bookingSuccessOrder, setBookingSuccessOrder] = useState<Order | null>(null);
   const [bookingError, setBookingError] = useState<string | null>(null);
 
+  // Onboarding Modal State (Prompt for phone and initial address if missing after Google sign-in)
+  const [isOnboardingModalOpen, setIsOnboardingModalOpen] = useState<boolean>(false);
+  const [onboardPhone, setOnboardPhone] = useState<string>('');
+  const [onboardName, setOnboardName] = useState<string>('');
+  const [onboardAddress, setOnboardAddress] = useState<string>('');
+  const [onboardLandmark, setOnboardLandmark] = useState<string>('');
+  const [onboardPincode, setOnboardPincode] = useState<string>('560103');
+  const [onboardLatitude, setOnboardLatitude] = useState<number | null>(null);
+  const [onboardLongitude, setOnboardLongitude] = useState<number | null>(null);
+  const [isOnboardLocating, setIsOnboardLocating] = useState<boolean>(false);
+  const [isOnboardingSaving, setIsOnboardingSaving] = useState<boolean>(false);
+  const [onboardingError, setOnboardingError] = useState<string | null>(null);
+
   // Modals
   const [selectedPaymentOrder, setSelectedPaymentOrder] = useState<Order | null>(null);
   const [selectedFeedbackOrder, setSelectedFeedbackOrder] = useState<Order | null>(null);
 
   useEffect(() => {
+    if (currentUser) {
+      setCustomerPhone(currentUser.phone || '');
+      setCustomerName(currentUser.full_name || 'Customer');
+      if (currentUser.role === 'customer' && (!currentUser.phone || currentUser.phone.trim().length < 10)) {
+        setIsOnboardingModalOpen(true);
+        setOnboardName(currentUser.full_name || 'Customer');
+      }
+    }
     loadData();
   }, [currentUser]);
+
+  const handleGetOnboardLocation = () => {
+    if (!navigator.geolocation) {
+      alert('Geolocation is not supported by your browser.');
+      return;
+    }
+    setIsOnboardLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setOnboardLatitude(pos.coords.latitude);
+        setOnboardLongitude(pos.coords.longitude);
+        setIsOnboardLocating(false);
+      },
+      (err) => {
+        console.warn('Geolocation error:', err);
+        setIsOnboardLocating(false);
+        alert('Could not retrieve current location.');
+      },
+      { timeout: 8000, enableHighAccuracy: true }
+    );
+  };
+
+  const handleSaveOnboarding = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setOnboardingError(null);
+    const clean = onboardPhone.replace(/[^0-9]/g, '').slice(-10);
+    if (clean.length < 10) {
+      setOnboardingError('Please enter a valid 10-digit Indian mobile number.');
+      return;
+    }
+
+    setIsOnboardingSaving(true);
+    try {
+      const res = await updateProfile({
+        phone: clean,
+        full_name: onboardName.trim() || currentUser?.full_name
+      });
+      if (!res.success) {
+        setOnboardingError(res.message);
+        setIsOnboardingSaving(false);
+        return;
+      }
+
+      // If address provided and user has no addresses, save it
+      if (onboardAddress.trim() && currentUser) {
+        const savedAddr = await LaundryService.saveCustomerAddress({
+          user_id: currentUser.id,
+          label: 'Home',
+          address_line: onboardAddress.trim(),
+          landmark: onboardLandmark.trim() || undefined,
+          pincode: onboardPincode.trim(),
+          is_default: true,
+          latitude: onboardLatitude,
+          longitude: onboardLongitude
+        });
+        setAddresses([savedAddr]);
+        setSelectedAddressId(savedAddr.id);
+        setIsEnteringNewAddress(false);
+      }
+
+      setIsOnboardingModalOpen(false);
+      setCustomerPhone(clean);
+      setCustomerName(onboardName.trim() || customerName);
+    } catch (err: any) {
+      setOnboardingError(err.message || 'Error saving profile.');
+    } finally {
+      setIsOnboardingSaving(false);
+    }
+  };
 
   const handleGetCurrentLocation = () => {
     if (!navigator.geolocation) {
@@ -216,15 +306,45 @@ export const CustomerHome: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-3">
-            <div className="text-right hidden sm:block">
-              <span className="block text-xs font-bold text-slate-800 leading-tight">
-                {currentUser?.full_name || 'Customer'}
-              </span>
-              <span className="block text-[11px] text-slate-500 font-mono">{currentUser?.phone || 'Guest'}</span>
-            </div>
-            <div className="w-9 h-9 rounded-full bg-brand-50 text-brand-700 border border-brand-200 flex items-center justify-center font-bold text-xs shadow-sm">
-              {currentUser?.full_name?.charAt(0) || <User className="w-4 h-4" />}
-            </div>
+            {currentUser ? (
+              <>
+                <div className="text-right hidden sm:block">
+                  <span className="block text-xs font-bold text-slate-800 leading-tight">
+                    {currentUser.full_name || 'Customer'}
+                  </span>
+                  <span className="block text-[11px] text-slate-500 font-mono">
+                    {currentUser.phone ? `+91 ${currentUser.phone}` : (currentUser.email || 'Google User')}
+                  </span>
+                </div>
+                {currentUser.avatar_url ? (
+                  <img
+                    src={currentUser.avatar_url}
+                    alt={currentUser.full_name}
+                    className="w-9 h-9 rounded-full object-cover border border-slate-200 shadow-sm"
+                  />
+                ) : (
+                  <div className="w-9 h-9 rounded-full bg-brand-50 text-brand-700 border border-brand-200 flex items-center justify-center font-bold text-xs shadow-sm">
+                    {currentUser.full_name?.charAt(0) || <User className="w-4 h-4" />}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition cursor-pointer"
+                  title="Sign Out"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </>
+            ) : (
+              <a
+                href="/login"
+                className="py-2 px-3.5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-sm transition flex items-center gap-1.5"
+              >
+                <User className="w-4 h-4" />
+                <span>Sign In with Google</span>
+              </a>
+            )}
           </div>
         </div>
       </div>
@@ -967,6 +1087,120 @@ export const CustomerHome: React.FC = () => {
             setSelectedFeedbackOrder(null);
           }}
         />
+      )}
+
+      {/* Post-Google-Login Customer Onboarding Modal (Phone & Default Address) */}
+      {isOnboardingModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl border border-slate-200 p-6 space-y-4 text-xs">
+            <div className="flex justify-between items-start pb-2 border-b">
+              <div>
+                <h3 className="font-black text-sm text-slate-900">Complete Your Delivery Profile</h3>
+                <p className="text-slate-500 text-[11px] mt-0.5">
+                  Welcome to SuperWash! Please provide your mobile number for pickup coordination.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsOnboardingModalOpen(false)}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {onboardingError && (
+              <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+                <span>{onboardingError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveOnboarding} className="space-y-3.5">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Full Name</label>
+                <input
+                  type="text"
+                  value={onboardName}
+                  onChange={(e) => setOnboardName(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 font-semibold text-slate-900"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  Contact Mobile Number <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-2.5 font-bold text-slate-400 text-xs">+91</span>
+                  <input
+                    type="tel"
+                    maxLength={10}
+                    placeholder="98765 43210"
+                    value={onboardPhone}
+                    onChange={(e) => setOnboardPhone(e.target.value.replace(/[^0-9]/g, ''))}
+                    className="w-full pl-10 pr-3 py-2 rounded-xl border border-slate-300 font-mono font-bold text-sm text-slate-900"
+                    required
+                    autoFocus
+                  />
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1">
+                  Used by our delivery executive to call you at pickup and delivery. (No SMS OTP required).
+                </p>
+              </div>
+
+              <div className="pt-2 border-t border-slate-100 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block font-bold text-slate-700">Default Home Address (Optional)</label>
+                  <button
+                    type="button"
+                    onClick={handleGetOnboardLocation}
+                    disabled={isOnboardLocating}
+                    className="text-[11px] text-brand-600 font-bold hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <MapPin className="w-3 h-3" />
+                    <span>{isOnboardLocating ? 'Locating...' : '📍 GPS'}</span>
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  placeholder="Flat / House No., Apartment, Street"
+                  value={onboardAddress}
+                  onChange={(e) => setOnboardAddress(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300"
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="text"
+                    placeholder="Landmark (Optional)"
+                    value={onboardLandmark}
+                    onChange={(e) => setOnboardLandmark(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300"
+                  />
+                  <input
+                    type="text"
+                    maxLength={6}
+                    placeholder="PIN Code"
+                    value={onboardPincode}
+                    onChange={(e) => setOnboardPincode(e.target.value.replace(/[^0-9]/g, ''))}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  type="submit"
+                  disabled={isOnboardingSaving || onboardPhone.length < 10}
+                  className="w-full py-3 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-xl shadow-md transition disabled:opacity-50 cursor-pointer"
+                >
+                  {isOnboardingSaving ? 'Saving Profile...' : 'Save & Continue'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

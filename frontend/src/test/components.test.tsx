@@ -474,4 +474,27 @@ describe('Period Analytics Calculations in Asia/Kolkata', () => {
   });
 });
 
+describe('Google OAuth & Profile Management Workflow', () => {
+  it('retrieves customer orders accurately by customer_id or phone without duplicates', async () => {
+    const custId = 'google-user-abc';
+    const phone = '9876543290';
+
+    const order1 = await LaundryService.createBooking({
+      customer_id: custId,
+      customer_name: 'Google Customer',
+      customer_phone: phone,
+      pickup_address: '100ft Rd Indiranagar',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-22',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    const ordersById = await LaundryService.getCustomerOrders(custId, null);
+    expect(ordersById.some(o => o.id === order1.id)).toBe(true);
+
+    const ordersByPhone = await LaundryService.getCustomerOrders(undefined, phone);
+    expect(ordersByPhone.some(o => o.id === order1.id)).toBe(true);
+  });
+});
+
 

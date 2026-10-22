@@ -13,14 +13,14 @@ import {
   IndianRupee, Package, CheckCircle2,
   Users, Settings, Plus, RefreshCw,
   Search, Shield, Phone, Sparkles, Star, MessageSquareHeart,
-  Calendar, Check, AlertCircle, X, MapPin, Download, TrendingUp, TrendingDown
+  Calendar, Check, AlertCircle, X, MapPin, Download, TrendingUp, TrendingDown, LogOut
 } from 'lucide-react';
 import {
   ServiceArea, LaundryServiceItem, PeriodFilter, DashboardPeriodAnalytics
 } from '../../types';
 
 export const OwnerDashboard: React.FC = () => {
-  const { currentUser } = useAuth();
+  const { currentUser, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<'overview' | 'orders' | 'staff' | 'payments' | 'feedback' | 'settings'>('overview');
   const [orders, setOrders] = useState<Order[]>([]);
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
@@ -366,10 +366,18 @@ export const OwnerDashboard: React.FC = () => {
             </button>
             <button
               onClick={loadAllData}
-              className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl transition"
+              className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl transition cursor-pointer"
               title="Refresh"
             >
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+            </button>
+            <button
+              onClick={logout}
+              className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl transition cursor-pointer flex items-center gap-1.5 text-xs font-semibold"
+              title="Sign Out"
+            >
+              <LogOut className="w-4 h-4" />
+              <span className="hidden sm:inline">Sign Out</span>
             </button>
           </div>
         </div>
