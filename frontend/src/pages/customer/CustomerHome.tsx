@@ -336,7 +336,7 @@ export const CustomerHome: React.FC = () => {
               <Sparkles className="w-5 h-5" />
             </div>
             <div>
-              <h1 className="font-black text-slate-900 text-lg leading-tight">SuperWash Express</h1>
+              <h1 className="font-black text-slate-900 text-lg leading-tight">SuperWash Exprez</h1>
               <p className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider">
                 Customer Laundry Hub • Bengaluru
               </p>
@@ -1276,7 +1276,7 @@ export const CustomerHome: React.FC = () => {
         {/* ================= 5. CONTACT US TAB ================= */}
         {activeTab === 'contact' && (
           <div className="bg-white rounded-3xl border border-slate-200 p-6 sm:p-8 space-y-4 shadow-sm text-xs max-w-xl">
-            <h2 className="font-black text-slate-900 text-lg">Contact SuperWash Express</h2>
+            <h2 className="font-black text-slate-900 text-lg">Contact SuperWash Exprez</h2>
             <p className="text-slate-600">
               Need urgent laundry pickup or have a special garment care request? Reach out directly to our shop!
             </p>

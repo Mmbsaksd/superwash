@@ -38,6 +38,10 @@ dist-ssr/
 .env
 .env.production
 
+# Backups and temporary CLI cache
+backups/
+supabase/.temp/
+
 # IDE
 .vscode/
 .idea/

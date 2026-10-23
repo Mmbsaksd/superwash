@@ -48,7 +48,7 @@ export const Navbar: React.FC = () => {
                 Super<span className="text-brand-600">Wash</span>
               </span>
               <span className="block text-[10px] uppercase font-bold tracking-widest text-slate-500 -mt-1">
-                Express & Dry Clean
+                Exprez & Dry Clean
               </span>
             </div>
           </Link>

@@ -53,7 +53,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
 
   const upiId = settings?.upi_id || 'superwash@upi';
   const payAmountNum = parseFloat(amountInput) || 0;
-  const upiPayLink = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=SuperWash%20Express&am=${payAmountNum > 0 ? payAmountNum : balanceRs}&cu=INR&tn=Order%20${order.order_number}`;
+  const upiPayLink = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=SuperWash%20Exprez&am=${payAmountNum > 0 ? payAmountNum : balanceRs}&cu=INR&tn=Order%20${order.order_number}`;
   const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(upiPayLink)}`;
 
   const handleSubmit = async (e: React.FormEvent) => {

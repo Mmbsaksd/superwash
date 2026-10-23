@@ -266,7 +266,7 @@ export const ResetPasswordPage: React.FC = () => {
             <Lock className="w-7 h-7" />
           </div>
           <div>
-            <h1 className="font-black text-slate-900 text-xl tracking-tight">SuperWash Express</h1>
+            <h1 className="font-black text-slate-900 text-xl tracking-tight">SuperWash Exprez</h1>
             <p className="text-xs text-slate-500 font-semibold uppercase tracking-wider">
               Staff Password Recovery
             </p>

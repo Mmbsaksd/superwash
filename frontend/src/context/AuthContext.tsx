@@ -88,7 +88,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           authUser.user_metadata?.name ||
           (authUser.email ? authUser.email.split('@')[0] : 'Customer'),
         avatar_url: authUser.user_metadata?.avatar_url || null,
-        role: (authUser.email && ['genaidream@gmail.com', 'bs.munavar@gmail.com', 'owner@superwash.in'].includes(authUser.email.toLowerCase())) ? 'owner' : 'customer',
+        role: (authUser.email && ['superwashexprez@gmail.com', 'genaidream@gmail.com', 'bs.munavar@gmail.com', 'owner@superwash.in'].includes(authUser.email.toLowerCase())) ? 'owner' : 'customer',
         is_active: true,
         created_at: new Date().toISOString()
       };

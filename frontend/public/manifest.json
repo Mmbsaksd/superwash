@@ -1,6 +1,6 @@
 {
-  "name": "SuperWash — Laundry Pickup & Delivery",
-  "short_name": "SuperWash",
+  "name": "SuperWash Exprez — Laundry Pickup & Delivery",
+  "short_name": "SuperWash Exprez",
   "description": "Simple mobile-first laundry pickup and delivery app by kilogram",
   "start_url": "/",
   "display": "standalone",

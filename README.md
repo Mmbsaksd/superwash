@@ -1,4 +1,4 @@
-# SuperWash Express — Production Operations & Laundry Management Platform
+# SuperWash Exprez — Production Operations & Laundry Management Platform
 
 A fast, mobile-first laundry pickup and delivery web application designed for laundry businesses in India charging on a transparent **price-per-kilogram** basis.
 
@@ -8,7 +8,7 @@ Built with a high-integrity architecture prioritizing **strict data persistence*
 
 ## 1. Authoritative Architecture & Data Path
 
-SuperWash Express operates with **Supabase PostgreSQL** as its single, authoritative shared source of truth.
+SuperWash Exprez operates with **Supabase PostgreSQL** as its single, authoritative shared source of truth.
 
 - **Primary Data Path:** The React frontend interacts directly with Supabase PostgreSQL using Row Level Security (RLS) policies, database triggers, and database sequences.
 - **Authentication:** Standardized on official **Google OAuth 2.0** through Supabase Auth (`signInWithOAuth({ provider: 'google' })`). Eliminates SMS OTP delays and third-party SMS gateway failures.
@@ -78,7 +78,7 @@ Google OAuth credentials are configured securely in Supabase and Google Cloud Co
 2. Create a new project (e.g. `superwash-express-auth`) or select an existing project.
 3. In the left navigation, go to **APIs & Services > OAuth consent screen**:
    - Choose **External** and click **Create**.
-   - App Name: `SuperWash Express`
+   - App Name: `SuperWash Exprez`
    - User Support Email: your business email (e.g. `care@superwash.in`)
    - Developer Contact Email: your technical admin email.
    - Scopes: Add `.../auth/userinfo.email` and `.../auth/userinfo.profile`.

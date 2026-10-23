@@ -86,7 +86,7 @@ export const LandingPage: React.FC = () => {
                 Super<span className="text-brand-600">Wash</span>
               </span>
               <span className="block text-[10px] uppercase font-bold tracking-widest text-slate-500 -mt-1">
-                Express • Bengaluru
+                Exprez • Bengaluru
               </span>
             </div>
           </Link>
@@ -409,7 +409,7 @@ export const LandingPage: React.FC = () => {
                 Visit or Contact
               </span>
               <h2 className="text-2xl font-black text-slate-900 leading-tight">
-                SuperWash Express Shop
+                SuperWash Exprez Shop
               </h2>
               <p className="text-slate-600">
                 You are welcome to drop off clothes directly at our facility counter or call us for any queries.
@@ -460,7 +460,7 @@ export const LandingPage: React.FC = () => {
               <div className="w-7 h-7 rounded-lg bg-brand-600 flex items-center justify-center text-white font-bold">
                 <Sparkles className="w-4 h-4" />
               </div>
-              <span className="font-black text-white text-base">SuperWash Express</span>
+              <span className="font-black text-white text-base">SuperWash Exprez</span>
             </div>
 
             <div className="flex items-center gap-5 text-slate-400">
@@ -477,7 +477,7 @@ export const LandingPage: React.FC = () => {
           </div>
 
           <div className="pt-4 border-t border-slate-800 flex flex-col sm:flex-row justify-between items-center text-[11px] text-slate-500 gap-2">
-            <span>© {new Date().getFullYear()} SuperWash Express India. All rights reserved.</span>
+            <span>© {new Date().getFullYear()} SuperWash Exprez India. All rights reserved.</span>
             <span>Simple Per-Kilogram Laundry Pickup & Delivery.</span>
           </div>
         </div>
@@ -494,7 +494,7 @@ export const LandingPage: React.FC = () => {
               </button>
             </div>
             <p className="text-slate-600 leading-relaxed">
-              SuperWash Express respects your privacy. We collect only the mobile number, address, and pickup preferences needed to deliver laundry services. Your data is protected using database-level Row Level Security and is never sold to third parties. Customer feedback is private to store management and is not published on public directories.
+              SuperWash Exprez respects your privacy. We collect only the mobile number, address, and pickup preferences needed to deliver laundry services. Your data is protected using database-level Row Level Security and is never sold to third parties. Customer feedback is private to store management and is not published on public directories.
             </p>
             <button
               onClick={() => setIsPrivacyOpen(false)}

@@ -5,7 +5,7 @@ import os
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    PROJECT_NAME: str = "SuperWash Express - Operations & Management API"
+    PROJECT_NAME: str = "SuperWash Exprez - Operations & Management API"
     API_V1_STR: str = "/api/v1"
     SECRET_KEY: str = os.getenv("SECRET_KEY", "superwash_dev_secret_change_in_production")
     ALGORITHM: str = "HS256"
@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./superwash.db")
 
     # Business Information (India localized - real business defaults)
-    BUSINESS_NAME: str = "SuperWash Express"
+    BUSINESS_NAME: str = "SuperWash Exprez"
     BUSINESS_PHONE: str = "+91 98765 43210"
     BUSINESS_EMAIL: str = "care@superwash.in"
     BUSINESS_ADDRESS: str = "Shop #14, Metro Pillar 78, Indiranagar, Bengaluru, Karnataka 560038"

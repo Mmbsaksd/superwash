@@ -5,7 +5,7 @@ import { DEMO_PROFILES } from '../../services/laundryService';
 import { UserRole } from '../../types';
 import {
   Sparkles, ArrowRight, CheckCircle2,
-  AlertCircle, Loader2, ShieldCheck, Lock, User, KeyRound
+  AlertCircle, Loader2, ShieldCheck, Lock
 } from 'lucide-react';
 
 export interface LoginPageProps {
@@ -13,7 +13,7 @@ export interface LoginPageProps {
 }
 
 export const LoginPage: React.FC<LoginPageProps> = ({ isStaffPortal }) => {
-  const { signInWithGoogle, signInWithPassword, sendPasswordResetEmail, switchDemoRole, currentUser, logout, isLoading: isAuthLoading } = useAuth();
+  const { signInWithGoogle, switchDemoRole, currentUser, logout, isLoading: isAuthLoading } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -29,12 +29,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({ isStaffPortal }) => {
     new URLSearchParams(location.search).get('redirect')?.startsWith('/manager') ||
     new URLSearchParams(location.search).get('redirect')?.startsWith('/delivery')
   );
-
-  const [authTab, setAuthTab] = useState<'customer' | 'staff'>(isStaffMode ? 'staff' : 'customer');
-  const [staffEmail, setStaffEmail] = useState<string>('manager@superwash.in');
-  const [staffPassword, setStaffPassword] = useState<string>('');
-  const [isStaffSubmitting, setIsStaffSubmitting] = useState<boolean>(false);
-  const [isResettingPassword, setIsResettingPassword] = useState<boolean>(false);
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,17 +46,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({ isStaffPortal }) => {
 
     if (errorDesc) {
       setError(decodeURIComponent(errorDesc).replace(/\+/g, ' '));
-    }
-
-    const roleParam = params.get('role');
-    if (roleParam === 'manager' || roleParam === 'delivery' || roleParam === 'staff') {
-      setAuthTab('staff');
-      if (roleParam === 'delivery') {
-        setStaffEmail('superwash.audit.1792664886550@gmail.com');
-      } else {
-        setStaffEmail('manager@superwash.in');
-      }
-      return;
     }
 
     // Forward password recovery callbacks to dedicated /reset-password route
@@ -89,9 +72,20 @@ export const LoginPage: React.FC<LoginPageProps> = ({ isStaffPortal }) => {
   const redirectByRole = (role: UserRole) => {
     const params = new URLSearchParams(location.search);
     const redirectParam = params.get('redirect');
+
     if (redirectParam && redirectParam.startsWith('/')) {
-      navigate(redirectParam);
-      return;
+      // Check if user's verified role is authorized to access the requested redirect target
+      const isAuthorized =
+        ((redirectParam.startsWith('/admin') || redirectParam.startsWith('/owner')) && role === 'owner') ||
+        (redirectParam.startsWith('/manager') && (role === 'manager' || role === 'owner')) ||
+        (redirectParam.startsWith('/delivery') && (role === 'delivery' || role === 'owner')) ||
+        (redirectParam.startsWith('/customer') && role === 'customer');
+
+      if (isAuthorized) {
+        navigate(redirectParam);
+        return;
+      }
+      // If the redirect target is not authorized for this role, ignore it and route to their authorized portal
     }
 
     if (role === 'owner') {
@@ -118,9 +112,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({ isStaffPortal }) => {
     setInfoMessage(null);
     setIsLoading(true);
 
-    const targetRedirect = isStaffMode
-      ? (new URLSearchParams(location.search).get('redirect') || '/admin')
-      : (new URLSearchParams(location.search).get('redirect') || '/customer');
+    const explicitRedirect = new URLSearchParams(location.search).get('redirect');
+    const targetRedirect = explicitRedirect || (isStaffMode ? '/admin' : '/customer');
     const roleHint = isStaffMode ? 'owner' : 'customer';
 
     try {
@@ -134,65 +127,16 @@ export const LoginPage: React.FC<LoginPageProps> = ({ isStaffPortal }) => {
       if (res.success && res.message?.includes('Demo')) {
         setInfoMessage('Signed in successfully! Redirecting...');
         setTimeout(() => {
-          if (isStaffMode) {
-            navigate(targetRedirect);
+          if (currentUser) {
+            redirectByRole(currentUser.role);
           } else {
-            navigate('/customer');
+            navigate(targetRedirect);
           }
         }, 300);
       }
     } catch (err: any) {
       setError(err.message || 'Google sign-in could not be initiated.');
       setIsLoading(false);
-    }
-  };
-
-  const handleStaffLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setInfoMessage(null);
-
-    if (!staffEmail.trim() || !staffPassword.trim()) {
-      setError('Please enter both your staff email and password.');
-      return;
-    }
-
-    setIsStaffSubmitting(true);
-    try {
-      const res = await signInWithPassword(staffEmail.trim(), staffPassword);
-      if (!res.success) {
-        setError(res.message || 'Staff authentication failed. Please verify credentials.');
-        setIsStaffSubmitting(false);
-        return;
-      }
-      setInfoMessage('Staff authenticated successfully. Redirecting to dashboard...');
-      const role = res.role || 'manager';
-      setTimeout(() => redirectByRole(role), 300);
-    } catch (err: any) {
-      setError(err?.message || 'Authentication service error.');
-      setIsStaffSubmitting(false);
-    }
-  };
-
-  const handleForgotPassword = async () => {
-    if (!staffEmail.trim()) {
-      setError('Please enter your staff email address above to receive a reset link.');
-      return;
-    }
-    setError(null);
-    setInfoMessage(null);
-    setIsResettingPassword(true);
-    try {
-      const res = await sendPasswordResetEmail(staffEmail.trim());
-      if (res.success) {
-        setInfoMessage(res.message);
-      } else {
-        setError(res.message);
-      }
-    } catch (err: any) {
-      setError(err?.message || 'Password reset request failed.');
-    } finally {
-      setIsResettingPassword(false);
     }
   };
 
@@ -212,7 +156,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ isStaffPortal }) => {
           <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-brand-600 to-cyan-500 flex items-center justify-center text-white mx-auto shadow-md">
             <Sparkles className="w-7 h-7" />
           </div>
-          <h1 className="text-2xl font-black text-slate-900 tracking-tight">SuperWash Express</h1>
+          <h1 className="text-2xl font-black text-slate-900 tracking-tight">SuperWash Exprez</h1>
           <p className="text-xs text-slate-500">
             {isStaffMode ? 'Operations & Staff Portal • Bengaluru' : 'Premium Laundry Pickup & Delivery • Bengaluru'}
           </p>
@@ -388,117 +332,15 @@ export const LoginPage: React.FC<LoginPageProps> = ({ isStaffPortal }) => {
                 <span className="text-slate-800 font-black">Continue with Google</span>
               </button>
 
-              <div className="relative flex py-1 items-center">
-                <div className="flex-grow border-t border-slate-200"></div>
-                <span className="flex-shrink mx-3 text-[10px] text-slate-400 font-bold uppercase">
-                  or staff credentials
-                </span>
-                <div className="flex-grow border-t border-slate-200"></div>
+              <div className="pt-2 border-t border-slate-100 space-y-2 text-center">
+                <div className="flex items-center justify-center gap-1.5 text-[11px] text-purple-700 font-semibold">
+                  <ShieldCheck className="w-3.5 h-3.5 text-purple-600" />
+                  <span>Authorized staff only • Instant Google OAuth</span>
+                </div>
+                <p className="text-[11px] text-slate-400 leading-normal">
+                  Access is strictly restricted to accounts pre-registered by the business owner.
+                </p>
               </div>
-
-              {/* Staff Credentials Form (Preserved for automated test suites and direct staff access) */}
-              <form onSubmit={handleStaffLogin} className="space-y-4">
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Staff Email Address
-                    </label>
-                    <input
-                      id="staff-email-input"
-                      type="email"
-                      value={staffEmail}
-                      onChange={(e) => setStaffEmail(e.target.value)}
-                      required
-                      placeholder="manager@superwash.in"
-                      className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-xs font-semibold text-slate-700">
-                        Password
-                      </label>
-                      <button
-                        type="button"
-                        id="staff-forgot-password-btn"
-                        onClick={handleForgotPassword}
-                        disabled={isResettingPassword}
-                        className="text-[11px] text-purple-600 hover:text-purple-800 font-semibold transition"
-                      >
-                        {isResettingPassword ? 'Sending link...' : 'Forgot password?'}
-                      </button>
-                    </div>
-                    <input
-                      id="staff-password-input"
-                      type="password"
-                      value={staffPassword}
-                      onChange={(e) => setStaffPassword(e.target.value)}
-                      required
-                      placeholder="••••••••••••"
-                      className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none"
-                    />
-                  </div>
-
-                  <button
-                    id="staff-login-btn"
-                    type="submit"
-                    disabled={isStaffSubmitting}
-                    className="w-full py-3 px-4 bg-purple-600 hover:bg-purple-700 active:scale-[0.99] text-white font-bold text-xs rounded-xl shadow-sm transition flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
-                  >
-                    {isStaffSubmitting ? (
-                      <Loader2 className="w-4 h-4 animate-spin text-white" />
-                    ) : (
-                      <KeyRound className="w-4 h-4" />
-                    )}
-                    <span>Sign In to Staff Portal</span>
-                  </button>
-                </div>
-
-                {/* Quick credential pre-fill helpers */}
-                <div className="pt-2 border-t border-slate-100 space-y-1.5 text-center">
-                  <span className="text-[10px] uppercase font-bold text-slate-400">
-                    Quick Staff Credentials
-                  </span>
-                  <div className="flex flex-wrap items-center justify-center gap-1.5">
-                    <button
-                      type="button"
-                      id="prefill-manager-btn"
-                      onClick={() => {
-                        setStaffEmail('manager@superwash.in');
-                        setStaffPassword('');
-                      }}
-                      className="text-[11px] px-2.5 py-1 rounded-lg bg-purple-50 text-purple-700 hover:bg-purple-100 font-medium transition"
-                    >
-                      Store Manager
-                    </button>
-                    <button
-                      type="button"
-                      id="prefill-ramesh-btn"
-                      onClick={() => {
-                        setStaffEmail('superwash.audit.1792664886550@gmail.com');
-                        setStaffPassword('');
-                      }}
-                      className="text-[11px] px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 font-medium transition"
-                    >
-                      Ramesh (Delivery)
-                    </button>
-                    <button
-                      type="button"
-                      id="prefill-suresh-btn"
-                      onClick={() => {
-                        setStaffEmail('suresh.superwash.express@gmail.com');
-                        setStaffPassword('');
-                      }}
-                      className="text-[11px] px-2.5 py-1 rounded-lg bg-teal-50 text-teal-700 hover:bg-teal-100 font-medium transition"
-                    >
-                      Suresh (Delivery)
-                    </button>
-                    {/* Hidden helper element with id staff-tab-btn for test suite compatibility */}
-                    <span id="staff-tab-btn" className="hidden" />
-                  </div>
-                </div>
-              </form>
 
               <div className="text-center pt-2">
                 <a

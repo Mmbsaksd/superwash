@@ -13,7 +13,7 @@ export const Footer: React.FC = () => {
               <div className="w-8 h-8 rounded-lg bg-brand-500 flex items-center justify-center text-white">
                 <Sparkles className="w-4 h-4" />
               </div>
-              <span className="text-xl font-bold text-white tracking-tight">SuperWash Express</span>
+              <span className="text-xl font-bold text-white tracking-tight">SuperWash Exprez</span>
             </div>
             <p className="text-slate-400 text-xs leading-relaxed">
               Professional laundry, dry cleaning, steam pressing, and premium fabric care. Serving homes and businesses across Bengaluru with contactless doorstep pickup and walk-in counter drop-off.
@@ -74,7 +74,7 @@ export const Footer: React.FC = () => {
         </div>
 
         <div className="mt-12 pt-8 border-t border-slate-800 flex flex-col sm:flex-row justify-between items-center text-xs text-slate-500 gap-4">
-          <p>© {new Date().getFullYear()} SuperWash Express & Dry Cleaners. All rights reserved.</p>
+          <p>© {new Date().getFullYear()} SuperWash Exprez & Dry Cleaners. All rights reserved.</p>
           <div className="flex items-center gap-6">
             <Link to="/privacy" className="hover:text-slate-300 transition">Privacy Policy</Link>
             <Link to="/terms" className="hover:text-slate-300 transition">Terms of Service</Link>

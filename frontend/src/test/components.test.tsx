@@ -11,6 +11,7 @@ import { OwnerDashboard } from '../pages/admin/OwnerDashboard';
 import { LaundryService, DEMO_PROFILES } from '../services/laundryService';
 import { supabase } from '../services/supabase';
 import { FunctionsClient } from '@supabase/functions-js';
+import { Profile } from '../types';
 
 beforeEach(async () => {
   localStorage.clear();
@@ -1336,7 +1337,7 @@ describe('Staff Authentication Accounts & Password Management', () => {
     expect(suresh?.email).toBe('suresh.superwash.express@gmail.com');
   });
 
-  it('renders staff authentication tab with all three quick credential options and forgot password action', async () => {
+  it('renders staff authentication tab with Google-only authentication and no password or quick credential forms', async () => {
     render(
       <MemoryRouter initialEntries={['/login?role=staff']}>
         <AuthProvider>
@@ -1350,42 +1351,126 @@ describe('Staff Authentication Accounts & Password Management', () => {
       expect(screen.queryByTestId('login-loading')).toBeNull();
     });
 
-    // Verify staff authentication form header
+    // Verify staff authentication portal branding & Google button
+    expect(screen.getAllByText(/Operations & Staff Portal/i).length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/Staff Authentication/i)).toBeDefined();
+    expect(screen.getByText(/Authorized staff only • Instant Google OAuth/i)).toBeDefined();
+    expect(screen.getByText(/Continue with Google/i)).toBeDefined();
 
-    const emailInput = screen.getByPlaceholderText('manager@superwash.in') as HTMLInputElement;
-    expect(emailInput).toBeDefined();
+    // Verify password form, inputs, and quick credential helpers are completely removed
+    expect(screen.queryByPlaceholderText('manager@superwash.in')).toBeNull();
+    expect(screen.queryByPlaceholderText('••••••••••••')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Forgot password\?/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Sign In to Staff Portal/i })).toBeNull();
+    expect(document.getElementById('prefill-manager-btn')).toBeNull();
+    expect(document.getElementById('prefill-ramesh-btn')).toBeNull();
+    expect(document.getElementById('prefill-suresh-btn')).toBeNull();
+  });
 
-    // Verify all 3 quick staff credential helper buttons
-    const prefillManagerBtn = document.getElementById('prefill-manager-btn')!;
-    const prefillRameshBtn = document.getElementById('prefill-ramesh-btn')!;
-    const prefillSureshBtn = document.getElementById('prefill-suresh-btn')!;
+  it('enforces role-aware redirection: ignores unauthorized /admin redirect param and routes manager to /manager', async () => {
+    const managerProfile: Profile = {
+      id: 'manager-test-123',
+      email: 'mmbsaksd@gmail.com',
+      full_name: 'Store Manager',
+      role: 'manager',
+      is_active: true,
+      created_at: new Date().toISOString()
+    };
+    localStorage.setItem('superwash_auth_profile', JSON.stringify(managerProfile));
 
-    expect(prefillManagerBtn).toBeDefined();
-    expect(prefillRameshBtn).toBeDefined();
-    expect(prefillSureshBtn).toBeDefined();
+    render(
+      <MemoryRouter initialEntries={['/login?redirect=/admin']}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/admin" element={<div data-testid="admin-view">Admin View</div>} />
+            <Route path="/manager" element={<div data-testid="manager-view">Manager View</div>} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
 
-    // Click Ramesh helper button and verify email pre-fill
-    fireEvent.click(prefillRameshBtn);
-    expect(emailInput.value).toBe('superwash.audit.1792664886550@gmail.com');
-
-    // Click Suresh helper button and verify email pre-fill
-    fireEvent.click(prefillSureshBtn);
-    expect(emailInput.value).toBe('suresh.superwash.express@gmail.com');
-
-    // Click Store Manager helper button and verify email pre-fill
-    fireEvent.click(prefillManagerBtn);
-    expect(emailInput.value).toBe('manager@superwash.in');
-
-    // Verify "Forgot password?" button exists
-    const forgotBtn = screen.getByRole('button', { name: /Forgot password\?/i });
-    expect(forgotBtn).toBeDefined();
-
-    // Click forgot password and verify success/notice message
-    fireEvent.click(forgotBtn);
+    // Must ignore unauthorized redirect=/admin and route manager directly to /manager
     await waitFor(() => {
-      expect(screen.getByText(/Password reset.*manager@superwash\.in/i)).toBeDefined();
+      expect(screen.getByTestId('manager-view')).toBeInTheDocument();
     });
+    expect(screen.queryByTestId('admin-view')).toBeNull();
+  });
+
+  it('enforces role-aware redirection: routes owner with /admin redirect to /admin', async () => {
+    const ownerProfile: Profile = {
+      id: 'owner-test-123',
+      email: 'bs.munavar@gmail.com',
+      full_name: 'Owner',
+      role: 'owner',
+      is_active: true,
+      created_at: new Date().toISOString()
+    };
+    localStorage.setItem('superwash_auth_profile', JSON.stringify(ownerProfile));
+
+    render(
+      <MemoryRouter initialEntries={['/login?redirect=/admin']}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/admin" element={<div data-testid="admin-view">Admin View</div>} />
+            <Route path="/manager" element={<div data-testid="manager-view">Manager View</div>} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    // Owner is authorized for /admin and must reach /admin
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-view')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('manager-view')).toBeNull();
+  });
+
+  it('enforces role-aware redirection: routes superwashexprez@gmail.com with /admin redirect to /admin as primary owner', async () => {
+    const primaryOwnerProfile: Profile = {
+      id: '509b4498-6b6a-4c3f-a80a-9c7992ea998d',
+      email: 'superwashexprez@gmail.com',
+      full_name: 'Super Wash Express',
+      role: 'owner',
+      is_active: true,
+      created_at: new Date().toISOString()
+    };
+    localStorage.setItem('superwash_auth_profile', JSON.stringify(primaryOwnerProfile));
+
+    render(
+      <MemoryRouter initialEntries={['/login?redirect=/admin']}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/admin" element={<div data-testid="admin-view">Admin View</div>} />
+            <Route path="/manager" element={<div data-testid="manager-view">Manager View</div>} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    // Primary owner is authorized for /admin and must reach /admin
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-view')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('manager-view')).toBeNull();
+  });
+
+  it('renders SuperWash Exprez brand name consistently on the login portal', async () => {
+    render(
+      <MemoryRouter initialEntries={['/login']}>
+        <AuthProvider>
+          <LoginPage />
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('login-loading')).toBeNull();
+    });
+
+    expect(screen.getByText('SuperWash Exprez')).toBeInTheDocument();
   });
 
   it('authenticates staff and routes according to authoritative profile role', async () => {

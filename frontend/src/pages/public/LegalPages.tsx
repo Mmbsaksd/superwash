@@ -8,7 +8,7 @@ export const PrivacyPage: React.FC = () => {
         <h1 className="text-3xl font-black text-slate-900 tracking-tight flex items-center gap-2.5">
           <ShieldCheck className="w-8 h-8 text-brand-600" /> Privacy Policy
         </h1>
-        <p className="text-xs text-slate-500 mt-1">SuperWash Express & Dry Cleaners | Last updated: October 2026</p>
+        <p className="text-xs text-slate-500 mt-1">SuperWash Exprez & Dry Cleaners | Last updated: October 2026</p>
       </div>
 
       <div className="space-y-4 text-xs leading-relaxed text-slate-600">
@@ -38,7 +38,7 @@ export const TermsPage: React.FC = () => {
         <h1 className="text-3xl font-black text-slate-900 tracking-tight flex items-center gap-2.5">
           <FileText className="w-8 h-8 text-brand-600" /> Terms of Service
         </h1>
-        <p className="text-xs text-slate-500 mt-1">SuperWash Express & Dry Cleaners | Last updated: October 2026</p>
+        <p className="text-xs text-slate-500 mt-1">SuperWash Exprez & Dry Cleaners | Last updated: October 2026</p>
       </div>
 
       <div className="space-y-4 text-xs leading-relaxed text-slate-600">

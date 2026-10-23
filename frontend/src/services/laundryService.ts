@@ -27,7 +27,7 @@ export const isUUID = (str?: string | null): boolean => {
 
 // Default Business Settings
 const DEFAULT_SETTINGS: BusinessSettings = {
-  business_name: 'SuperWash Express',
+  business_name: 'SuperWash Exprez',
   business_phone: '+91 98765 43210',
   business_address: 'Shop #14, Metro Pillar 78, Indiranagar, Bengaluru 560038',
   price_per_kg_paise: 8000, // ₹80.00 / kg
@@ -1643,6 +1643,31 @@ export class LaundryService {
 
         const { data, error } = await query.order('created_at', { ascending: true });
         if (!error && data) {
+          // Include active unclaimed staff pre-registrations so owner sees invited accounts
+          try {
+            const { data: preRegs } = await supabase
+              .from('staff_pre_registrations')
+              .select('*')
+              .is('claimed_at', null);
+
+            if (preRegs && preRegs.length > 0) {
+              const existingEmails = new Set(data.map((p) => p.email?.toLowerCase()).filter(Boolean));
+              for (const reg of preRegs) {
+                if (!existingEmails.has(reg.email.toLowerCase())) {
+                  data.push({
+                    id: reg.id,
+                    email: reg.email,
+                    phone: reg.phone,
+                    full_name: `${reg.full_name} (Invited - Pending Google Sign-In)`,
+                    role: reg.role,
+                    is_active: reg.is_active,
+                    created_at: reg.created_at
+                  });
+                }
+              }
+            }
+          } catch {}
+
           localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(data));
           return data;
         }

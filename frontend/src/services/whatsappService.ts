@@ -106,7 +106,7 @@ export class WhatsAppService {
   }
 
   static async notifyDelivered(orderNumber: string, phone: string, orderId?: string) {
-    const msg = `SuperWash: Order #${orderNumber} has been delivered! Thank you for choosing SuperWash Express. Rate your wash: https://superwash.in`;
+    const msg = `SuperWash: Order #${orderNumber} has been delivered! Thank you for choosing SuperWash Exprez. Rate your wash: https://superwash.in`;
     return this.sendNotification(phone, 'delivered', msg, orderId);
   }
 

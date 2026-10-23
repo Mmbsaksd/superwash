@@ -413,6 +413,11 @@ export const OwnerDashboard: React.FC = () => {
       return;
     }
 
+    if (editingStaff.email?.toLowerCase() === 'superwashexprez@gmail.com' && editStaffRole !== 'owner') {
+      setEditStaffError('The permanent primary owner role cannot be changed.');
+      return;
+    }
+
     // Require confirmation if role changed
     if (editStaffRole !== editingStaff.role && !isConfirmingRoleChange) {
       setIsConfirmingRoleChange(true);
@@ -444,6 +449,10 @@ export const OwnerDashboard: React.FC = () => {
   };
 
   const handleRequestToggleStatus = (staff: Profile) => {
+    if (staff.email?.toLowerCase() === 'superwashexprez@gmail.com') {
+      alert('The permanent primary owner account cannot be deactivated.');
+      return;
+    }
     if (staff.id === currentUser?.id) {
       alert('You cannot deactivate your own owner account.');
       return;
@@ -705,7 +714,7 @@ export const OwnerDashboard: React.FC = () => {
               <Shield className="w-6 h-6" />
             </div>
             <div>
-              <h1 className="font-black text-lg leading-tight">SuperWash Express • Business Owner</h1>
+              <h1 className="font-black text-lg leading-tight">SuperWash Exprez • Business Owner</h1>
               <p className="text-xs text-slate-400">Operations, Settings & Quality Portal</p>
             </div>
           </div>
@@ -1582,11 +1591,15 @@ export const OwnerDashboard: React.FC = () => {
                         <div>
                           <div className="flex items-center gap-2">
                             <span className="font-bold text-slate-900 block text-sm">{staff.full_name}</span>
-                            {staff.id === currentUser?.id && (
+                            {staff.email?.toLowerCase() === 'superwashexprez@gmail.com' ? (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300">
+                                Permanent Primary Owner
+                              </span>
+                            ) : staff.id === currentUser?.id ? (
                               <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-purple-100 text-purple-700 border border-purple-200">
                                 You
                               </span>
-                            )}
+                            ) : null}
                           </div>
                           <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
                             <span className="text-slate-500 font-mono text-[11px]">{staff.phone || 'No phone'}</span>
@@ -1641,7 +1654,14 @@ export const OwnerDashboard: React.FC = () => {
                       )}
 
                       {/* Activate / Deactivate Button */}
-                      {staff.id === currentUser?.id ? (
+                      {staff.email?.toLowerCase() === 'superwashexprez@gmail.com' ? (
+                        <span
+                          className="px-3 py-1.5 rounded-xl font-bold text-[11px] bg-amber-50 text-amber-800 border border-amber-300 cursor-not-allowed"
+                          title="The permanent primary owner account cannot be deactivated"
+                        >
+                          Permanent Owner
+                        </span>
+                      ) : staff.id === currentUser?.id ? (
                         <span
                           className="px-3 py-1.5 rounded-xl font-bold text-[11px] bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
                           title="You cannot deactivate your own owner account"
@@ -1735,18 +1755,22 @@ export const OwnerDashboard: React.FC = () => {
                           setEditStaffRole(e.target.value as any);
                           setIsConfirmingRoleChange(false);
                         }}
-                        disabled={editingStaff.id === currentUser?.id}
+                        disabled={editingStaff.id === currentUser?.id || editingStaff.email?.toLowerCase() === 'superwashexprez@gmail.com'}
                         className="w-full px-3.5 py-2.5 rounded-2xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 font-semibold text-slate-800 disabled:bg-slate-100 disabled:cursor-not-allowed"
                       >
                         <option value="delivery">Delivery Person</option>
                         <option value="manager">Store Manager</option>
                         {editingStaff.role === 'owner' && <option value="owner">Business Owner</option>}
                       </select>
-                      {editingStaff.id === currentUser?.id && (
+                      {editingStaff.email?.toLowerCase() === 'superwashexprez@gmail.com' ? (
+                        <span className="text-[11px] text-amber-700 font-semibold mt-1 block">
+                          The permanent primary owner role cannot be changed.
+                        </span>
+                      ) : editingStaff.id === currentUser?.id ? (
                         <span className="text-[11px] text-slate-400 mt-1 block">
                           You cannot change your own business owner role from the staff directory.
                         </span>
-                      )}
+                      ) : null}
                     </div>
 
                     {/* Read-only Auth Email */}
