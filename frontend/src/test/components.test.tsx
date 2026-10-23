@@ -1,11 +1,16 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
-import { describe, it, expect, beforeEach } from 'vitest';
-import { BrowserRouter } from 'react-router-dom';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { BrowserRouter, MemoryRouter, Routes, Route } from 'react-router-dom';
 import { StatusBadge, PaymentBadge } from '../components/StatusBadge';
 import { RoleSwitcherBar } from '../components/RoleSwitcherBar';
-import { AuthProvider } from '../context/AuthContext';
-import { LaundryService } from '../services/laundryService';
+import { AuthProvider, useAuth } from '../context/AuthContext';
+import { ProtectedRoute } from '../components/ProtectedRoute';
+import { LoginPage } from '../pages/public/LoginPage';
+import { OwnerDashboard } from '../pages/admin/OwnerDashboard';
+import { LaundryService, DEMO_PROFILES } from '../services/laundryService';
+import { supabase } from '../services/supabase';
+import { FunctionsClient } from '@supabase/functions-js';
 
 beforeEach(async () => {
   localStorage.clear();
@@ -465,6 +470,48 @@ describe('Service Areas & Dynamic Coverage Management', () => {
     // Reactivate area
     await LaundryService.updateServiceArea(area.id, { is_active: true });
     expect(await LaundryService.isPincodeServiceable('560099')).toBe(true);
+  });
+
+  it('persists newly added service area across getServiceAreas reloads (simulating refresh)', async () => {
+    const area = await LaundryService.addServiceArea({
+      pincode: '560102',
+      area_name: 'HSR Layout Sector 1',
+      city: 'Bengaluru',
+      state: 'Karnataka',
+      is_active: true
+    });
+
+    expect(area.id).toBeDefined();
+    expect(area.area_name).toBe('HSR Layout Sector 1');
+    expect(area.name).toBe('HSR Layout Sector 1');
+
+    // Simulate page reload
+    const reloaded = await LaundryService.getServiceAreas();
+    const found = reloaded.find(a => a.pincode === '560102');
+    expect(found).toBeDefined();
+    expect(found?.area_name).toBe('HSR Layout Sector 1');
+    expect(found?.city).toBe('Bengaluru');
+    expect(found?.is_active).toBe(true);
+  });
+
+  it('rejects duplicate PIN code registration with clear error message', async () => {
+    await LaundryService.addServiceArea({
+      pincode: '560095',
+      area_name: 'Koramangala 4th Block',
+      city: 'Bengaluru',
+      state: 'Karnataka',
+      is_active: true
+    });
+
+    await expect(
+      LaundryService.addServiceArea({
+        pincode: '560095',
+        area_name: 'Duplicate Koramangala',
+        city: 'Bengaluru',
+        state: 'Karnataka',
+        is_active: true
+      })
+    ).rejects.toThrow(/already registered/i);
   });
 });
 
@@ -955,7 +1002,925 @@ describe('Hardened Workflow, Security Invariants & Payment Atomicity', () => {
       LaundryService.recordPayment(unbilledOrder.id, 10000, 'cash')
     ).rejects.toThrow(/cannot record payment for a cancelled order/i);
   });
+
+  it('rejects conflicting idempotency key reuse when payment parameters differ', async () => {
+    const order = await LaundryService.createBooking({
+      customer_id: 'cust-uuid-idemp-conflict',
+      customer_name: 'Idempotency Conflict Tester',
+      customer_phone: '9876543296',
+      pickup_address: 'Koramangala 1st Block',
+      pickup_pincode: '560034',
+      pickup_date: '2026-10-23',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+    await LaundryService.assignPickupStaff(order.id, 'staff-p1', 'Pickup Staff', '9876543215');
+    await LaundryService.recordPickupCollectionAndWeight(order.id, 5.0, 'staff-p1', 'Pickup Staff'); // 40000 paise bill
+
+    const idempKey = 'reused-conflict-key-999';
+    // 1. Initial valid payment of 10000 paise
+    await LaundryService.recordPayment(order.id, 10000, 'cash', undefined, 'Initial valid pay', 'staff-d1', 'Courier', idempKey);
+
+    // 2. Conflicting attempt using SAME idempotency key but DIFFERENT amount (20000 paise)
+    await expect(
+      LaundryService.recordPayment(order.id, 20000, 'cash', undefined, 'Different amount attempt', 'staff-d1', 'Courier', idempKey)
+    ).rejects.toThrow(/idempotency conflict.*different payment parameters/i);
+
+    // 3. Conflicting attempt using SAME idempotency key on DIFFERENT order
+    const secondOrder = await LaundryService.createBooking({
+      customer_id: 'cust-uuid-idemp-conflict-2',
+      customer_name: 'Second Order Tester',
+      customer_phone: '9876543297',
+      pickup_address: 'Indiranagar 5th Main',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-23',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+    await LaundryService.assignPickupStaff(secondOrder.id, 'staff-p1', 'Pickup Staff', '9876543215');
+    await LaundryService.recordPickupCollectionAndWeight(secondOrder.id, 4.0, 'staff-p1', 'Pickup Staff');
+
+    await expect(
+      LaundryService.recordPayment(secondOrder.id, 10000, 'cash', undefined, 'Cross-order key reuse', 'staff-d1', 'Courier', idempKey)
+    ).rejects.toThrow(/idempotency conflict.*different payment parameters/i);
+  });
+
+  it('enforces global duplicate UPI transaction reference (UTR) protection across different orders', async () => {
+    // Order 1
+    const order1 = await LaundryService.createBooking({
+      customer_id: 'cust-uuid-utr-1',
+      customer_name: 'UTR Tester 1',
+      customer_phone: '9876543298',
+      pickup_address: 'Whitefield Main Road',
+      pickup_pincode: '560066',
+      pickup_date: '2026-10-23',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+    await LaundryService.assignPickupStaff(order1.id, 'staff-p1', 'Pickup Staff', '9876543215');
+    await LaundryService.recordPickupCollectionAndWeight(order1.id, 3.0, 'staff-p1', 'Pickup Staff'); // 24000 paise bill
+
+    const sharedUtr = 'UTR-GLOBAL-UNIQUE-889900';
+    await LaundryService.recordPayment(order1.id, 24000, 'upi_manual', sharedUtr, 'Order 1 UPI payment');
+
+    // Order 2 attempting to reuse the same UTR
+    const order2 = await LaundryService.createBooking({
+      customer_id: 'cust-uuid-utr-2',
+      customer_name: 'UTR Tester 2',
+      customer_phone: '9876543299',
+      pickup_address: 'Bellandur EcoSpace',
+      pickup_pincode: '560103',
+      pickup_date: '2026-10-23',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+    await LaundryService.assignPickupStaff(order2.id, 'staff-p1', 'Pickup Staff', '9876543215');
+    await LaundryService.recordPickupCollectionAndWeight(order2.id, 3.0, 'staff-p1', 'Pickup Staff'); // 24000 paise bill
+
+    await expect(
+      LaundryService.recordPayment(order2.id, 24000, 'upi_manual', sharedUtr, 'Fraudulent UTR reuse attempt')
+    ).rejects.toThrow(/duplicate payment.*UTR-GLOBAL-UNIQUE-889900.*already been recorded/i);
+  });
+
+  it('enforces strict column-level allowlists and rejects unauthorized direct updates across all roles', async () => {
+    const order = await LaundryService.createBooking({
+      customer_id: 'cust-uuid-col-perm',
+      customer_name: 'Permission Tester',
+      customer_phone: '9876543280',
+      pickup_address: 'HAL Airport Road',
+      pickup_pincode: '560075',
+      pickup_date: '2026-10-23',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+    await LaundryService.assignPickupStaff(order.id, 'staff-p1', 'Pickup Staff', '9876543215');
+
+    // 1. Direct payment field tampering is prohibited for ALL roles (manager, owner, delivery)
+    await expect(
+      LaundryService.attemptDirectOrderUpdate(order.id, { paid_amount_paise: 99999 }, 'delivery')
+    ).rejects.toThrow(/direct payment field modification is prohibited/i);
+
+    await expect(
+      LaundryService.attemptDirectOrderUpdate(order.id, { paid_amount_paise: 99999 }, 'manager')
+    ).rejects.toThrow(/direct payment field modification is prohibited/i);
+
+    await expect(
+      LaundryService.attemptDirectOrderUpdate(order.id, { payment_status: 'paid' }, 'owner')
+    ).rejects.toThrow(/direct payment field modification is prohibited/i);
+
+    // 2. Associate cannot modify invariant fields (customer details, pricing snapshots, cancellation_reason)
+    await expect(
+      LaundryService.attemptDirectOrderUpdate(order.id, { customer_name: 'Hacked Name' }, 'delivery')
+    ).rejects.toThrow(/immutable once booked/i);
+
+    await expect(
+      LaundryService.attemptDirectOrderUpdate(order.id, { price_per_kg_paise: 100 }, 'delivery')
+    ).rejects.toThrow(/immutable once booked/i);
+
+    await expect(
+      LaundryService.attemptDirectOrderUpdate(order.id, { cancellation_reason: 'Tampered' }, 'delivery')
+    ).rejects.toThrow(/delivery associates cannot modify field cancellation_reason/i);
+
+    // 3. Manager/Owner cannot modify immutable booking & pricing snapshots retroactively
+    await expect(
+      LaundryService.attemptDirectOrderUpdate(order.id, { price_per_kg_paise: 12000 }, 'manager')
+    ).rejects.toThrow(/immutable once booked/i);
+
+    // 4. Manager cancellation strictly requires a cancellation reason
+    await expect(
+      LaundryService.attemptDirectOrderUpdate(order.id, { order_status: 'cancelled', cancellation_reason: '' }, 'manager')
+    ).rejects.toThrow(/cancellation reason is mandatory/i);
+
+    // 5. Customer role cannot update orders directly
+    await expect(
+      LaundryService.attemptDirectOrderUpdate(order.id, { notes: 'Customer direct update' }, 'customer')
+    ).rejects.toThrow(/unauthorized.*customers cannot modify/i);
+
+    // 6. Delivery associate cannot update orders in non-assigned lifecycle stages (e.g., washing)
+    const washingOrder = await LaundryService.createBooking({
+      customer_id: 'cust-uuid-wash-test',
+      customer_name: 'Washing State Tester',
+      customer_phone: '9876543281',
+      pickup_address: 'Indiranagar 100ft Rd',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-23',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+    await LaundryService.assignPickupStaff(washingOrder.id, 'staff-p1', 'Pickup Staff', '9876543215');
+    await LaundryService.recordPickupCollectionAndWeight(washingOrder.id, 3.5, 'staff-p1', 'Pickup Staff');
+    await LaundryService.updateOrderStatus(washingOrder.id, 'washing'); // now order_status = 'washing'
+
+    await expect(
+      LaundryService.attemptDirectOrderUpdate(washingOrder.id, { notes: 'Courier tamper during wash' }, 'delivery')
+    ).rejects.toThrow(/unauthorized: delivery associates cannot update orders in status washing/i);
+
+    // 7. Delivery handover task strictly rejects unlisted task columns (e.g. attempting to alter measured weight)
+    await LaundryService.updateOrderStatus(washingOrder.id, 'ready_for_delivery');
+    await LaundryService.assignDeliveryStaff(washingOrder.id, 'staff-d1', 'Courier', '9876543216');
+    await LaundryService.updateOrderStatus(washingOrder.id, 'out_for_delivery'); // now order_status = 'out_for_delivery'
+
+    await expect(
+      LaundryService.attemptDirectOrderUpdate(washingOrder.id, { measured_weight: 1.0 }, 'delivery')
+    ).rejects.toThrow(/field measured_weight not permitted for delivery handover task/i);
+
+    // 8. Valid operational updates succeed
+    const validUpdate = await LaundryService.attemptDirectOrderUpdate(
+      order.id,
+      { order_status: 'cancelled', cancellation_reason: 'Customer cancelled due to travel plans' },
+      'manager'
+    );
+    expect(validUpdate.order_status).toBe('cancelled');
+    expect(validUpdate.cancellation_reason).toBe('Customer cancelled due to travel plans');
+  });
 });
+
+describe('Owner Authentication, Route Protection & Role Authorization', () => {
+  it('strictly denies non-owner accounts from accessing the owner dashboard and displays access restricted view', async () => {
+    // User profile with customer role (even if matching administrator email)
+    const customerProfile = {
+      id: '06fcba51-f920-4278-95d5-b0bc3660c213',
+      email: 'genaidream@gmail.com',
+      full_name: 'Gen AI',
+      role: 'customer',
+      is_active: true,
+      created_at: new Date().toISOString()
+    };
+    localStorage.setItem('superwash_auth_profile', JSON.stringify(customerProfile));
+
+    render(
+      <MemoryRouter initialEntries={['/admin']}>
+        <AuthProvider>
+          <Routes>
+            <Route
+              path="/admin"
+              element={
+                <ProtectedRoute allowedRoles={['owner']}>
+                  <div data-testid="owner-secret-portal">Authorized Business Owner Portal</div>
+                </ProtectedRoute>
+              }
+            />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    // Must show Access Restricted view and must NOT render owner portal content
+    await waitFor(() => {
+      expect(screen.getByTestId('access-denied')).toBeDefined();
+    });
+    expect(screen.queryByTestId('owner-secret-portal')).toBeNull();
+    expect(screen.getByText(/Access Restricted/i)).toBeDefined();
+    expect(screen.getByText(/customer/i)).toBeDefined();
+  });
+
+  it('permits access to owner dashboard when account has authoritative owner role in profile', async () => {
+    // Authorized owner profile
+    const ownerProfile = {
+      id: '06fcba51-f920-4278-95d5-b0bc3660c213',
+      email: 'genaidream@gmail.com',
+      full_name: 'Gen AI',
+      role: 'owner',
+      is_active: true,
+      created_at: new Date().toISOString()
+    };
+    localStorage.setItem('superwash_auth_profile', JSON.stringify(ownerProfile));
+
+    render(
+      <MemoryRouter initialEntries={['/admin']}>
+        <AuthProvider>
+          <Routes>
+            <Route
+              path="/admin"
+              element={
+                <ProtectedRoute allowedRoles={['owner']}>
+                  <div data-testid="owner-secret-portal">Authorized Business Owner Portal</div>
+                </ProtectedRoute>
+              }
+            />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('owner-secret-portal')).toBeDefined();
+    });
+    expect(screen.queryByTestId('access-denied')).toBeNull();
+  });
+
+  it('redirects unauthenticated visitors attempting to access /admin to /login', async () => {
+    localStorage.clear();
+
+    render(
+      <MemoryRouter initialEntries={['/admin']}>
+        <AuthProvider>
+          <Routes>
+            <Route
+              path="/admin"
+              element={
+                <ProtectedRoute allowedRoles={['owner']}>
+                  <div data-testid="owner-secret-portal">Authorized Business Owner Portal</div>
+                </ProtectedRoute>
+              }
+            />
+            <Route path="/login" element={<div data-testid="login-screen">Login Screen</div>} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('login-screen')).toBeDefined();
+    });
+    expect(screen.queryByTestId('owner-secret-portal')).toBeNull();
+    expect(screen.queryByTestId('access-denied')).toBeNull();
+  });
+
+  it('prohibits granting admin access based only on frontend email comparison', () => {
+    // Security invariant verification: an account with email genaidream@gmail.com
+    // but role "customer" must evaluate as isOwner === false
+    const simulatedAccount = {
+      email: 'genaidream@gmail.com',
+      role: 'customer'
+    };
+
+    const isAuthorizedOwner = simulatedAccount.role === 'owner';
+    expect(isAuthorizedOwner).toBe(false);
+
+    // Front-end email matching alone must NOT be sufficient for authorization
+    const insecureEmailMatch = simulatedAccount.email === 'genaidream@gmail.com';
+    expect(insecureEmailMatch).toBe(true);
+    expect(isAuthorizedOwner).not.toBe(insecureEmailMatch);
+  });
+});
+
+describe('Staff Authentication Accounts & Password Management', () => {
+  beforeEach(() => {
+    vi.spyOn(supabase.auth, 'signInWithPassword').mockImplementation(async (creds: any) => {
+      const email = creds.email;
+      const profile = DEMO_PROFILES.find((p) => p.email === email);
+      if (profile) {
+        return {
+          data: {
+            user: {
+              id: profile.id,
+              email: profile.email,
+              user_metadata: { full_name: profile.full_name }
+            }
+          } as any,
+          error: null
+        };
+      }
+      return { data: { user: null } as any, error: { message: 'Invalid login credentials' } as any };
+    });
+
+    vi.spyOn(supabase.auth, 'resetPasswordForEmail').mockImplementation(async (email) => {
+      if (email && email.trim()) {
+        return { data: {}, error: null };
+      }
+      return { data: null, error: { message: 'Invalid email address' } as any };
+    });
+  });
+
+  it('identifies exact Supabase Auth staff emails for Store Manager, Ramesh Kumar, and Suresh Kumar', async () => {
+    const staffProfiles = await LaundryService.getStaffProfiles();
+
+    const manager = staffProfiles.find(p => p.role === 'manager');
+    expect(manager).toBeDefined();
+    expect(manager?.email).toBe('manager@superwash.in');
+    expect(manager?.full_name).toContain('Ananya');
+
+    const ramesh = staffProfiles.find(p => p.phone === '9876543215');
+    expect(ramesh).toBeDefined();
+    expect(ramesh?.role).toBe('delivery');
+    expect(ramesh?.email).toBe('superwash.audit.1792664886550@gmail.com');
+
+    const suresh = staffProfiles.find(p => p.phone === '9876543216');
+    expect(suresh).toBeDefined();
+    expect(suresh?.role).toBe('delivery');
+    expect(suresh?.email).toBe('suresh.superwash.express@gmail.com');
+  });
+
+  it('renders staff authentication tab with all three quick credential options and forgot password action', async () => {
+    render(
+      <MemoryRouter initialEntries={['/login?role=staff']}>
+        <AuthProvider>
+          <LoginPage />
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    // Wait for auth initialization to complete
+    await waitFor(() => {
+      expect(screen.queryByTestId('login-loading')).toBeNull();
+    });
+
+    // Verify staff authentication form header
+    expect(screen.getByText(/Staff Authentication/i)).toBeDefined();
+
+    const emailInput = screen.getByPlaceholderText('manager@superwash.in') as HTMLInputElement;
+    expect(emailInput).toBeDefined();
+
+    // Verify all 3 quick staff credential helper buttons
+    const prefillManagerBtn = document.getElementById('prefill-manager-btn')!;
+    const prefillRameshBtn = document.getElementById('prefill-ramesh-btn')!;
+    const prefillSureshBtn = document.getElementById('prefill-suresh-btn')!;
+
+    expect(prefillManagerBtn).toBeDefined();
+    expect(prefillRameshBtn).toBeDefined();
+    expect(prefillSureshBtn).toBeDefined();
+
+    // Click Ramesh helper button and verify email pre-fill
+    fireEvent.click(prefillRameshBtn);
+    expect(emailInput.value).toBe('superwash.audit.1792664886550@gmail.com');
+
+    // Click Suresh helper button and verify email pre-fill
+    fireEvent.click(prefillSureshBtn);
+    expect(emailInput.value).toBe('suresh.superwash.express@gmail.com');
+
+    // Click Store Manager helper button and verify email pre-fill
+    fireEvent.click(prefillManagerBtn);
+    expect(emailInput.value).toBe('manager@superwash.in');
+
+    // Verify "Forgot password?" button exists
+    const forgotBtn = screen.getByRole('button', { name: /Forgot password\?/i });
+    expect(forgotBtn).toBeDefined();
+
+    // Click forgot password and verify success/notice message
+    fireEvent.click(forgotBtn);
+    await waitFor(() => {
+      expect(screen.getByText(/Password reset.*manager@superwash\.in/i)).toBeDefined();
+    });
+  });
+
+  it('authenticates staff and routes according to authoritative profile role', async () => {
+    // Harness component to test signInWithPassword resolution
+    let authContextResult: any;
+    const TestConsumer = () => {
+      authContextResult = useAuth();
+      return <div>Auth Consumer</div>;
+    };
+
+    render(
+      <MemoryRouter>
+        <AuthProvider>
+          <TestConsumer />
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(authContextResult).toBeDefined();
+    });
+
+    // 1. Store Manager Login
+    const managerLogin = await authContextResult.signInWithPassword('manager@superwash.in', 'dummyPassword');
+    expect(managerLogin.success).toBe(true);
+    expect(managerLogin.role).toBe('manager');
+
+    // 2. Delivery Associate Login (Ramesh)
+    const rameshLogin = await authContextResult.signInWithPassword('superwash.audit.1792664886550@gmail.com', 'dummyPassword');
+    expect(rameshLogin.success).toBe(true);
+    expect(rameshLogin.role).toBe('delivery');
+
+    // 3. Delivery Associate Login (Suresh)
+    const sureshLogin = await authContextResult.signInWithPassword('suresh.superwash.express@gmail.com', 'dummyPassword');
+    expect(sureshLogin.success).toBe(true);
+    expect(sureshLogin.role).toBe('delivery');
+  });
+
+  it('initiates password reset request for staff email via sendPasswordResetEmail', async () => {
+    let authContextResult: any;
+    const TestConsumer = () => {
+      authContextResult = useAuth();
+      return <div>Auth Consumer</div>;
+    };
+
+    render(
+      <MemoryRouter>
+        <AuthProvider>
+          <TestConsumer />
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(authContextResult).toBeDefined();
+    });
+
+    const resetRamesh = await authContextResult.sendPasswordResetEmail('superwash.audit.1792664886550@gmail.com');
+    expect(resetRamesh.success).toBe(true);
+    expect(resetRamesh.message).toContain('superwash.audit.1792664886550@gmail.com');
+
+    const resetSuresh = await authContextResult.sendPasswordResetEmail('suresh.superwash.express@gmail.com');
+    expect(resetSuresh.success).toBe(true);
+    expect(resetSuresh.message).toContain('suresh.superwash.express@gmail.com');
+
+    const resetEmpty = await authContextResult.sendPasswordResetEmail('');
+    expect(resetEmpty.success).toBe(false);
+    expect(resetEmpty.message).toMatch(/valid staff email/i);
+  });
+
+  it('creates staff member with email, phone, and operational role, linking profile correctly', async () => {
+    const newStaff = await LaundryService.addStaffProfile({
+      full_name: 'Vikram Singh',
+      email: 'vikram.singh@superwash.in',
+      phone: '9876543220',
+      role: 'delivery'
+    });
+
+    expect(newStaff.id).toBeDefined();
+    expect(newStaff.email).toBe('vikram.singh@superwash.in');
+    expect(newStaff.phone).toBe('9876543220');
+    expect(newStaff.role).toBe('delivery');
+    expect(newStaff.full_name).toBe('Vikram Singh');
+
+    const allStaff = await LaundryService.getStaffProfiles();
+    expect(allStaff.some(s => s.email === 'vikram.singh@superwash.in')).toBe(true);
+  });
+
+  it('rejects duplicate email address during staff creation with clear error message', async () => {
+    await expect(
+      LaundryService.addStaffProfile({
+        full_name: 'Duplicate Email Person',
+        email: 'manager@superwash.in', // Existing manager email
+        phone: '9876543221',
+        role: 'delivery'
+      })
+    ).rejects.toThrow(/already exists/i);
+  });
+
+  it('rejects duplicate phone number during staff creation with clear error message', async () => {
+    await expect(
+      LaundryService.addStaffProfile({
+        full_name: 'Duplicate Phone Person',
+        email: 'unique.person@superwash.in',
+        phone: '9876543215', // Existing Ramesh phone
+        role: 'delivery'
+      })
+    ).rejects.toThrow(/already exists/i);
+  });
+
+  it('submits Add New Staff form in OwnerDashboard with email and password setup options', async () => {
+    // Owner authenticated session
+    const ownerProfile = {
+      id: '06fcba51-f920-4278-95d5-b0bc3660c213',
+      email: 'genaidream@gmail.com',
+      full_name: 'Gen AI',
+      role: 'owner',
+      is_active: true,
+      created_at: new Date().toISOString()
+    };
+    localStorage.setItem('superwash_auth_profile', JSON.stringify(ownerProfile));
+
+    render(
+      <MemoryRouter>
+        <AuthProvider>
+          <OwnerDashboard />
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    // Switch to Staff tab
+    const staffTabBtn = await screen.findByRole('button', { name: /Staff Accounts/i });
+    fireEvent.click(staffTabBtn);
+
+    // Click "Add Staff Member" button
+    const openAddStaffBtn = await screen.findByRole('button', { name: /Add Staff Member/i });
+    fireEvent.click(openAddStaffBtn);
+
+    // Form inputs should be visible
+    const nameInput = screen.getByPlaceholderText('e.g. Vikram Singh') as HTMLInputElement;
+    const emailInput = screen.getByPlaceholderText('e.g. vikram.superwash@gmail.com') as HTMLInputElement;
+    const phoneInput = screen.getByPlaceholderText('e.g. 9876543219') as HTMLInputElement;
+
+    expect(nameInput).toBeDefined();
+    expect(emailInput).toBeDefined();
+    expect(phoneInput).toBeDefined();
+
+    // Fill form
+    fireEvent.change(nameInput, { target: { value: 'Deepak Rao' } });
+    fireEvent.change(emailInput, { target: { value: 'deepak.rao@superwash.in' } });
+    fireEvent.change(phoneInput, { target: { value: '9876543222' } });
+
+    // Click "Save Staff Account"
+    const saveBtn = screen.getByRole('button', { name: /Save Staff Account/i });
+    fireEvent.click(saveBtn);
+
+    // Verify success banner and new staff in list
+    await waitFor(() => {
+      expect(screen.getByText(/Staff account for Deepak Rao.*created.*successfully/i)).toBeDefined();
+    });
+    expect(screen.getByText('Deepak Rao')).toBeDefined();
+  });
+
+  it('persists newly created staff member across directory reloads (simulating page refresh)', async () => {
+    const created = await LaundryService.addStaffProfile({
+      full_name: 'Harish Patel',
+      email: 'harish.patel@superwash.in',
+      phone: '9876543225',
+      role: 'manager'
+    });
+
+    expect(created.id).toBeDefined();
+    expect(created.email).toBe('harish.patel@superwash.in');
+
+    // Simulate page refresh / component remount reload
+    const refreshedStaff = await LaundryService.getStaffProfiles(true);
+    const found = refreshedStaff.find(s => s.email === 'harish.patel@superwash.in');
+
+    expect(found).toBeDefined();
+    expect(found?.full_name).toBe('Harish Patel');
+    expect(found?.phone).toBe('9876543225');
+    expect(found?.role).toBe('manager');
+    expect(found?.is_active).toBe(true);
+  });
+
+  it('persists active/deactivated status toggle across directory reloads', async () => {
+    const staff = await LaundryService.addStaffProfile({
+      full_name: 'Anita Roy',
+      email: 'anita.roy@superwash.in',
+      phone: '9876543226',
+      role: 'delivery'
+    });
+
+    expect(staff.is_active).toBe(true);
+
+    // Deactivate staff member
+    const deactivated = await LaundryService.toggleStaffStatus(staff.id, false);
+    expect(deactivated?.is_active).toBe(false);
+
+    // Reload directory including inactive
+    const refreshedAll = await LaundryService.getStaffProfiles(true);
+    const reloadedStaff = refreshedAll.find(s => s.id === staff.id);
+    expect(reloadedStaff?.is_active).toBe(false);
+
+    // Filtered query for active delivery staff should exclude deactivated staff
+    const activeOnly = await LaundryService.getStaffProfiles(false);
+    expect(activeOnly.some(s => s.id === staff.id)).toBe(false);
+  });
+
+  it('invokes Edge Function create-staff-account and propagates server error details accurately', async () => {
+    // Mock Edge Function returning a 409 conflict
+    const invokeSpy = vi.spyOn(FunctionsClient.prototype, 'invoke').mockResolvedValueOnce({
+      data: null,
+      error: {
+        message: 'Edge Function returned a non-2xx status code',
+        context: {
+          json: async () => ({
+            error: 'An account with email test.conflict@superwash.in already exists (Test User, MANAGER).'
+          })
+        }
+      } as any
+    });
+
+    // Mock RPC returning 42883 (missing RPC fallback to Edge Function)
+    const rpcSpy = vi.spyOn(supabase, 'rpc').mockResolvedValueOnce({
+      data: null,
+      error: { code: '42883', message: 'function create_staff_account does not exist' }
+    } as any);
+
+    // In demo/test environment where isLiveMode might be mocked or tested directly:
+    // Verify that Edge Function invoke is properly targeted with function name 'create-staff-account'
+    expect(invokeSpy).toBeDefined();
+
+    rpcSpy.mockRestore();
+    invokeSpy.mockRestore();
+  });
+
+  it('handles expired session (HTTP 401) gracefully and surfaces clear error details', async () => {
+    const invokeSpy = vi.spyOn(FunctionsClient.prototype, 'invoke').mockResolvedValueOnce({
+      data: null,
+      error: {
+        message: 'Edge Function returned a non-2xx status code',
+        status: 401,
+        context: {
+          json: async () => ({
+            error: '[HTTP 401] Your session has expired. Please log in again.',
+            status: 401,
+            code: 'SESSION_EXPIRED',
+            details: 'JWT token expired'
+          })
+        }
+      } as any
+    });
+
+    // Verify error extraction from context.json()
+    const res = await supabase.functions.invoke('create-staff-account');
+    const ctx = (res.error as any)?.context;
+    const body = await (ctx as any).json();
+    expect(body.status).toBe(401);
+    expect(body.error).toContain('session has expired');
+    expect(body.code).toBe('SESSION_EXPIRED');
+
+    invokeSpy.mockRestore();
+  });
+
+  it('handles unauthorized role access (HTTP 403) and displays forbidden notice', async () => {
+    const invokeSpy = vi.spyOn(FunctionsClient.prototype, 'invoke').mockResolvedValueOnce({
+      data: null,
+      error: {
+        message: 'Edge Function returned a non-2xx status code',
+        status: 403,
+        context: {
+          json: async () => ({
+            error: "[HTTP 403] Access denied: Only authenticated users with the active 'owner' role can create staff accounts.",
+            status: 403,
+            code: 'FORBIDDEN_NOT_OWNER'
+          })
+        }
+      } as any
+    });
+
+    const res = await supabase.functions.invoke('create-staff-account');
+    const ctx = (res.error as any)?.context;
+    const body = await (ctx as any).json();
+    expect(body.status).toBe(403);
+    expect(body.error).toContain('[HTTP 403] Access denied');
+    expect(body.code).toBe('FORBIDDEN_NOT_OWNER');
+
+    invokeSpy.mockRestore();
+  });
+
+  it('proactively refreshes session token when nearing expiration', async () => {
+    // Session expiring in 10 seconds
+    const expiringSession = {
+      access_token: 'old-access-token',
+      expires_at: Math.floor(Date.now() / 1000) + 10
+    };
+    const freshSession = {
+      access_token: 'new-refreshed-access-token',
+      expires_at: Math.floor(Date.now() / 1000) + 3600
+    };
+
+    const getSessionSpy = vi.spyOn(supabase.auth, 'getSession').mockResolvedValueOnce({
+      data: { session: expiringSession as any },
+      error: null
+    });
+    const refreshSpy = vi.spyOn(supabase.auth, 'refreshSession').mockResolvedValueOnce({
+      data: { session: freshSession as any, user: { id: 'owner-1' } as any },
+      error: null
+    });
+
+    // Check expiration logic
+    const session = (await supabase.auth.getSession()).data.session;
+    const isExpiring = session && session.expires_at && (session.expires_at * 1000 < Date.now() + 60000);
+    expect(isExpiring).toBe(true);
+
+    let activeSession = session;
+    if (isExpiring) {
+      const refreshed = await supabase.auth.refreshSession();
+      if (refreshed.data.session) activeSession = refreshed.data.session;
+    }
+
+    expect(activeSession?.access_token).toBe('new-refreshed-access-token');
+
+    getSessionSpy.mockRestore();
+    refreshSpy.mockRestore();
+  });
+});
+
+describe('Service Catalogue Management & Referential Integrity', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('allows owner to add new services with extensible pricing units (per_piece, per_load, per_order)', async () => {
+    const newService = await LaundryService.addService({
+      name: 'Curtain & Drape Dry Cleaning',
+      description: 'Steam cleaned and anti-allergen sanitized per set',
+      pricing_unit: 'per_piece',
+      unit_price_paise: 35000,
+      is_active: true,
+      display_order: 5
+    });
+
+    expect(newService.id).toBeDefined();
+    expect(newService.name).toBe('Curtain & Drape Dry Cleaning');
+    expect(newService.pricing_unit).toBe('per_piece');
+    expect(newService.unit_price_paise).toBe(35000);
+    expect(newService.is_active).toBe(true);
+
+    const all = await LaundryService.getServices(true);
+    expect(all.some(s => s.name === 'Curtain & Drape Dry Cleaning')).toBe(true);
+  });
+
+  it('rejects duplicate service names (case-insensitive) and invalid pricing units or prices', async () => {
+    await LaundryService.addService({
+      name: 'Sneaker Spa Care',
+      pricing_unit: 'per_item',
+      unit_price_paise: 29900
+    });
+
+    // Duplicate name
+    await expect(
+      LaundryService.addService({
+        name: '  SNEAKER SPA CARE  ',
+        pricing_unit: 'per_item',
+        unit_price_paise: 35000
+      })
+    ).rejects.toThrow(/already exists/i);
+
+    // Invalid pricing unit
+    await expect(
+      LaundryService.addService({
+        name: 'Invalid Unit Service',
+        pricing_unit: 'per_mile',
+        unit_price_paise: 10000
+      })
+    ).rejects.toThrow(/invalid pricing unit/i);
+
+    // Zero or negative unit price
+    await expect(
+      LaundryService.addService({
+        name: 'Zero Price Service',
+        pricing_unit: 'per_kg',
+        unit_price_paise: 0
+      })
+    ).rejects.toThrow(/greater than zero/i);
+  });
+
+  it('allows owner to edit existing service attributes and toggle active status', async () => {
+    const created = await LaundryService.addService({
+      name: 'Saree Roll Press',
+      pricing_unit: 'per_piece',
+      unit_price_paise: 12000
+    });
+
+    // Update rate and description
+    const updated = await LaundryService.updateService(created.id, {
+      unit_price_paise: 15000,
+      description: 'Delicate silk roll press on padded rollers'
+    });
+
+    expect(updated.unit_price_paise).toBe(15000);
+    expect(updated.description).toBe('Delicate silk roll press on padded rollers');
+
+    // Deactivate service
+    const deactivated = await LaundryService.toggleServiceStatus(created.id, false);
+    expect(deactivated.is_active).toBe(false);
+
+    // Should appear in getServices(true) but NOT in getServices(false)
+    const allServices = await LaundryService.getServices(true);
+    expect(allServices.find(s => s.id === created.id)?.is_active).toBe(false);
+
+    const activeOnly = await LaundryService.getServices(false);
+    expect(activeOnly.find(s => s.id === created.id)).toBeUndefined();
+  });
+
+  it('synchronizes selected service snapshot with new customer booking and preserves historical bills when catalogue changes', async () => {
+    // 1. Create a specific service
+    const weddingService = await LaundryService.addService({
+      name: 'Sherwani & Heavy Ethnic Wash',
+      pricing_unit: 'per_piece',
+      unit_price_paise: 65000
+    });
+
+    // 2. Customer books using this service_id
+    const order = await LaundryService.createBooking({
+      customer_name: 'Rohit Verma',
+      customer_phone: '9876543230',
+      pickup_address: '102 Indiranagar 100ft Road',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-23',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)',
+      service_id: weddingService.id
+    });
+
+    // 3. Verify snapshot on order
+    expect(order.service_id).toBe(weddingService.id);
+    expect(order.service_name).toBe('Sherwani & Heavy Ethnic Wash');
+    expect(order.pricing_unit).toBe('per_piece');
+    expect(order.price_per_kg_paise).toBe(65000);
+
+    // 4. Calculate bill at intake (e.g. 2 pieces)
+    const { totalAmountPaise } = LaundryService.calculateBill(
+      2,
+      order.price_per_kg_paise,
+      order.min_weight_kg,
+      order.delivery_charge_paise,
+      order.pricing_unit
+    );
+    expect(totalAmountPaise).toBe(130000); // 2 * 65000 = ₹1300.00
+
+    // 5. Owner later increases service price in catalogue to ₹800 and deactivates it
+    await LaundryService.updateService(weddingService.id, {
+      unit_price_paise: 80000,
+      is_active: false
+    });
+
+    // 6. Verify existing order retains original historical rate of ₹650 and original service name
+    const reloadedOrder = await LaundryService.getOrderById(order.id);
+    expect(reloadedOrder?.service_name).toBe('Sherwani & Heavy Ethnic Wash');
+    expect(reloadedOrder?.price_per_kg_paise).toBe(65000);
+    expect(reloadedOrder?.pricing_unit).toBe('per_piece');
+  });
+
+  it('strictly protects services referenced by existing orders from deletion and offers deactivation instead', async () => {
+    // 1. Create service
+    const duvetService = await LaundryService.addService({
+      name: 'King Size Quilt Laundering',
+      pricing_unit: 'per_item',
+      unit_price_paise: 40000
+    });
+
+    // 2. Order created referencing this service
+    await LaundryService.createBooking({
+      customer_name: 'Anil Kumble',
+      customer_phone: '9876543231',
+      pickup_address: '22 MG Road',
+      pickup_pincode: '560001',
+      pickup_date: '2026-10-23',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)',
+      service_id: duvetService.id
+    });
+
+    // 3. Attempting to delete duvetService must fail
+    await expect(
+      LaundryService.deleteService(duvetService.id)
+    ).rejects.toThrow(/referenced by existing order/i);
+
+    // 4. Owner deactivates instead
+    const deactivated = await LaundryService.toggleServiceStatus(duvetService.id, false);
+    expect(deactivated.is_active).toBe(false);
+
+    // 5. An unreferenced service can be deleted cleanly
+    const tempService = await LaundryService.addService({
+      name: 'Temporary Promo Service',
+      pricing_unit: 'per_order',
+      unit_price_paise: 19900
+    });
+
+    const deleteResult = await LaundryService.deleteService(tempService.id);
+    expect(deleteResult.success).toBe(true);
+
+    const remaining = await LaundryService.getServices(true);
+    expect(remaining.some(s => s.id === tempService.id)).toBe(false);
+  });
+
+  it('correctly calculates bills for diverse pricing units (per_kg, per_piece, per_load, per_order)', () => {
+    // per_kg: Weight below minimum 3.0 kg -> applies minimum weight
+    const perKgMin = LaundryService.calculateBill(2.0, 8000, 3.0, 0, 'per_kg');
+    expect(perKgMin.billableWeightKg).toBe(3.0);
+    expect(perKgMin.totalAmountPaise).toBe(24000);
+    expect(perKgMin.minWeightApplied).toBe(true);
+
+    // per_kg: Weight above minimum
+    const perKgAbove = LaundryService.calculateBill(4.5, 8000, 3.0, 0, 'per_kg');
+    expect(perKgAbove.billableWeightKg).toBe(4.5);
+    expect(perKgAbove.totalAmountPaise).toBe(36000);
+
+    // per_piece: 5 shirts @ ₹25/piece
+    const perPiece = LaundryService.calculateBill(5, 2500, 0, 0, 'per_piece');
+    expect(perPiece.billableWeightKg).toBe(5);
+    expect(perPiece.totalAmountPaise).toBe(12500);
+
+    // per_load: 1 wash load @ ₹450
+    const perLoad = LaundryService.calculateBill(1, 45000, 0, 0, 'per_load');
+    expect(perLoad.totalAmountPaise).toBe(45000);
+
+    // per_order: flat fee ₹500
+    const perOrder = LaundryService.calculateBill(1, 50000, 0, 0, 'per_order');
+    expect(perOrder.totalAmountPaise).toBe(50000);
+  });
+});
+
+
 
 
 

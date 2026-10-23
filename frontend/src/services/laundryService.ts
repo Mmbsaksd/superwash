@@ -2,7 +2,7 @@ import {
   Order, OrderStatus, PaymentStatus, PaymentMethod, BusinessSettings,
   PickupSlot, Profile, CustomerAddress, Payment, WeightChangeHistory, OrderStatusHistory,
   OrderFeedback, FeedbackStatus, FeedbackSummaryMetrics,
-  ServiceArea, LaundryServiceItem, PeriodFilter, DashboardPeriodAnalytics
+  ServiceArea, LaundryServiceItem, PeriodFilter, DashboardPeriodAnalytics, UserRole
 } from '../types';
 import { supabase, isSupabaseConfigured } from './supabase';
 import { WhatsAppService } from './whatsappService';
@@ -58,7 +58,7 @@ export const DEFAULT_SERVICE_AREAS: ServiceArea[] = [
 
 export const DEFAULT_SERVICES: LaundryServiceItem[] = [
   {
-    id: 'srv-1',
+    id: 'f520c538-65e3-4b64-825e-5fdd3c282e8d',
     name: 'Wash & Fold (Normal)',
     description: 'Everyday clothes washed with premium gentle detergent, tumble-dried, and neatly steam-iron folded',
     pricing_unit: 'per_kg',
@@ -66,6 +66,36 @@ export const DEFAULT_SERVICES: LaundryServiceItem[] = [
     min_weight_kg: 3.0,
     is_active: true,
     display_order: 1
+  },
+  {
+    id: 'srv-iron-2',
+    name: 'Steam Press & Ironing',
+    description: 'Professional high-pressure steam pressing on hangers or precision folded',
+    pricing_unit: 'per_piece',
+    unit_price_paise: 2500,
+    min_weight_kg: 0,
+    is_active: true,
+    display_order: 2
+  },
+  {
+    id: 'srv-blanket-3',
+    name: 'Heavy Comforter & Blanket',
+    description: 'Deep antibacterial sanitization and gentle dry-cycle for large winter blankets and quilts',
+    pricing_unit: 'per_item',
+    unit_price_paise: 25000,
+    min_weight_kg: 0,
+    is_active: true,
+    display_order: 3
+  },
+  {
+    id: 'srv-bulk-4',
+    name: 'Express Bulk Load (Same Day)',
+    description: 'Dedicated private machine wash & dry up to 6 kg for rapid turnaround',
+    pricing_unit: 'per_load',
+    unit_price_paise: 45000,
+    min_weight_kg: 0,
+    is_active: true,
+    display_order: 4
   }
 ];
 
@@ -73,6 +103,7 @@ export const DEFAULT_SERVICES: LaundryServiceItem[] = [
 export const DEMO_PROFILES: Profile[] = [
   {
     id: '00000000-0000-4000-a000-000000000001',
+    email: 'owner@superwash.in',
     phone: '9876543210',
     full_name: 'Rajesh Sharma (Owner)',
     role: 'owner',
@@ -81,6 +112,7 @@ export const DEMO_PROFILES: Profile[] = [
   },
   {
     id: '7010c68d-2da3-4ef5-ba16-99c22d00e77a',
+    email: 'manager@superwash.in',
     phone: '9876543211',
     full_name: 'Ananya Verma (Store Manager)',
     role: 'manager',
@@ -89,6 +121,7 @@ export const DEMO_PROFILES: Profile[] = [
   },
   {
     id: 'eeb4d846-f42d-4b2e-bcff-b495f4255fa7',
+    email: 'superwash.audit.1792664886550@gmail.com',
     phone: '9876543215',
     full_name: 'Ramesh Kumar (Delivery Agent A)',
     role: 'delivery',
@@ -97,6 +130,7 @@ export const DEMO_PROFILES: Profile[] = [
   },
   {
     id: 'c32bbcef-818d-4ee9-b92c-315d687d9bd0',
+    email: 'suresh.superwash.express@gmail.com',
     phone: '9876543216',
     full_name: 'Suresh Kumar (Delivery Agent B)',
     role: 'delivery',
@@ -105,6 +139,7 @@ export const DEMO_PROFILES: Profile[] = [
   },
   {
     id: '06fcba51-f920-4278-95d5-b0bc3660c213',
+    email: 'genaidream@gmail.com',
     phone: '5435678753',
     full_name: 'Gen AI (Customer)',
     role: 'customer',
@@ -199,8 +234,9 @@ export class LaundryService {
   static calculateBill(
     measuredWeightKg: number,
     pricePerKgPaise: number,
-    minWeightKg: number,
-    deliveryChargePaise: number = 0
+    minWeightKg: number = 0,
+    deliveryChargePaise: number = 0,
+    pricingUnit: string = 'per_kg'
   ): {
     measuredWeightKg: number;
     billableWeightKg: number;
@@ -208,9 +244,30 @@ export class LaundryService {
     minWeightApplied: boolean;
   } {
     const safeMeasured = Math.max(0, measuredWeightKg);
-    const minWeightApplied = safeMeasured < minWeightKg;
-    const billableWeightKg = Math.max(safeMeasured, minWeightKg);
-    const laundryChargePaise = Math.round(billableWeightKg * pricePerKgPaise);
+    let billableWeightKg = safeMeasured;
+    let laundryChargePaise = 0;
+    let minWeightApplied = false;
+
+    if (pricingUnit === 'per_kg') {
+      minWeightApplied = safeMeasured < minWeightKg && minWeightKg > 0;
+      billableWeightKg = Math.max(safeMeasured, minWeightKg);
+      laundryChargePaise = Math.round(billableWeightKg * pricePerKgPaise);
+    } else if (pricingUnit === 'per_piece' || pricingUnit === 'per_item') {
+      const safeUnits = Math.round(safeMeasured);
+      billableWeightKg = safeUnits;
+      laundryChargePaise = Math.round(safeUnits * pricePerKgPaise);
+    } else if (pricingUnit === 'per_load') {
+      const safeLoads = Math.max(1, Math.round(safeMeasured || 1));
+      billableWeightKg = safeLoads;
+      laundryChargePaise = Math.round(safeLoads * pricePerKgPaise);
+    } else if (pricingUnit === 'per_order') {
+      billableWeightKg = 1;
+      laundryChargePaise = pricePerKgPaise;
+    } else {
+      billableWeightKg = Math.max(safeMeasured, minWeightKg);
+      laundryChargePaise = Math.round(billableWeightKg * pricePerKgPaise);
+    }
+
     const totalAmountPaise = laundryChargePaise + deliveryChargePaise;
     return {
       measuredWeightKg: safeMeasured,
@@ -397,6 +454,7 @@ export class LaundryService {
     pickup_slot: string;
     pickup_latitude?: number | null;
     pickup_longitude?: number | null;
+    service_id?: string;
     notes?: string;
   }): Promise<Order> {
     // 1. Coverage validation: Authoritatively check PIN code serviceability
@@ -414,7 +472,32 @@ export class LaundryService {
       throw new Error(`The pickup slot '${data.pickup_slot}' on ${data.pickup_date} is fully booked (${slotCheck.bookedCount}/${slotCheck.maxCapacity}). Please choose another slot.`);
     }
 
-    // 3. Anti-duplicate protection: check if identical booking created in last 15 seconds
+    // 3. Authoritatively resolve service from catalogue
+    const activeServices = await this.getServices(false);
+    let chosenService: LaundryServiceItem | undefined;
+
+    if (data.service_id) {
+      chosenService = activeServices.find(s => s.id === data.service_id);
+      if (!chosenService) {
+        // If not found in active, check if it was deactivated
+        const allServices = await this.getServices(true);
+        const inactive = allServices.find(s => s.id === data.service_id);
+        if (inactive && !inactive.is_active) {
+          throw new Error(`The service '${inactive.name}' is currently deactivated and not accepting new bookings. Please select another active service.`);
+        }
+        throw new Error('Selected service not found in catalogue.');
+      }
+    } else {
+      chosenService = activeServices[0];
+    }
+
+    const serviceId = chosenService?.id;
+    const serviceName = chosenService ? chosenService.name : 'Wash & Fold (Normal)';
+    const pricingUnit = chosenService ? chosenService.pricing_unit : 'per_kg';
+    const unitPricePaise = chosenService ? (chosenService.unit_price_paise || chosenService.price_paise || 8000) : settings.price_per_kg_paise;
+    const minWeightKg = chosenService && chosenService.pricing_unit === 'per_kg' ? (chosenService.min_weight_kg ?? 3.0) : 0;
+
+    // 4. Anti-duplicate protection: check if identical booking created in last 15 seconds
     const now = Date.now();
     const duplicate = existingOrders.find(o => 
       o.customer_phone.replace(/[^0-9]/g, '') === data.customer_phone.replace(/[^0-9]/g, '') &&
@@ -443,10 +526,11 @@ export class LaundryService {
       pickup_longitude: data.pickup_longitude || null,
       
       // Extensible Service & Pricing Snapshots (immutable once booked)
-      service_name: 'Wash & Fold (Normal)',
-      pricing_unit: 'per_kg',
-      price_per_kg_paise: settings.price_per_kg_paise,
-      min_weight_kg: settings.min_weight_kg,
+      service_id: serviceId,
+      service_name: serviceName,
+      pricing_unit: pricingUnit,
+      price_per_kg_paise: unitPricePaise,
+      min_weight_kg: minWeightKg,
       delivery_charge_paise: settings.delivery_charge_paise,
       
       measured_weight: null,
@@ -487,10 +571,15 @@ export class LaundryService {
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(updatedList));
 
     // Send optional WhatsApp notification
+    let rateMsg = `Rate: ₹${unitPricePaise / 100}/${pricingUnit === 'per_kg' ? 'kg' : pricingUnit}`;
+    if (pricingUnit === 'per_kg' && minWeightKg > 0) {
+      rateMsg += ` (Min ${minWeightKg} kg)`;
+    }
+
     await WhatsAppService.sendNotification(
       data.customer_phone,
       'booking_confirmed',
-      `Namaste ${data.customer_name}! Your laundry pickup #${orderNumber} has been booked for ${data.pickup_date} (${data.pickup_slot}). Rate: ₹${settings.price_per_kg_paise / 100}/kg (Min ${settings.min_weight_kg} kg).`,
+      `Namaste ${data.customer_name}! Your laundry pickup #${orderNumber} has been booked for ${data.pickup_date} (${data.pickup_slot}). ${rateMsg}.`,
       newOrder.id
     );
 
@@ -682,7 +771,8 @@ export class LaundryService {
       weightKg,
       order.price_per_kg_paise,
       order.min_weight_kg,
-      order.delivery_charge_paise
+      order.delivery_charge_paise,
+      order.pricing_unit || 'per_kg'
     );
 
     const now = new Date().toISOString();
@@ -884,7 +974,8 @@ export class LaundryService {
       measuredWeightKg,
       order.price_per_kg_paise,
       order.min_weight_kg,
-      order.delivery_charge_paise
+      order.delivery_charge_paise,
+      order.pricing_unit || 'per_kg'
     );
 
     order.measured_weight = measuredWeightKg;
@@ -1003,7 +1094,7 @@ export class LaundryService {
 
     const previousStatus = order.order_status;
     order.order_status = newStatus;
-    if (cancellationReason) {
+    if (newStatus === 'cancelled' && cancellationReason) {
       order.cancellation_reason = cancellationReason;
     }
     if (notes) {
@@ -1029,7 +1120,7 @@ export class LaundryService {
           order_status: newStatus,
           updated_at: order.updated_at
         };
-        if (cancellationReason) updates.cancellation_reason = cancellationReason;
+        if (newStatus === 'cancelled' && cancellationReason) updates.cancellation_reason = cancellationReason;
         if (notes) updates.notes = notes;
         if (newStatus === 'delivered') updates.delivered_at = new Date().toISOString();
 
@@ -1138,19 +1229,28 @@ export class LaundryService {
     if (effectiveIdempotencyKey) {
       const existingPayment = storedPayments.find(p => p.idempotency_key === effectiveIdempotencyKey);
       if (existingPayment) {
-        if (existingPayment.order_id !== order.id) {
-          throw new Error(`Idempotency conflict: Key ${effectiveIdempotencyKey} already used for another order.`);
+        const incomingRef = transactionReference?.trim() || undefined;
+        const existingRef = existingPayment.transaction_reference?.trim() || undefined;
+        if (
+          existingPayment.order_id !== order.id ||
+          existingPayment.amount_paise !== amountPaise ||
+          existingPayment.payment_method !== paymentMethod ||
+          existingRef !== incomingRef
+        ) {
+          throw new Error(
+            `Idempotency conflict: Key ${effectiveIdempotencyKey} was previously used with different payment parameters (Original Order: ${existingPayment.order_id}, Amount: ${existingPayment.amount_paise}, Method: ${existingPayment.payment_method}).`
+          );
         }
         return Object.assign(order, { payment: existingPayment });
       }
     }
 
-    // Prevent duplicate UPI transaction reference for this order (on distinct payment attempts)
+    // Prevent duplicate UPI transaction reference globally across ALL orders
     if (paymentMethod === 'upi_manual' && transactionReference) {
       const cleanRef = transactionReference.trim();
-      const duplicateRef = storedPayments.find(p => p.order_id === order.id && p.transaction_reference === cleanRef);
+      const duplicateRef = storedPayments.find(p => p.transaction_reference === cleanRef);
       if (duplicateRef) {
-        throw new Error(`Duplicate payment: UPI transaction reference ${cleanRef} has already been recorded for this order.`);
+        throw new Error(`Duplicate payment: UPI transaction reference ${cleanRef} has already been recorded for Order #${duplicateRef.order_id}.`);
       }
     }
 
@@ -1372,6 +1472,99 @@ export class LaundryService {
     return this.getOrders();
   }
 
+  // ----------------------------------------------------
+  // Direct Update Security Validation (Testing & Enforcing Column Allowlist)
+  // ----------------------------------------------------
+  static async attemptDirectOrderUpdate(
+    orderId: string,
+    fields: Partial<Order>,
+    userRole: 'delivery' | 'manager' | 'owner' | 'customer'
+  ): Promise<Order> {
+    const orders = await this.getOrders();
+    const order = orders.find(o => o.id === orderId);
+    if (!order) throw new Error('Order not found');
+
+    if (userRole === 'customer') {
+      throw new Error('Unauthorized: Customers cannot modify order records.');
+    }
+
+    // Immutable columns for all roles
+    const immutableFields: (keyof Order)[] = [
+      'id', 'order_number', 'customer_id', 'customer_name', 'customer_phone',
+      'pickup_address', 'pickup_pincode', 'pickup_date', 'pickup_slot',
+      'service_id', 'service_name', 'pricing_unit', 'price_per_kg_paise',
+      'min_weight_kg', 'delivery_charge_paise', 'created_at'
+    ];
+    for (const f of immutableFields) {
+      if (fields[f] !== undefined && fields[f] !== order[f]) {
+        throw new Error(`Security violation: Field ${f} is immutable once booked.`);
+      }
+    }
+
+    // Direct payment field tampering check (for ALL roles, including manager/owner)
+    const paymentFields: (keyof Order)[] = ['paid_amount_paise', 'payment_status', 'payment_method'];
+    for (const pf of paymentFields) {
+      if (fields[pf] !== undefined && fields[pf] !== order[pf]) {
+        throw new Error(
+          `Security violation: Direct payment field modification is prohibited for ${userRole}. Payments must be processed through record_order_payment().`
+        );
+      }
+    }
+
+    if (userRole === 'delivery') {
+      // Invariant columns associates can never modify
+      const associateForbidden: (keyof Order)[] = [
+        'assigned_pickup_id', 'assigned_pickup_name', 'assigned_pickup_phone',
+        'assigned_delivery_id', 'assigned_delivery_name', 'assigned_delivery_phone',
+        'cancellation_reason', 'weighed_at'
+      ];
+      for (const f of associateForbidden) {
+        if (fields[f] !== undefined && fields[f] !== order[f]) {
+          throw new Error(`Security violation: Delivery associates cannot modify field ${f}.`);
+        }
+      }
+
+      // Task-specific allowlists
+      if (order.order_status === 'pickup_assigned') {
+        const allowedPickup: (keyof Order)[] = [
+          'order_status', 'measured_weight', 'pickup_measured_weight', 'billable_weight',
+          'total_amount_paise', 'collected_at', 'pickup_weighed_at', 'pickup_weighed_by',
+          'delivery_notes', 'notes', 'updated_at'
+        ];
+        for (const k of Object.keys(fields) as (keyof Order)[]) {
+          if (!allowedPickup.includes(k) && fields[k] !== undefined && fields[k] !== order[k]) {
+            throw new Error(`Security violation: Field ${k} not permitted for pickup task.`);
+          }
+        }
+      } else if (order.order_status === 'ready_for_delivery' || order.order_status === 'delivery_assigned') {
+        const allowedDispatch: (keyof Order)[] = ['order_status', 'delivery_notes', 'notes', 'updated_at'];
+        for (const k of Object.keys(fields) as (keyof Order)[]) {
+          if (!allowedDispatch.includes(k) && fields[k] !== undefined && fields[k] !== order[k]) {
+            throw new Error(`Security violation: Field ${k} not permitted for delivery dispatch task.`);
+          }
+        }
+      } else if (order.order_status === 'out_for_delivery') {
+        const allowedHandover: (keyof Order)[] = ['order_status', 'delivered_at', 'delivery_notes', 'notes', 'updated_at'];
+        for (const k of Object.keys(fields) as (keyof Order)[]) {
+          if (!allowedHandover.includes(k) && fields[k] !== undefined && fields[k] !== order[k]) {
+            throw new Error(`Security violation: Field ${k} not permitted for delivery handover task.`);
+          }
+        }
+      } else {
+        throw new Error(`Unauthorized: Delivery associates cannot update orders in status ${order.order_status}.`);
+      }
+    }
+
+    if (userRole === 'manager' || userRole === 'owner') {
+      if (fields.order_status === 'cancelled' && (!fields.cancellation_reason || !fields.cancellation_reason.trim())) {
+        throw new Error('Validation error: A cancellation reason is mandatory when cancelling an order.');
+      }
+    }
+
+    Object.assign(order, fields);
+    return order;
+  }
+
   static async createOrder(data: {
     customer_id?: string;
     customer_name: string;
@@ -1383,6 +1576,7 @@ export class LaundryService {
     pickup_slot: string;
     pickup_latitude?: number | null;
     pickup_longitude?: number | null;
+    service_id?: string;
     notes?: string;
   }): Promise<Order> {
     return this.createBooking(data);
@@ -1435,16 +1629,25 @@ export class LaundryService {
     return this.markAsDelivered(orderId, notes);
   }
 
-  static async getStaffProfiles(): Promise<Profile[]> {
+  static async getStaffProfiles(includeInactive: boolean = true): Promise<Profile[]> {
     if (isLiveMode) {
       try {
-        const { data, error } = await supabase
+        let query = supabase
           .from('profiles')
           .select('*')
-          .neq('role', 'customer')
-          .eq('is_active', true);
-        if (!error && data && data.length > 0) {
+          .neq('role', 'customer');
+
+        if (!includeInactive) {
+          query = query.eq('is_active', true);
+        }
+
+        const { data, error } = await query.order('created_at', { ascending: true });
+        if (!error && data) {
+          localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(data));
           return data;
+        }
+        if (error) {
+          console.warn('Notice querying remote staff profiles:', error.message);
         }
       } catch (err) {
         console.warn('Notice querying remote staff profiles:', err);
@@ -1453,33 +1656,395 @@ export class LaundryService {
 
     const saved = localStorage.getItem(STORAGE_KEYS.PROFILES);
     if (saved) {
-      try { return JSON.parse(saved); } catch {}
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return includeInactive ? parsed : parsed.filter((p: Profile) => p.is_active);
+        }
+      } catch {}
     }
     const initial = DEMO_PROFILES.filter(p => p.role !== 'customer');
     localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(initial));
-    return initial;
+    return includeInactive ? initial : initial.filter(p => p.is_active);
   }
 
-  static async addStaffProfile(data: { full_name: string; phone: string; role: 'delivery' | 'manager' }): Promise<Profile> {
-    const profiles = await this.getStaffProfiles();
+  static async addStaffProfile(data: {
+    full_name: string;
+    email: string;
+    phone: string;
+    role: 'delivery' | 'manager';
+    password?: string;
+    send_invite?: boolean;
+  }): Promise<Profile> {
+    const cleanEmail = data.email?.trim()?.toLowerCase();
+    const cleanPhone = data.phone?.replace(/[^0-9]/g, '')?.slice(-10);
+    const cleanName = data.full_name?.trim();
+
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      throw new Error('A valid email address is required for staff account creation.');
+    }
+    if (!cleanName || cleanName.length < 2) {
+      throw new Error('Full name must be at least 2 characters.');
+    }
+    if (!cleanPhone || cleanPhone.length !== 10) {
+      throw new Error('Please enter a valid 10-digit Indian phone number.');
+    }
+    if (!['delivery', 'manager'].includes(data.role)) {
+      throw new Error("Operational role must be either 'delivery' or 'manager'.");
+    }
+
+    const currentProfiles = await this.getStaffProfiles(true);
+
+    // Client-side fast duplicate email check
+    const emailDuplicate = currentProfiles.find(
+      (p) => p.email && p.email.toLowerCase() === cleanEmail
+    );
+    if (emailDuplicate) {
+      throw new Error(`An account with email ${cleanEmail} already exists (${emailDuplicate.full_name}).`);
+    }
+
+    // Client-side fast duplicate phone check
+    const phoneDuplicate = currentProfiles.find(
+      (p) => p.phone && p.phone.replace(/[^0-9]/g, '').slice(-10) === cleanPhone
+    );
+    if (phoneDuplicate) {
+      throw new Error(`A staff member with phone number ${cleanPhone} already exists (${phoneDuplicate.full_name}).`);
+    }
+
+    // Authoritative Server-Side Persistence in Live Mode
+    if (isLiveMode) {
+      let serverError: string | null = null;
+
+      // 1. Primary secure server-side method: Database RPC 'create_staff_account'
+      try {
+        const { data: rpcData, error: rpcError } = await supabase.rpc('create_staff_account', {
+          p_email: cleanEmail,
+          p_phone: cleanPhone,
+          p_full_name: cleanName,
+          p_role: data.role,
+          p_password: data.password?.trim() || null
+        });
+
+        if (!rpcError && rpcData?.success && rpcData?.profile) {
+          const persistedProfile = rpcData.profile as Profile;
+          const updated = [...currentProfiles.filter(p => p.id !== persistedProfile.id), persistedProfile];
+          localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(updated));
+          return persistedProfile;
+        }
+
+        if (rpcError) {
+          const isRpcMissing = rpcError.code === '42883' || (rpcError.message?.includes('function') && rpcError.message?.includes('does not exist'));
+          if (!isRpcMissing) {
+            throw new Error(rpcError.message || 'Database error creating staff account.');
+          }
+          serverError = rpcError.message;
+        }
+      } catch (err: any) {
+        if (err.message && (err.message.includes('already exists') || err.message.includes('Access denied') || err.message.includes('required'))) {
+          throw err;
+        }
+        serverError = err.message || String(err);
+      }
+
+      // 2. Secondary secure server-side method: Edge Function 'create-staff-account'
+      try {
+        let session = (await supabase.auth.getSession()).data?.session;
+
+        // Proactive token refresh if session is missing or near expiration (within 60s)
+        if (session) {
+          const isExpiring = session.expires_at && (session.expires_at * 1000 < Date.now() + 60000);
+          if (isExpiring) {
+            const { data: refreshData, error: refreshErr } = await supabase.auth.refreshSession();
+            if (!refreshErr && refreshData?.session) {
+              session = refreshData.session;
+            }
+          }
+        }
+
+        // If no authenticated user session exists, fail fast with explicit 401
+        if (!session?.access_token) {
+          throw new Error('[HTTP 401] Invalid or expired session. Please log in again to manage staff accounts.');
+        }
+
+        const { data: edgeRes, error: edgeErr } = await supabase.functions.invoke(
+          'create-staff-account',
+          {
+            headers: {
+              Authorization: `Bearer ${session.access_token}`
+            },
+            body: {
+              full_name: cleanName,
+              email: cleanEmail,
+              phone: cleanPhone,
+              role: data.role,
+              password: data.password?.trim() || undefined,
+              send_invite: data.send_invite ?? true
+            }
+          }
+        );
+
+        if (!edgeErr && edgeRes?.success && edgeRes?.profile) {
+          const persistedProfile = edgeRes.profile as Profile;
+          const updated = [...currentProfiles.filter(p => p.id !== persistedProfile.id), persistedProfile];
+          localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(updated));
+          return persistedProfile;
+        }
+
+        if (edgeRes?.error) {
+          throw new Error(edgeRes.error);
+        }
+
+        if (edgeErr) {
+          let detailedMessage = edgeErr.message;
+          let httpStatus = (edgeErr as any).status || 400;
+          try {
+            const ctx = (edgeErr as any).context;
+            if (ctx && typeof ctx.json === 'function') {
+              const errBody = await ctx.json();
+              if (errBody?.error) detailedMessage = errBody.error;
+              else if (errBody?.message) detailedMessage = errBody.message;
+              if (errBody?.status) httpStatus = errBody.status;
+            } else if (ctx && typeof ctx.text === 'function') {
+              const errText = await ctx.text();
+              if (errText) detailedMessage = errText;
+            }
+          } catch {}
+
+          if (!detailedMessage.startsWith('[HTTP')) {
+            detailedMessage = `[HTTP ${httpStatus}] ${detailedMessage}`;
+          }
+          throw new Error(detailedMessage);
+        }
+      } catch (err: any) {
+        if (err.message && (
+          err.message.includes('already exists') ||
+          err.message.includes('Access denied') ||
+          err.message.includes('required') ||
+          err.message.includes('Please enter') ||
+          err.message.includes('Invalid or expired') ||
+          err.message.includes('HTTP 401') ||
+          err.message.includes('HTTP 403') ||
+          err.message.includes('session')
+        )) {
+          throw err;
+        }
+        serverError = err.message || serverError;
+      }
+
+      // In live mode, NEVER pretend success or create unpersisted local records when database operations fail!
+      throw new Error(
+        `Failed to persist staff account to database: ${serverError || 'The server-side creation function is not available or returned an error.'}. ` +
+        `Please ensure the secure staff creation migration or Edge Function is deployed on Supabase.`
+      );
+    }
+
+    // Demo / Test Mode Fallback: Persist in local storage so refreshing retains newly created demo staff
     const newStaff: Profile = {
-      id: `staff-${Date.now()}`,
-      phone: data.phone,
-      full_name: data.full_name,
+      id: generateUUID(),
+      email: cleanEmail,
+      phone: cleanPhone,
+      full_name: cleanName,
       role: data.role,
       is_active: true,
       created_at: new Date().toISOString()
     };
-    const updated = [...profiles, newStaff];
+
+    const updated = [...currentProfiles, newStaff];
     localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(updated));
     return newStaff;
   }
 
-  static async toggleStaffStatus(staffId: string, isActive: boolean): Promise<Profile | null> {
-    const profiles = await this.getStaffProfiles();
+  static async updateStaffProfile(
+    staffId: string,
+    data: { full_name: string; phone: string; role: UserRole },
+    callerId?: string
+  ): Promise<Profile> {
+    const cleanName = data.full_name?.trim();
+    const cleanPhone = data.phone?.replace(/[^0-9]/g, '')?.slice(-10);
+
+    if (!cleanName || cleanName.length < 2) {
+      throw new Error('Full name must be at least 2 characters.');
+    }
+    if (!cleanPhone || cleanPhone.length !== 10) {
+      throw new Error('Please enter a valid 10-digit Indian phone number.');
+    }
+    if (!['owner', 'manager', 'delivery'].includes(data.role)) {
+      throw new Error("Operational role must be either 'manager' or 'delivery'.");
+    }
+
+    const profiles = await this.getStaffProfiles(true);
+    const staff = profiles.find(s => s.id === staffId);
+    if (!staff) {
+      throw new Error('Employee profile not found.');
+    }
+
+    // Check duplicate phone number with other accounts
+    const phoneDuplicate = profiles.find(
+      p => p.id !== staffId && p.phone && p.phone.replace(/[^0-9]/g, '').slice(-10) === cleanPhone
+    );
+    if (phoneDuplicate) {
+      throw new Error(`Phone number ${cleanPhone} is already registered to ${phoneDuplicate.full_name}.`);
+    }
+
+    // Owner protection safeguards
+    if (staff.role === 'owner' && data.role !== 'owner') {
+      if (callerId && staffId === callerId) {
+        throw new Error('Business owners cannot demote their own account role.');
+      }
+      const otherActiveOwners = profiles.filter(
+        p => p.role === 'owner' && p.is_active && p.id !== staffId
+      );
+      if (otherActiveOwners.length === 0) {
+        throw new Error('Cannot demote the last active business owner. The system must have at least one active owner.');
+      }
+    }
+
+    if (isLiveMode) {
+      let updatedFromDb: any = null;
+
+      // 1. Try secure atomic RPC 'update_staff_profile'
+      try {
+        const { data: rpcData, error: rpcError } = await supabase.rpc('update_staff_profile', {
+          p_staff_id: staffId,
+          p_full_name: cleanName,
+          p_phone: cleanPhone,
+          p_role: data.role
+        });
+
+        if (!rpcError && rpcData?.success) {
+          updatedFromDb = rpcData.profile;
+        } else if (rpcError) {
+          const isRpcMissing = rpcError.code === '42883' || rpcError.message?.includes('does not exist');
+          if (!isRpcMissing) {
+            throw new Error(rpcError.message || 'Database error updating employee details.');
+          }
+        }
+      } catch (err: any) {
+        if (err.message && (err.message.includes('already') || err.message.includes('denied') || err.message.includes('owner'))) {
+          throw err;
+        }
+      }
+
+      // 2. Fallback to direct table update if RPC not present in legacy environment
+      if (!updatedFromDb) {
+        const { data: tableData, error: tableError } = await supabase
+          .from('profiles')
+          .update({
+            full_name: cleanName,
+            phone: cleanPhone,
+            role: data.role,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', staffId)
+          .select()
+          .single();
+
+        if (tableError) {
+          throw new Error(`Failed to update employee details in database: ${tableError.message}`);
+        }
+        updatedFromDb = tableData;
+      }
+
+      if (updatedFromDb) {
+        staff.full_name = updatedFromDb.full_name || cleanName;
+        staff.phone = updatedFromDb.phone || cleanPhone;
+        staff.role = updatedFromDb.role || data.role;
+      }
+    } else {
+      staff.full_name = cleanName;
+      staff.phone = cleanPhone;
+      staff.role = data.role;
+    }
+
+    // Keep demo list in sync
+    const demoStaff = DEMO_PROFILES.find(p => p.id === staffId);
+    if (demoStaff) {
+      demoStaff.full_name = cleanName;
+      demoStaff.phone = cleanPhone;
+      demoStaff.role = data.role;
+    }
+
+    localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(profiles));
+    return staff;
+  }
+
+  static async toggleStaffStatus(
+    staffId: string,
+    isActive: boolean,
+    callerId?: string
+  ): Promise<Profile | null> {
+    const profiles = await this.getStaffProfiles(true);
     const staff = profiles.find(s => s.id === staffId);
     if (!staff) return null;
-    staff.is_active = isActive;
+
+    // Owner protection safeguards
+    if (!isActive) {
+      if (callerId && staffId === callerId) {
+        throw new Error('You cannot deactivate your own owner account.');
+      }
+      if (staff.role === 'owner') {
+        const otherActiveOwners = profiles.filter(
+          p => p.role === 'owner' && p.is_active && p.id !== staffId
+        );
+        if (otherActiveOwners.length === 0) {
+          throw new Error('Cannot deactivate the last active business owner.');
+        }
+      }
+    }
+
+    if (isLiveMode) {
+      let updatedFromDb: any = null;
+
+      // 1. Try secure atomic RPC 'set_staff_active_status'
+      try {
+        const { data: rpcData, error: rpcError } = await supabase.rpc('set_staff_active_status', {
+          p_staff_id: staffId,
+          p_is_active: isActive
+        });
+
+        if (!rpcError && rpcData?.success) {
+          updatedFromDb = rpcData.profile;
+        } else if (rpcError) {
+          const isRpcMissing = rpcError.code === '42883' || rpcError.message?.includes('does not exist');
+          if (!isRpcMissing) {
+            throw new Error(rpcError.message || 'Database error updating employee status.');
+          }
+        }
+      } catch (err: any) {
+        if (err.message && (err.message.includes('denied') || err.message.includes('owner') || err.message.includes('cannot deactivate'))) {
+          throw err;
+        }
+      }
+
+      // 2. Fallback to direct table update
+      if (!updatedFromDb) {
+        const { data: tableData, error: tableError } = await supabase
+          .from('profiles')
+          .update({
+            is_active: isActive,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', staffId)
+          .select()
+          .single();
+
+        if (tableError) {
+          throw new Error(`Failed to update staff status in database: ${tableError.message}`);
+        }
+        updatedFromDb = tableData;
+      }
+
+      staff.is_active = updatedFromDb?.is_active ?? isActive;
+    } else {
+      staff.is_active = isActive;
+    }
+
+    // Keep demo list in sync
+    const demoStaff = DEMO_PROFILES.find(p => p.id === staffId);
+    if (demoStaff) {
+      demoStaff.is_active = isActive;
+    }
+
     localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(profiles));
     return staff;
   }
@@ -1497,14 +2062,35 @@ export class LaundryService {
   // ----------------------------------------------------
   static async getServiceAreas(): Promise<ServiceArea[]> {
     if (isLiveMode) {
-      const { data, error } = await supabase.from('service_areas').select('*').order('pincode', { ascending: true });
-      if (error) throw new Error(`Failed to load service areas: ${error.message}`);
-      return data || [];
+      try {
+        const { data, error } = await supabase
+          .from('service_areas')
+          .select('*')
+          .order('pincode', { ascending: true });
+        if (!error && data) {
+          const mapped: ServiceArea[] = data.map((d: any) => ({
+            ...d,
+            name: d.area_name || d.name
+          }));
+          localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(mapped));
+          return mapped;
+        }
+        if (error) {
+          console.warn('Notice loading service areas from Supabase:', error.message);
+        }
+      } catch (err: any) {
+        console.warn('Notice querying service areas:', err?.message || err);
+      }
     }
 
     const saved = localStorage.getItem(STORAGE_KEYS.SERVICE_AREAS);
     if (saved) {
-      try { return JSON.parse(saved); } catch {}
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((d: any) => ({ ...d, name: d.area_name || d.name }));
+        }
+      } catch {}
     }
     localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(DEFAULT_SERVICE_AREAS));
     return DEFAULT_SERVICE_AREAS;
@@ -1523,27 +2109,48 @@ export class LaundryService {
 
     const areas = await this.getServiceAreas();
     if (areas.some(a => a.pincode === cleanPin)) {
-      throw new Error(`PIN code ${cleanPin} is already registered.`);
+      throw new Error(`PIN code ${cleanPin} is already registered (${areas.find(a => a.pincode === cleanPin)?.area_name || 'Service Area'}).`);
     }
 
-    const newArea: ServiceArea = {
+    // Precise database payload matching public.service_areas table schema:
+    // (id, pincode, area_name, city, state, is_active, created_at, updated_at)
+    // Note: 'name' is NOT a database column, so it is strictly excluded from dbPayload.
+    const nowIso = new Date().toISOString();
+    const dbPayload = {
       id: generateUUID(),
       pincode: cleanPin,
       area_name: areaName,
-      name: areaName,
       city: (data.city || 'Bengaluru').trim(),
       state: (data.state || 'Karnataka').trim(),
       is_active: data.is_active !== undefined ? data.is_active : true,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
+      created_at: nowIso,
+      updated_at: nowIso
     };
 
     if (isLiveMode) {
-      const { data: inserted, error } = await supabase.from('service_areas').insert(newArea).select().single();
-      if (error) throw new Error(`Failed to save service area: ${error.message}`);
-      return inserted || newArea;
+      const { data: inserted, error } = await supabase
+        .from('service_areas')
+        .insert(dbPayload)
+        .select()
+        .single();
+
+      if (error) {
+        throw new Error(`Failed to save service area in database: ${error.message}`);
+      }
+
+      const result: ServiceArea = {
+        ...(inserted || dbPayload),
+        name: (inserted || dbPayload).area_name
+      };
+      const updatedList = [...areas.filter(a => a.id !== result.id), result];
+      localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(updatedList));
+      return result;
     }
 
+    const newArea: ServiceArea = {
+      ...dbPayload,
+      name: areaName
+    };
     const updated = [...areas, newArea];
     localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(updated));
     return newArea;
@@ -1554,18 +2161,44 @@ export class LaundryService {
     const item = areas.find(a => a.id === id);
     if (!item) throw new Error('Service area not found');
 
-    const updatedItem = {
-      ...item,
-      ...updates,
+    const dbUpdates: Record<string, any> = {
       updated_at: new Date().toISOString()
     };
+    if (updates.pincode !== undefined) dbUpdates.pincode = (updates.pincode || '').trim().replace(/[^0-9]/g, '');
+    if (updates.area_name !== undefined) dbUpdates.area_name = updates.area_name.trim();
+    else if ((updates as any).name !== undefined) dbUpdates.area_name = (updates as any).name.trim();
+    if (updates.city !== undefined) dbUpdates.city = (updates.city || '').trim();
+    if (updates.state !== undefined) dbUpdates.state = (updates.state || '').trim();
+    if (updates.is_active !== undefined) dbUpdates.is_active = Boolean(updates.is_active);
 
     if (isLiveMode) {
-      const { data: updatedDb, error } = await supabase.from('service_areas').update(updatedItem).eq('id', id).select().single();
-      if (error) throw new Error(`Failed to update service area: ${error.message}`);
-      return updatedDb || updatedItem;
+      const { data: updatedDb, error } = await supabase
+        .from('service_areas')
+        .update(dbUpdates)
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) {
+        throw new Error(`Failed to update service area in database: ${error.message}`);
+      }
+
+      const result: ServiceArea = {
+        ...updatedDb,
+        name: updatedDb.area_name
+      };
+      const updatedList = areas.map(a => a.id === id ? result : a);
+      localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(updatedList));
+      return result;
     }
 
+    const updatedItem: ServiceArea = {
+      ...item,
+      ...updates,
+      area_name: dbUpdates.area_name || item.area_name,
+      name: dbUpdates.area_name || item.area_name,
+      updated_at: dbUpdates.updated_at
+    };
     const updatedList = areas.map(a => a.id === id ? updatedItem : a);
     localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(updatedList));
     return updatedItem;
@@ -1609,37 +2242,198 @@ export class LaundryService {
   // ----------------------------------------------------
   // Services Catalog Management
   // ----------------------------------------------------
-  static async getServices(): Promise<LaundryServiceItem[]> {
+  static async getServices(includeInactive: boolean = true): Promise<LaundryServiceItem[]> {
     if (isLiveMode) {
-      const { data, error } = await supabase.from('services').select('*').order('display_order', { ascending: true });
-      if (error) throw new Error(`Failed to load services: ${error.message}`);
-      return data || [];
+      try {
+        let query = supabase.from('services').select('*').order('display_order', { ascending: true });
+        if (!includeInactive) {
+          query = query.eq('is_active', true);
+        }
+        const { data, error } = await query;
+        if (error) {
+          console.warn('Supabase services load notice:', error.message);
+        } else if (data && data.length > 0) {
+          localStorage.setItem(STORAGE_KEYS.SERVICES, JSON.stringify(data));
+          return data;
+        }
+      } catch (err: any) {
+        console.warn('Falling back to local services cache:', err?.message || err);
+      }
     }
 
     const saved = localStorage.getItem(STORAGE_KEYS.SERVICES);
+    let list: LaundryServiceItem[] = DEFAULT_SERVICES;
     if (saved) {
-      try { return JSON.parse(saved); } catch {}
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          list = parsed;
+        }
+      } catch {}
+    } else {
+      localStorage.setItem(STORAGE_KEYS.SERVICES, JSON.stringify(DEFAULT_SERVICES));
     }
-    localStorage.setItem(STORAGE_KEYS.SERVICES, JSON.stringify(DEFAULT_SERVICES));
-    return DEFAULT_SERVICES;
+
+    if (!includeInactive) {
+      return list.filter(s => s.is_active);
+    }
+    return list;
+  }
+
+  static async addService(serviceData: {
+    name: string;
+    description?: string;
+    pricing_unit: string;
+    unit_price_paise: number;
+    min_weight_kg?: number;
+    is_active?: boolean;
+    display_order?: number;
+  }): Promise<LaundryServiceItem> {
+    const trimmedName = serviceData.name?.trim();
+    if (!trimmedName) {
+      throw new Error('Service name is required');
+    }
+    if (!serviceData.unit_price_paise || serviceData.unit_price_paise <= 0) {
+      throw new Error('Unit price must be greater than zero');
+    }
+
+    const allowedUnits = ['per_kg', 'per_piece', 'per_item', 'per_load', 'per_order'];
+    if (!allowedUnits.includes(serviceData.pricing_unit)) {
+      throw new Error(`Invalid pricing unit '${serviceData.pricing_unit}'. Supported units: ${allowedUnits.join(', ')}`);
+    }
+
+    // Check duplicate service name (case-insensitive)
+    const existingServices = await this.getServices(true);
+    const duplicate = existingServices.find(s => s.name.trim().toLowerCase() === trimmedName.toLowerCase());
+    if (duplicate) {
+      throw new Error(`A service with the name '${trimmedName}' already exists. Please choose a unique name.`);
+    }
+
+    const newService: LaundryServiceItem = {
+      id: generateUUID(),
+      name: trimmedName,
+      description: serviceData.description?.trim() || '',
+      pricing_unit: serviceData.pricing_unit,
+      unit_price_paise: serviceData.unit_price_paise,
+      min_weight_kg: serviceData.pricing_unit === 'per_kg' ? (serviceData.min_weight_kg ?? 3.0) : 0,
+      is_active: serviceData.is_active !== undefined ? serviceData.is_active : true,
+      display_order: serviceData.display_order ?? (existingServices.length + 1),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    if (isLiveMode) {
+      const { data, error } = await supabase.from('services').insert(newService).select().single();
+      if (error) {
+        throw new Error(`Failed to add service to database: ${error.message}`);
+      }
+      const created = data || newService;
+      const updatedList = [...existingServices, created];
+      localStorage.setItem(STORAGE_KEYS.SERVICES, JSON.stringify(updatedList));
+      return created;
+    }
+
+    const updatedList = [...existingServices, newService];
+    localStorage.setItem(STORAGE_KEYS.SERVICES, JSON.stringify(updatedList));
+    return newService;
   }
 
   static async updateService(id: string, updates: Partial<LaundryServiceItem>): Promise<LaundryServiceItem> {
-    const services = await this.getServices();
+    const services = await this.getServices(true);
     const item = services.find(s => s.id === id);
     if (!item) throw new Error('Service not found');
 
-    const updatedItem = { ...item, ...updates, updated_at: new Date().toISOString() };
+    if (updates.name !== undefined) {
+      const trimmedName = updates.name.trim();
+      if (!trimmedName) throw new Error('Service name cannot be empty');
+      const duplicate = services.find(s => s.id !== id && s.name.trim().toLowerCase() === trimmedName.toLowerCase());
+      if (duplicate) {
+        throw new Error(`A service with the name '${trimmedName}' already exists. Please choose a unique name.`);
+      }
+      updates.name = trimmedName;
+    }
+
+    if (updates.unit_price_paise !== undefined && updates.unit_price_paise <= 0) {
+      throw new Error('Unit price must be greater than zero');
+    }
+
+    const updatedItem: LaundryServiceItem = {
+      ...item,
+      ...updates,
+      min_weight_kg: (updates.pricing_unit || item.pricing_unit) === 'per_kg' 
+        ? (updates.min_weight_kg !== undefined ? updates.min_weight_kg : item.min_weight_kg)
+        : 0,
+      updated_at: new Date().toISOString()
+    };
 
     if (isLiveMode) {
       const { data: updatedDb, error } = await supabase.from('services').update(updatedItem).eq('id', id).select().single();
       if (error) throw new Error(`Failed to update service: ${error.message}`);
-      return updatedDb || updatedItem;
+      const persisted = updatedDb || updatedItem;
+      const updatedList = services.map(s => s.id === id ? persisted : s);
+      localStorage.setItem(STORAGE_KEYS.SERVICES, JSON.stringify(updatedList));
+      return persisted;
     }
 
     const updatedList = services.map(s => s.id === id ? updatedItem : s);
     localStorage.setItem(STORAGE_KEYS.SERVICES, JSON.stringify(updatedList));
     return updatedItem;
+  }
+
+  static async toggleServiceStatus(id: string, isActive: boolean): Promise<LaundryServiceItem> {
+    return this.updateService(id, { is_active: isActive });
+  }
+
+  static async deleteService(id: string): Promise<{ success: boolean; message: string }> {
+    const services = await this.getServices(true);
+    const item = services.find(s => s.id === id);
+    if (!item) throw new Error('Service not found');
+
+    // Referential integrity protection: check if any order references this service
+    let orderCount = 0;
+    if (isLiveMode) {
+      try {
+        const { data: referencedOrders, error } = await supabase
+          .from('orders')
+          .select('id, order_number')
+          .or(`service_id.eq.${id},service_name.eq.${item.name}`)
+          .limit(5);
+
+        if (!error && referencedOrders && referencedOrders.length > 0) {
+          orderCount = referencedOrders.length;
+        }
+      } catch (err) {
+        console.warn('Referential check query fallback:', err);
+      }
+    }
+
+    if (orderCount === 0) {
+      // Also check local/cached orders
+      const allOrders = await this.getOrders();
+      const localRefs = allOrders.filter(
+        o => o.service_id === id || (o.service_name && o.service_name.trim().toLowerCase() === item.name.trim().toLowerCase())
+      );
+      if (localRefs.length > 0) {
+        orderCount = localRefs.length;
+      }
+    }
+
+    if (orderCount > 0) {
+      throw new Error(
+        `Cannot delete service '${item.name}' because it is referenced by existing order(s). Deactivate the service instead so historical bills and audit trails are preserved.`
+      );
+    }
+
+    if (isLiveMode) {
+      const { error } = await supabase.from('services').delete().eq('id', id);
+      if (error) {
+        throw new Error(`Failed to delete service from database: ${error.message}`);
+      }
+    }
+
+    const remaining = services.filter(s => s.id !== id);
+    localStorage.setItem(STORAGE_KEYS.SERVICES, JSON.stringify(remaining));
+    return { success: true, message: `Service '${item.name}' deleted successfully.` };
   }
 
   // ----------------------------------------------------
@@ -1850,8 +2644,12 @@ export class LaundryService {
     const existingList: OrderFeedback[] = JSON.parse(localStorage.getItem(STORAGE_KEYS.FEEDBACK) || '[]');
     const existingIndex = existingList.findIndex(f => f.order_id === data.order_id);
 
+    const feedbackId = (existingIndex >= 0 && isUUID(existingList[existingIndex].id))
+      ? existingList[existingIndex].id
+      : generateUUID();
+
     const feedbackRecord: OrderFeedback = {
-      id: existingIndex >= 0 ? existingList[existingIndex].id : `fb-${Date.now()}`,
+      id: feedbackId,
       order_id: data.order_id,
       order_number: order.order_number,
       customer_id: data.customer_id || order.customer_id,
@@ -1869,9 +2667,39 @@ export class LaundryService {
       updated_at: new Date().toISOString()
     };
 
-    if (isSupabaseConfigured) {
+    if (isLiveMode && import.meta.env.MODE !== 'test') {
       try {
-        await supabase.from('order_feedback').upsert(feedbackRecord);
+        const dbPayload: any = {
+          order_id: feedbackRecord.order_id,
+          customer_id: (feedbackRecord.customer_id && isUUID(feedbackRecord.customer_id)) ? feedbackRecord.customer_id : null,
+          customer_name: feedbackRecord.customer_name,
+          customer_phone: feedbackRecord.customer_phone,
+          rating_overall: feedbackRecord.rating_overall,
+          rating_pickup: feedbackRecord.rating_pickup ?? null,
+          rating_washing: feedbackRecord.rating_washing ?? null,
+          rating_delivery: feedbackRecord.rating_delivery ?? null,
+          comment: feedbackRecord.comment ?? null,
+          suggestions: feedbackRecord.suggestions ?? null,
+          low_rating_reason: feedbackRecord.low_rating_reason ?? null,
+          status: feedbackRecord.status || 'new',
+          created_at: feedbackRecord.created_at,
+          updated_at: feedbackRecord.updated_at
+        };
+        if (isUUID(feedbackRecord.id)) {
+          dbPayload.id = feedbackRecord.id;
+        }
+
+        const { data: upserted, error } = await supabase
+          .from('order_feedback')
+          .upsert(dbPayload, { onConflict: 'order_id' })
+          .select()
+          .single();
+
+        if (!error && upserted) {
+          feedbackRecord.id = upserted.id;
+        } else if (error) {
+          console.warn('Supabase feedback save error:', error.message);
+        }
       } catch (e) {
         console.warn('Supabase feedback save error:', e);
       }
@@ -1889,17 +2717,44 @@ export class LaundryService {
   }
 
   static async getFeedbackForOrder(orderId: string): Promise<OrderFeedback | null> {
+    if (isLiveMode && import.meta.env.MODE !== 'test') {
+      try {
+        const { data, error } = await supabase
+          .from('order_feedback')
+          .select('*')
+          .eq('order_id', orderId)
+          .maybeSingle();
+        if (!error && data) {
+          return data;
+        }
+      } catch (e) {
+        console.warn('Using local feedback for order:', e);
+      }
+    }
     const list: OrderFeedback[] = JSON.parse(localStorage.getItem(STORAGE_KEYS.FEEDBACK) || '[]');
     return list.find(f => f.order_id === orderId) || null;
   }
 
   static async getFeedbackForCustomer(customerId: string): Promise<OrderFeedback[]> {
+    if (isLiveMode && import.meta.env.MODE !== 'test') {
+      try {
+        const { data, error } = await supabase
+          .from('order_feedback')
+          .select('*')
+          .eq('customer_id', customerId);
+        if (!error && data && data.length > 0) {
+          return data;
+        }
+      } catch (e) {
+        console.warn('Using local feedback for customer:', e);
+      }
+    }
     const list: OrderFeedback[] = JSON.parse(localStorage.getItem(STORAGE_KEYS.FEEDBACK) || '[]');
     return list.filter(f => f.customer_id === customerId);
   }
 
   static async getAllFeedback(): Promise<OrderFeedback[]> {
-    if (isSupabaseConfigured) {
+    if (isLiveMode && import.meta.env.MODE !== 'test') {
       try {
         const { data } = await supabase.from('order_feedback').select('*').order('created_at', { ascending: false });
         if (data && data.length > 0) return data;
@@ -1930,9 +2785,16 @@ export class LaundryService {
     item.reviewed_at = new Date().toISOString();
     item.updated_at = new Date().toISOString();
 
-    if (isSupabaseConfigured) {
+    if (isLiveMode && import.meta.env.MODE !== 'test') {
       try {
-        await supabase.from('order_feedback').update(item).eq('id', feedbackId);
+        const updatePayload: any = {
+          status: item.status,
+          resolution_note: item.resolution_note || null,
+          reviewed_by_name: item.reviewed_by || 'Authorized Staff',
+          reviewed_at: item.reviewed_at,
+          updated_at: item.updated_at
+        };
+        await supabase.from('order_feedback').update(updatePayload).eq('id', feedbackId);
       } catch (e) {
         console.warn('Supabase feedback review update error:', e);
       }

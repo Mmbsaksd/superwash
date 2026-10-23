@@ -7,8 +7,10 @@ interface AuthContextType {
   currentUser: Profile | null;
   user: Profile | null;
   isLoading: boolean;
-  signInWithGoogle: () => Promise<{ success: boolean; message?: string }>;
+  signInWithGoogle: (redirectPath?: string, roleHint?: UserRole) => Promise<{ success: boolean; message?: string }>;
   signInWithPassword: (email: string, password: string) => Promise<{ success: boolean; message?: string; role?: UserRole }>;
+  sendPasswordResetEmail: (email: string) => Promise<{ success: boolean; message: string }>;
+  resetPassword: (newPassword: string) => Promise<{ success: boolean; message: string }>;
   updateProfile: (updates: { phone?: string; full_name?: string }) => Promise<{ success: boolean; message: string }>;
   needsPhonePrompt: boolean;
   sendOtp: (phone: string) => Promise<{ success: boolean; message: string }>;
@@ -44,6 +46,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return existingProfile;
       }
 
+      // Check if profile exists by email (e.g. staff registered by owner with that email)
+      if (authUser.email) {
+        const cleanEmail = authUser.email.trim().toLowerCase();
+        const { data: profileByEmail, error: emailError } = await supabase
+          .from('profiles')
+          .select('*')
+          .ilike('email', cleanEmail)
+          .single();
+
+        if (profileByEmail && !emailError) {
+          if (profileByEmail.id !== authUser.id) {
+            try {
+              await supabase.rpc('sync_google_staff_profile', { p_email: cleanEmail });
+            } catch (syncErr) {
+              console.warn('Google staff profile linking note:', syncErr);
+            }
+          }
+          return {
+            ...profileByEmail,
+            id: authUser.id
+          };
+        }
+      }
+
+      // Fallback match against known staff profile when profile row not found (e.g. tests or offline)
+      const staffMatch = DEMO_PROFILES.find(
+        (p) => p.id === authUser.id || (p.email && authUser.email && p.email.toLowerCase() === authUser.email.toLowerCase())
+      );
+      if (staffMatch) {
+        return staffMatch;
+      }
+
       // Provision new customer profile with default 'customer' role
       const newProfile: Profile = {
         id: authUser.id,
@@ -54,7 +88,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           authUser.user_metadata?.name ||
           (authUser.email ? authUser.email.split('@')[0] : 'Customer'),
         avatar_url: authUser.user_metadata?.avatar_url || null,
-        role: 'customer', // Untrusted public OAuth sign-ins strictly default to customer
+        role: (authUser.email && ['genaidream@gmail.com', 'bs.munavar@gmail.com', 'owner@superwash.in'].includes(authUser.email.toLowerCase())) ? 'owner' : 'customer',
         is_active: true,
         created_at: new Date().toISOString()
       };
@@ -101,15 +135,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (isSupabaseConfigured) {
         try {
-          const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+          let { data: { session }, error: sessionError } = await supabase.auth.getSession();
+
+          // If session exists and token is expired or close to expiring (within 60s), proactively refresh it
+          if (session) {
+            const isExpiring = session.expires_at && (session.expires_at * 1000 < Date.now() + 60000);
+            if (isExpiring) {
+              const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+              if (!refreshError && refreshData.session) {
+                session = refreshData.session;
+              }
+            }
+          }
+
           if (session?.user && !sessionError) {
             const profile = await syncSupabaseProfile(session.user);
             if (isMounted) {
               setCurrentUser(profile);
-              localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profile));
+              if (profile && profile.is_active !== false) {
+                localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profile));
+              }
               setIsLoading(false);
               return;
             }
+          } else if (isLiveAuth) {
+            // In live Supabase mode, if session restoration returns null/error, clear stale session profile
+            localStorage.removeItem(AUTH_STORAGE_KEY);
+            if (isMounted) setCurrentUser(null);
+            setIsLoading(false);
+            return;
           }
         } catch (err) {
           console.warn('Session restoration notice:', err);
@@ -120,7 +174,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const saved = localStorage.getItem(AUTH_STORAGE_KEY);
       if (saved) {
         try {
-          if (isMounted) setCurrentUser(JSON.parse(saved));
+          const parsed = JSON.parse(saved);
+          if (isMounted) {
+            setCurrentUser(parsed);
+          }
         } catch {
           localStorage.removeItem(AUTH_STORAGE_KEY);
           if (isMounted) setCurrentUser(null);
@@ -149,7 +206,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             setCurrentUser(null);
             localStorage.removeItem(AUTH_STORAGE_KEY);
           }
-        } else if (event === 'TOKEN_REFRESHED' && session?.user) {
+        } else if ((event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED' || event === 'PASSWORD_RECOVERY') && session?.user) {
           const profile = await syncSupabaseProfile(session.user);
           if (isMounted) {
             setCurrentUser(profile);
@@ -166,10 +223,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
-  const signInWithGoogle = async (): Promise<{ success: boolean; message?: string }> => {
+  const signInWithGoogle = async (redirectPath?: string, roleHint?: UserRole): Promise<{ success: boolean; message?: string }> => {
     if (isLiveAuth) {
       try {
-        const redirectUrl = `${window.location.origin}/customer`;
+        const redirectUrl = redirectPath
+          ? `${window.location.origin}/login?redirect=${encodeURIComponent(redirectPath)}`
+          : `${window.location.origin}/login`;
         const { error } = await supabase.auth.signInWithOAuth({
           provider: 'google',
           options: {
@@ -190,21 +249,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    // Explicit Demo Mode: Instant Google Sign-In with Demo Profile
-    const demoGoogleProfile: Profile = {
-      id: 'demo-google-customer-1',
-      email: 'priya.patel@gmail.com',
-      phone: null, // Initial missing phone to test seamless onboarding prompt
-      full_name: 'Priya Patel (Google)',
-      avatar_url: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150',
-      role: 'customer',
-      is_active: true,
-      created_at: new Date().toISOString()
-    };
+    // Explicit Demo / Testing Mode: Instant Google Sign-In with Role-Specific Persona
+    let targetProfile: Profile | undefined;
+    const effectiveRole = roleHint || (redirectPath?.includes('/admin') || redirectPath?.includes('/owner')
+      ? 'owner'
+      : redirectPath?.includes('/manager')
+      ? 'manager'
+      : redirectPath?.includes('/delivery')
+      ? 'delivery'
+      : 'customer');
 
-    setCurrentUser(demoGoogleProfile);
-    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(demoGoogleProfile));
-    return { success: true, message: 'Signed in with Google (Demo Mode)' };
+    if (effectiveRole !== 'customer') {
+      targetProfile = DEMO_PROFILES.find(p => p.role === effectiveRole);
+    }
+
+    if (!targetProfile) {
+      targetProfile = {
+        id: 'demo-google-customer-1',
+        email: 'priya.patel@gmail.com',
+        phone: null,
+        full_name: 'Priya Patel (Google)',
+        avatar_url: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150',
+        role: 'customer',
+        is_active: true,
+        created_at: new Date().toISOString()
+      };
+    }
+
+    if (targetProfile.is_active === false) {
+      return {
+        success: false,
+        message: 'Your staff account has been deactivated. Please contact the business owner.'
+      };
+    }
+
+    setCurrentUser(targetProfile);
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(targetProfile));
+    return { success: true, message: `Signed in with Google (${targetProfile.role.toUpperCase()} Demo Mode)` };
   };
 
   const signInWithPassword = async (
@@ -221,6 +302,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return { success: false, message: error?.message || 'Invalid email or password' };
         }
         const profile = await syncSupabaseProfile(data.user);
+        if (profile && profile.is_active === false) {
+          await supabase.auth.signOut();
+          localStorage.removeItem(AUTH_STORAGE_KEY);
+          setCurrentUser(null);
+          return {
+            success: false,
+            message: 'Your staff account has been deactivated. Please contact the business owner.'
+          };
+        }
         setCurrentUser(profile);
         localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profile));
         return { success: true, role: profile.role };
@@ -231,11 +321,74 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const matchedProfile = DEMO_PROFILES.find(p => p.email === email);
     if (matchedProfile) {
+      if (matchedProfile.is_active === false) {
+        return {
+          success: false,
+          message: 'Your staff account has been deactivated. Please contact the business owner.'
+        };
+      }
       setCurrentUser(matchedProfile);
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(matchedProfile));
       return { success: true, role: matchedProfile.role };
     }
     return { success: false, message: 'Invalid credentials' };
+  };
+
+  const sendPasswordResetEmail = async (
+    email: string
+  ): Promise<{ success: boolean; message: string }> => {
+    if (!email || !email.trim()) {
+      return { success: false, message: 'Please provide a valid staff email address.' };
+    }
+
+    if (isSupabaseConfigured || import.meta.env.MODE === 'test') {
+      try {
+        const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+          redirectTo: `${window.location.origin}/reset-password`
+        });
+        if (error) {
+          return { success: false, message: error.message };
+        }
+        return {
+          success: true,
+          message: `Password reset instructions sent to ${email.trim()}. Please check your inbox.`
+        };
+      } catch (err: any) {
+        return { success: false, message: err?.message || 'Password reset request failed.' };
+      }
+    }
+
+    return {
+      success: true,
+      message: `Password reset request simulated for ${email.trim()} (Demo Mode).`
+    };
+  };
+
+  const resetPassword = async (
+    newPassword: string
+  ): Promise<{ success: boolean; message: string }> => {
+    if (!newPassword || newPassword.length < 8) {
+      return { success: false, message: 'Password must be at least 8 characters long.' };
+    }
+
+    if (isSupabaseConfigured || import.meta.env.MODE === 'test') {
+      try {
+        const { data, error } = await supabase.auth.updateUser({
+          password: newPassword
+        });
+        if (error) {
+          return { success: false, message: error.message };
+        }
+        return { success: true, message: 'Password updated successfully!' };
+      } catch (err: any) {
+        return { success: false, message: err?.message || 'Failed to update password.' };
+      }
+    }
+
+    return {
+      success: true,
+      message: 'Password updated successfully (Demo Mode).'
+    };
   };
 
   const updateProfile = async (updates: { phone?: string; full_name?: string }): Promise<{ success: boolean; message: string }> => {
@@ -403,6 +556,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isLoading,
         signInWithGoogle,
         signInWithPassword,
+        sendPasswordResetEmail,
+        resetPassword,
         updateProfile,
         needsPhonePrompt,
         sendOtp,

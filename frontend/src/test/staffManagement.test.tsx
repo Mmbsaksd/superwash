@@ -1,0 +1,490 @@
+import React from 'react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { AuthProvider, useAuth } from '../context/AuthContext';
+import * as AuthContextModule from '../context/AuthContext';
+import { OwnerDashboard } from '../pages/admin/OwnerDashboard';
+import { ProtectedRoute } from '../components/ProtectedRoute';
+import { LaundryService, DEMO_PROFILES } from '../services/laundryService';
+import { supabase } from '../services/supabase';
+import { Profile } from '../types';
+
+describe('Staff Management Enhancements (Edit, Toggle Status, Search & Filter)', () => {
+  const getSeedStaff = (): Profile[] => [
+    {
+      id: 'staff-owner-1',
+      email: 'owner@superwash.in',
+      phone: '9876543210',
+      full_name: 'Rajesh Sharma',
+      role: 'owner',
+      is_active: true,
+      created_at: '2026-10-20T10:00:00Z'
+    },
+    {
+      id: 'staff-manager-1',
+      email: 'manager@superwash.in',
+      phone: '9876543211',
+      full_name: 'Ananya Verma',
+      role: 'manager',
+      is_active: true,
+      created_at: '2026-10-21T10:00:00Z'
+    },
+    {
+      id: 'staff-delivery-1',
+      email: 'ramesh@superwash.in',
+      phone: '9876543215',
+      full_name: 'Ramesh Kumar',
+      role: 'delivery',
+      is_active: true,
+      created_at: '2026-10-22T10:00:00Z'
+    },
+    {
+      id: 'staff-delivery-2',
+      email: 'suresh.superwash.express@gmail.com',
+      phone: '9876543216',
+      full_name: 'Suresh Kumar',
+      role: 'delivery',
+      is_active: false, // inactive for filtering test
+      created_at: '2026-10-22T11:00:00Z'
+    }
+  ];
+
+  beforeEach(async () => {
+    localStorage.clear();
+    vi.clearAllMocks();
+    window.alert = vi.fn();
+
+    // Reset demo staff directory
+    localStorage.setItem('superwash_profiles', JSON.stringify(getSeedStaff()));
+  });
+
+  describe('1. Edit Employee Details Business Logic', () => {
+    it('successfully updates employee full name, phone, and operational role', async () => {
+      const updated = await LaundryService.updateStaffProfile('staff-delivery-1', {
+        full_name: 'Ramesh K. Senior',
+        phone: '9876543299',
+        role: 'manager'
+      });
+
+      expect(updated.full_name).toBe('Ramesh K. Senior');
+      expect(updated.phone).toBe('9876543299');
+      expect(updated.role).toBe('manager');
+
+      // Verify persistence after re-querying directory
+      const freshList = await LaundryService.getStaffProfiles(true);
+      const reloaded = freshList.find(s => s.id === 'staff-delivery-1');
+      expect(reloaded?.full_name).toBe('Ramesh K. Senior');
+      expect(reloaded?.phone).toBe('9876543299');
+      expect(reloaded?.role).toBe('manager');
+    });
+
+    it('rejects names shorter than 2 characters and invalid phone numbers', async () => {
+      await expect(
+        LaundryService.updateStaffProfile('staff-delivery-1', {
+          full_name: 'A',
+          phone: '9876543215',
+          role: 'delivery'
+        })
+      ).rejects.toThrow(/at least 2 characters/i);
+
+      await expect(
+        LaundryService.updateStaffProfile('staff-delivery-1', {
+          full_name: 'Ramesh Kumar',
+          phone: '12345', // < 10 digits
+          role: 'delivery'
+        })
+      ).rejects.toThrow(/10-digit Indian phone number/i);
+    });
+
+    it('prevents duplicate phone numbers assigned to other employees', async () => {
+      // Trying to assign manager's phone '9876543211' to Ramesh
+      await expect(
+        LaundryService.updateStaffProfile('staff-delivery-1', {
+          full_name: 'Ramesh Kumar',
+          phone: '9876543211',
+          role: 'delivery'
+        })
+      ).rejects.toThrow(/already registered/i);
+    });
+
+    it('prevents demoting the last active business owner', async () => {
+      await expect(
+        LaundryService.updateStaffProfile('staff-owner-1', {
+          full_name: 'Rajesh Sharma',
+          phone: '9876543210',
+          role: 'delivery' // Attempting to demote sole owner
+        })
+      ).rejects.toThrow(/Cannot demote the last active business owner/i);
+    });
+
+    it('prevents an owner from demoting their own account role', async () => {
+      await expect(
+        LaundryService.updateStaffProfile(
+          'staff-owner-1',
+          {
+            full_name: 'Rajesh Sharma',
+            phone: '9876543210',
+            role: 'manager'
+          },
+          'staff-owner-1' // callerId is the same owner
+        )
+      ).rejects.toThrow(/Business owners cannot demote their own account role/i);
+    });
+  });
+
+  describe('2. Activate & Deactivate Employees Logic & Safety', () => {
+    it('deactivates an active employee and persists inactive state', async () => {
+      const deactivated = await LaundryService.toggleStaffStatus('staff-delivery-1', false);
+      expect(deactivated?.is_active).toBe(false);
+
+      const freshList = await LaundryService.getStaffProfiles(true);
+      const reloaded = freshList.find(s => s.id === 'staff-delivery-1');
+      expect(reloaded?.is_active).toBe(false);
+    });
+
+    it('reactivates a deactivated employee and restores active state', async () => {
+      // Suresh was seeded as inactive
+      const reactivated = await LaundryService.toggleStaffStatus('staff-delivery-2', true);
+      expect(reactivated?.is_active).toBe(true);
+
+      const freshList = await LaundryService.getStaffProfiles(true);
+      const reloaded = freshList.find(s => s.id === 'staff-delivery-2');
+      expect(reloaded?.is_active).toBe(true);
+      expect(reloaded?.role).toBe('delivery');
+    });
+
+    it('prevents an owner from deactivating their own account', async () => {
+      await expect(
+        LaundryService.toggleStaffStatus('staff-owner-1', false, 'staff-owner-1')
+      ).rejects.toThrow(/You cannot deactivate your own owner account/i);
+    });
+
+    it('prevents deactivating the last active owner in the system', async () => {
+      await expect(
+        LaundryService.toggleStaffStatus('staff-owner-1', false, 'other-caller')
+      ).rejects.toThrow(/Cannot deactivate the last active business owner/i);
+    });
+
+    it('blocks deactivated staff from accessing protected portals in ProtectedRoute', async () => {
+      const inactiveStaffProfile: Profile = {
+        id: 'staff-delivery-inactive',
+        email: 'inactive@superwash.in',
+        phone: '9876543290',
+        full_name: 'Inactive Courier',
+        role: 'delivery',
+        is_active: false,
+        created_at: '2026-10-21T00:00:00Z'
+      };
+
+      // Mock useAuth to return an inactive logged-in profile
+      vi.spyOn(AuthContextModule, 'useAuth').mockReturnValue({
+        user: { id: 'staff-delivery-inactive', email: 'inactive@superwash.in' } as any,
+        currentUser: inactiveStaffProfile,
+        isLoading: false,
+        needsPhonePrompt: false,
+        sendOtp: vi.fn(),
+        verifyOtp: vi.fn(),
+        signInWithPassword: vi.fn(),
+        sendPasswordResetEmail: vi.fn(),
+        resetPassword: vi.fn(),
+        updateProfile: vi.fn(),
+        signInWithGoogle: vi.fn(),
+        logout: vi.fn(),
+        switchDemoRole: vi.fn(),
+        isCustomer: false,
+        isDelivery: true,
+        isManager: false,
+        isOwner: false,
+        isStaff: true
+      });
+
+      render(
+        <MemoryRouter initialEntries={['/delivery']}>
+          <Routes>
+            <Route
+              path="/delivery"
+              element={
+                <ProtectedRoute allowedRoles={['delivery']}>
+                  <div data-testid="delivery-dashboard-content">Confidential Orders</div>
+                </ProtectedRoute>
+              }
+            />
+          </Routes>
+        </MemoryRouter>
+      );
+
+      // Protected route must block dashboard and render account deactivated barrier
+      expect(screen.getByTestId('account-deactivated')).toBeInTheDocument();
+      expect(screen.getByText(/Account Deactivated/i)).toBeInTheDocument();
+      expect(screen.queryByTestId('delivery-dashboard-content')).not.toBeInTheDocument();
+
+      // Clean up spy so following tests use real AuthContext
+      vi.restoreAllMocks();
+    });
+
+    it('denies sign-in when account is inactive', async () => {
+      // Mock Supabase sign-in to return Suresh's auth user
+      vi.spyOn(supabase.auth, 'signInWithPassword').mockResolvedValue({
+        data: {
+          user: {
+            id: 'staff-delivery-2',
+            email: 'suresh.superwash.express@gmail.com'
+          } as any,
+          session: {} as any
+        },
+        error: null
+      });
+
+      vi.spyOn(supabase.auth, 'signOut').mockResolvedValue({ error: null });
+
+      // Mock profile fetch to return inactive profile
+      vi.spyOn(supabase, 'from').mockReturnValue({
+        select: () => ({
+          eq: () => ({
+            single: async () => ({
+              data: {
+                id: 'staff-delivery-2',
+                email: 'suresh.superwash.express@gmail.com',
+                full_name: 'Suresh Kumar',
+                role: 'delivery',
+                is_active: false
+              },
+              error: null
+            })
+          })
+        })
+      } as any);
+
+      // Also set demo profile inactive for demo-mode test branch
+      const sureshDemo = DEMO_PROFILES.find(p => p.email === 'suresh.superwash.express@gmail.com');
+      if (sureshDemo) sureshDemo.is_active = false;
+
+      const TestConsumer = () => {
+        const { signInWithPassword } = useAuth();
+        const [errMsg, setErrMsg] = React.useState('');
+
+        return (
+          <div>
+            <button
+              onClick={async () => {
+                const res = await signInWithPassword('suresh.superwash.express@gmail.com', 'password123');
+                if (!res?.success && res?.message) setErrMsg(res.message);
+              }}
+            >
+              Sign In Suresh
+            </button>
+            <div data-testid="login-error">{errMsg}</div>
+          </div>
+        );
+      };
+
+      render(
+        <AuthProvider>
+          <TestConsumer />
+        </AuthProvider>
+      );
+
+      fireEvent.click(screen.getByText('Sign In Suresh'));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('login-error').textContent).toContain('account has been deactivated');
+      });
+
+      // Restore suresh demo status
+      if (sureshDemo) sureshDemo.is_active = true;
+    });
+  });
+
+  describe('3. Owner Dashboard Staff Directory UI: Search, Filters & Edit Modals', () => {
+    beforeEach(() => {
+      localStorage.setItem('superwash_profiles', JSON.stringify(getSeedStaff()));
+      const ownerProfile: Profile = {
+        id: 'staff-owner-1',
+        email: 'owner@superwash.in',
+        phone: '9876543210',
+        full_name: 'Rajesh Sharma',
+        role: 'owner',
+        is_active: true,
+        created_at: '2026-10-20T10:00:00Z'
+      };
+      localStorage.setItem('superwash_auth_profile', JSON.stringify(ownerProfile));
+    });
+
+    it('filters staff directory by search query across name, email, and phone', async () => {
+      render(
+        <MemoryRouter initialEntries={['/admin']}>
+          <AuthProvider>
+            <OwnerDashboard />
+          </AuthProvider>
+        </MemoryRouter>
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: /staff accounts/i }));
+
+      expect(await screen.findByText('Ananya Verma')).toBeInTheDocument();
+      expect(screen.getByText('Ramesh Kumar')).toBeInTheDocument();
+      expect(screen.getByText('Suresh Kumar')).toBeInTheDocument();
+
+      const searchInput = screen.getByPlaceholderText(/search staff by name, email, or phone/i);
+
+      // 1. Search by name
+      fireEvent.change(searchInput, { target: { value: 'Ananya' } });
+      expect(screen.getByText('Ananya Verma')).toBeInTheDocument();
+      expect(screen.queryByText('Ramesh Kumar')).not.toBeInTheDocument();
+
+      // 2. Search by phone
+      fireEvent.change(searchInput, { target: { value: '9876543215' } });
+      expect(screen.getByText('Ramesh Kumar')).toBeInTheDocument();
+      expect(screen.queryByText('Ananya Verma')).not.toBeInTheDocument();
+
+      // 3. Search by email
+      fireEvent.change(searchInput, { target: { value: 'suresh' } });
+      expect(screen.getByText('Suresh Kumar')).toBeInTheDocument();
+      expect(screen.queryByText('Ramesh Kumar')).not.toBeInTheDocument();
+    });
+
+    it('filters staff by role and active/inactive status and combines with search', async () => {
+      render(
+        <MemoryRouter initialEntries={['/admin']}>
+          <AuthProvider>
+            <OwnerDashboard />
+          </AuthProvider>
+        </MemoryRouter>
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: /staff accounts/i }));
+      await screen.findByText('Ananya Verma');
+
+      const roleFilter = screen.getByLabelText(/filter staff by operational role/i);
+      const statusFilter = screen.getByLabelText(/filter staff by active status/i);
+
+      // Filter: Store Manager role
+      fireEvent.change(roleFilter, { target: { value: 'manager' } });
+      expect(screen.getByText('Ananya Verma')).toBeInTheDocument();
+      expect(screen.queryByText('Ramesh Kumar')).not.toBeInTheDocument();
+      expect(screen.queryByText('Suresh Kumar')).not.toBeInTheDocument();
+
+      // Filter: Delivery Person role
+      fireEvent.change(roleFilter, { target: { value: 'delivery' } });
+      expect(screen.getByText('Ramesh Kumar')).toBeInTheDocument();
+      expect(screen.getByText('Suresh Kumar')).toBeInTheDocument();
+      expect(screen.queryByText('Ananya Verma')).not.toBeInTheDocument();
+
+      // Combined with Inactive status filter
+      fireEvent.change(statusFilter, { target: { value: 'inactive' } });
+      expect(screen.getByText('Suresh Kumar')).toBeInTheDocument();
+      expect(screen.queryByText('Ramesh Kumar')).not.toBeInTheDocument(); // active delivery
+
+      // Reset filters button
+      const resetBtn = screen.getByRole('button', { name: /reset filters/i });
+      fireEvent.click(resetBtn);
+
+      expect(screen.getByText('Ananya Verma')).toBeInTheDocument();
+      expect(screen.getByText('Ramesh Kumar')).toBeInTheDocument();
+      expect(screen.getByText('Suresh Kumar')).toBeInTheDocument();
+    });
+
+    it('renders empty state when search finds no match and allows clearing filters', async () => {
+      render(
+        <MemoryRouter initialEntries={['/admin']}>
+          <AuthProvider>
+            <OwnerDashboard />
+          </AuthProvider>
+        </MemoryRouter>
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: /staff accounts/i }));
+      await screen.findByText('Ananya Verma');
+
+      const searchInput = screen.getByPlaceholderText(/search staff by name, email, or phone/i);
+      fireEvent.change(searchInput, { target: { value: 'NonexistentPerson' } });
+
+      expect(screen.getByText(/no staff members found/i)).toBeInTheDocument();
+
+      const clearBtn = screen.getByRole('button', { name: /clear search & filters/i });
+      fireEvent.click(clearBtn);
+
+      expect(screen.getByText('Ananya Verma')).toBeInTheDocument();
+    });
+
+    it('opens edit modal, validates inputs, confirms role change, and saves updates', async () => {
+      render(
+        <MemoryRouter initialEntries={['/admin']}>
+          <AuthProvider>
+            <OwnerDashboard />
+          </AuthProvider>
+        </MemoryRouter>
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: /staff accounts/i }));
+      await screen.findByText('Ramesh Kumar');
+
+      // Click Edit button on Ramesh's card
+      const rameshCard = screen.getByText('Ramesh Kumar').closest('.bg-white') as HTMLElement;
+      const editBtn = within(rameshCard).getByRole('button', { name: /^edit$/i });
+      fireEvent.click(editBtn);
+
+      expect(await screen.findByText(/edit employee details/i)).toBeInTheDocument();
+      const nameInput = screen.getByLabelText(/full name/i);
+      const phoneInput = screen.getByLabelText(/phone number/i);
+      const roleSelect = document.getElementById('edit-staff-role') as HTMLSelectElement;
+
+      // Verify email is present and marked read only
+      expect(screen.getAllByText('ramesh@superwash.in').length).toBeGreaterThan(0);
+      expect(screen.getByText(/Read Only/i)).toBeInTheDocument();
+
+      // Change role from delivery to manager
+      fireEvent.change(nameInput, { target: { value: 'Ramesh K. Lead' } });
+      fireEvent.change(phoneInput, { target: { value: '9876543288' } });
+      fireEvent.change(roleSelect, { target: { value: 'manager' } });
+
+      // Role change requires confirmation check
+      expect(await screen.findByText(/Role Change Confirmation Required/i)).toBeInTheDocument();
+      const saveBtn = screen.getByRole('button', { name: /save changes/i });
+      expect(saveBtn).toBeDisabled();
+
+      // Check confirmation checkbox
+      const confirmCheck = screen.getByLabelText(/confirm this role transition/i);
+      fireEvent.click(confirmCheck);
+      expect(saveBtn).not.toBeDisabled();
+
+      fireEvent.click(saveBtn);
+
+      await waitFor(() => {
+        expect(screen.getByText(/successfully updated employee details/i)).toBeInTheDocument();
+        expect(screen.getByText('Ramesh K. Lead')).toBeInTheDocument();
+      });
+    });
+
+    it('opens confirmation modal before deactivating an employee and confirms', async () => {
+      render(
+        <MemoryRouter initialEntries={['/admin']}>
+          <AuthProvider>
+            <OwnerDashboard />
+          </AuthProvider>
+        </MemoryRouter>
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: /staff accounts/i }));
+      await screen.findByText('Ananya Verma');
+
+      // Find the toggle button on Ananya's card (currently Active)
+      const ananyaCard = screen.getByText('Ananya Verma').closest('.bg-white') as HTMLElement;
+      const ananyaActiveBtn = within(ananyaCard).getByRole('button', { name: /^active$/i });
+      fireEvent.click(ananyaActiveBtn);
+
+      // Confirmation modal should open
+      expect(await screen.findByText(/Deactivate Employee Account\?/i)).toBeInTheDocument();
+      expect(screen.getByText(/Are you sure you want to deactivate/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /confirm deactivation/i })).toBeInTheDocument();
+
+      // Confirm deactivation
+      fireEvent.click(screen.getByRole('button', { name: /confirm deactivation/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/successfully deactivated ananya verma/i)).toBeInTheDocument();
+      });
+    });
+  });
+});

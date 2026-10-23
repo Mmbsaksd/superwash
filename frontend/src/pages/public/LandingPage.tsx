@@ -110,7 +110,7 @@ export const LandingPage: React.FC = () => {
                 }}
                 className="py-2.5 px-4 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5"
               >
-                <span>My Portal ({currentUser.role})</span>
+                <span>{currentUser.role === 'customer' ? 'My Orders & Booking' : 'Go to Dashboard'}</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
             ) : (

@@ -350,13 +350,21 @@ def create_staff_account(
     db: Session = Depends(get_db),
     admin_user = Depends(require_roles(UserRole.OWNER.value))
 ):
-    existing = db.query(User).filter(User.phone == user_in.phone.strip()).first()
-    if existing:
+    if not user_in.email or not user_in.email.strip():
+        raise HTTPException(status_code=400, detail="Staff email address is required.")
+
+    clean_email = user_in.email.strip().lower()
+    existing_email = db.query(User).filter(func.lower(User.email) == clean_email).first()
+    if existing_email:
+        raise HTTPException(status_code=400, detail="User with this email address already exists.")
+
+    existing_phone = db.query(User).filter(User.phone == user_in.phone.strip()).first()
+    if existing_phone:
         raise HTTPException(status_code=400, detail="User with this phone number already exists.")
 
     new_staff = User(
         phone=user_in.phone.strip(),
-        email=user_in.email.strip().lower() if user_in.email else None,
+        email=clean_email,
         full_name=user_in.full_name.strip(),
         hashed_password=get_password_hash(user_in.password),
         role=user_in.role or UserRole.PROCESSING_STAFF.value,

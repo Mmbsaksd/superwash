@@ -37,7 +37,8 @@ export const WeightEntryModal: React.FC<WeightEntryModalProps> = ({
         numWeight,
         order.price_per_kg_paise,
         order.min_weight_kg,
-        order.delivery_charge_paise
+        order.delivery_charge_paise,
+        order.pricing_unit || 'per_kg'
       )
     : null;
 

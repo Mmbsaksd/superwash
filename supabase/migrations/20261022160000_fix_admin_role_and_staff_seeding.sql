@@ -39,7 +39,7 @@ SET search_path = public, pg_temp;
 -- 2. Promote application administrator profile(s) to 'owner'
 UPDATE public.profiles
 SET role = 'owner', updated_at = timezone('utc', now())
-WHERE email = 'genaidream@gmail.com';
+WHERE email IN ('genaidream@gmail.com', 'bs.munavar@gmail.com');
 
 -- 3. Seed authoritative staff auth users and profiles with standard UUIDs
 --    Ensures foreign keys on orders (assigned_pickup_id, assigned_delivery_id) succeed

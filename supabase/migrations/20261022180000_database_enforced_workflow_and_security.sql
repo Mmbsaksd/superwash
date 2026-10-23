@@ -2,28 +2,41 @@
 -- SuperWash Express: Hardened Database-Enforced Workflow & Security Migration
 -- Migration: 20261022180000_database_enforced_workflow_and_security.sql
 -- ==============================================================================
--- Consolidates and hardens pending schema updates (1700 + 1800):
--- 1. Schema Upgrades: Doorstep weighing columns, idempotency on payments, canonical 10-stage lifecycle constraint.
--- 2. Strict Role Authorization: Rejects updates from customer or unknown roles.
--- 3. Strict Delivery Associate Field Allowlists: Task-specific allowlists for Pickup
---    vs Delivery Dispatch vs Delivery Handover. Rejects all unlisted fields across all 42 table columns.
--- 4. Atomic Payment Ledger RPC: Provides public.record_order_payment() ACID transaction
---    with row-level locking (SELECT FOR UPDATE) to prevent duplicate payments, overpayments,
---    negative amounts, and balance mismatch. Direct modification of payment fields on orders
---    is prohibited for associates outside this secure transaction.
--- 5. Reconciled Delivery Workflow: Both ready_for_delivery and delivery_assigned states
---    are fully supported for assignment, dispatch, and tracking.
--- 6. Universal Rule: Orders CANNOT move directly from ready_for_delivery / delivery_assigned to delivered.
---    Dispatch to out_for_delivery is mandatory for all roles.
--- 7. Full Stage Machine for Store Managers & Owners: Strict step-by-step lifecycle.
---    No skipping stages (booked -> pickup_assigned -> collected -> weighed/washing ->
---    ready_for_delivery / delivery_assigned -> out_for_delivery -> delivered).
--- 8. Doorstep scale weight bounded between 0.10 kg and 250.00 kg.
--- 9. Explicit search_path on all SECURITY DEFINER functions to prevent schema poisoning.
+-- Consolidates and hardens pending schema updates:
+-- 1. Schema Upgrades: Doorstep weighing columns, global unique UTR constraint,
+--    idempotency key on payments, canonical 10-stage lifecycle constraint.
+-- 2. Strict Privilege Architecture:
+--    - Column-Level Privileges on public.orders: Direct UPDATE on payment balance
+--      columns (paid_amount_paise, payment_status, payment_method) is REVOKED from
+--      all authenticated roles (including manager and owner).
+--    - Payments Table Protection: Direct INSERT on public.payments is REVOKED from
+--      all authenticated roles. Only the atomic SECURITY DEFINER RPC can record payments.
+-- 3. Secure Atomic Payment Ledger RPC (public.record_order_payment):
+--    - Enforces row-level lock (SELECT FOR UPDATE) to prevent concurrency races.
+--    - Strict Idempotency: Returns existing result only on identical parameter retry;
+--      rejects conflicting parameter reuse (different order, amount, method, or UTR).
+--    - Global Duplicate UTR Detection: Rejects duplicate UPI transaction references
+--      across all orders in the entire system.
+--    - Overpayment, negative/zero/decimal, unbilled, and cancelled order rejection.
+--    - Atomically inserts payment ledger row and updates order balance.
+-- 4. Exhaustive 42-Column Allowlist in Database Trigger:
+--    - Universal Invariants: Rejects modifications to customer identity, booking
+--      details, pricing snapshots, staff assignments, and creation timestamps.
+--    - Task 1 (Pickup): Only scale weights, collection timestamps, and notes permitted.
+--    - Task 2 (Dispatch): Only out_for_delivery status and operational notes permitted.
+--    - Task 3 (Handover): Only delivered status, delivered timestamp, and notes permitted.
+--    - All other columns rejected per task.
+--    - Manager/Owner Restrictions: Cannot alter immutable pricing/booking snapshots;
+--      cancellation requires non-empty cancellation_reason; strict state machine enforced.
+--    - Universal Prohibition: No role can jump directly to delivered without dispatching
+--      to out_for_delivery first.
+-- 5. Reconciled Delivery Lifecycle: Supports ready_for_delivery and delivery_assigned.
+-- 6. Doorstep scale weight bounded between 0.10 kg and 250.00 kg.
+-- 7. Explicit search_path = public, pg_temp on all SECURITY DEFINER functions.
 -- ==============================================================================
 
 -- ------------------------------------------------------------------------------
--- 1. SCHEMA UPGRADES (Migration 1700 Elements & Payment Idempotency)
+-- 1. SCHEMA UPGRADES (Weighing, Lifecycle Check, Global UTR & Idempotency)
 -- ------------------------------------------------------------------------------
 ALTER TABLE public.orders
     ADD COLUMN IF NOT EXISTS pickup_measured_weight NUMERIC(5, 2),
@@ -44,13 +57,22 @@ ALTER TABLE public.orders ADD CONSTRAINT orders_order_status_check CHECK (order_
     'cancelled'
 ));
 
--- Add idempotency support to payments ledger
+-- Payment Idempotency Column and Unique Index
 ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(100);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_idempotency_key 
     ON public.payments(idempotency_key) 
     WHERE idempotency_key IS NOT NULL;
 
--- Ensure RLS on weight_change_history is active and staff have access
+-- Global Unique UPI Transaction Reference (UTR) across the entire platform
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_transaction_reference_global
+    ON public.payments(TRIM(transaction_reference))
+    WHERE transaction_reference IS NOT NULL AND TRIM(transaction_reference) <> '';
+
+-- Drop obsolete trigger from earlier schema migrations to prevent double-updating orders
+DROP TRIGGER IF EXISTS trigger_sync_payment_summary ON public.payments;
+DROP FUNCTION IF EXISTS public.sync_order_payment_summary();
+
+-- Weight Change History RLS
 ALTER TABLE public.weight_change_history ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Staff can insert weight change history" ON public.weight_change_history;
@@ -108,7 +130,10 @@ DECLARE
     v_remaining_due INTEGER;
     v_new_status VARCHAR(30);
     v_payment_id UUID;
-    v_existing_idempotency RECORD;
+    v_existing_payment RECORD;
+    v_clean_ref VARCHAR(100);
+    v_clean_key VARCHAR(100);
+    v_existing_utr_order UUID;
 BEGIN
     -- 1. Authorization check
     v_role := public.current_user_role();
@@ -129,30 +154,55 @@ BEGIN
         RAISE EXCEPTION 'Invalid payment method: must be cash or upi_manual (received: %).', p_payment_method;
     END IF;
 
-    -- 3. Idempotency Check: if key provided, return previous result if already processed
-    IF p_idempotency_key IS NOT NULL AND TRIM(p_idempotency_key) <> '' THEN
-        SELECT id, amount_paise, created_at, order_id
-        INTO v_existing_idempotency
+    v_clean_ref := NULLIF(TRIM(p_transaction_reference), '');
+    v_clean_key := NULLIF(TRIM(p_idempotency_key), '');
+
+    IF p_payment_method = 'upi_manual' AND (v_clean_ref IS NULL OR LENGTH(v_clean_ref) < 4) THEN
+        RAISE EXCEPTION 'A valid UPI transaction reference (UTR) is required for manual UPI verification.';
+    END IF;
+
+    -- 3. Idempotency Evaluation: Strict parameter verification
+    IF v_clean_key IS NOT NULL THEN
+        SELECT id, order_id, amount_paise, payment_method, transaction_reference, created_at
+        INTO v_existing_payment
         FROM public.payments
-        WHERE idempotency_key = TRIM(p_idempotency_key);
+        WHERE idempotency_key = v_clean_key;
 
         IF FOUND THEN
-            IF v_existing_idempotency.order_id <> p_order_id THEN
-                RAISE EXCEPTION 'Idempotency conflict: Key % already used for order %.', p_idempotency_key, v_existing_idempotency.order_id;
+            -- Verify that all incoming parameters match the original payment
+            IF v_existing_payment.order_id <> p_order_id OR
+               v_existing_payment.amount_paise <> p_amount_paise OR
+               v_existing_payment.payment_method <> p_payment_method OR
+               COALESCE(v_existing_payment.transaction_reference, '') <> COALESCE(v_clean_ref, '') THEN
+                RAISE EXCEPTION 'Idempotency conflict: Key % was previously used with different payment parameters (Original Order: %, Amount: %, Method: %, UTR: %).',
+                    v_clean_key, v_existing_payment.order_id, v_existing_payment.amount_paise, v_existing_payment.payment_method, v_existing_payment.transaction_reference;
             END IF;
 
             RETURN jsonb_build_object(
                 'success', true,
                 'idempotent_replay', true,
-                'payment_id', v_existing_idempotency.id,
+                'payment_id', v_existing_payment.id,
                 'order_id', p_order_id,
-                'amount_paise', v_existing_idempotency.amount_paise,
+                'amount_paise', v_existing_payment.amount_paise,
                 'message', 'Payment was previously recorded successfully.'
             );
         END IF;
     END IF;
 
-    -- 4. Lock order row for update to ensure concurrency safety
+    -- 4. Global Duplicate UTR Detection across the entire system
+    IF p_payment_method = 'upi_manual' AND v_clean_ref IS NOT NULL THEN
+        SELECT order_id INTO v_existing_utr_order
+        FROM public.payments
+        WHERE transaction_reference = v_clean_ref
+        LIMIT 1;
+
+        IF FOUND THEN
+            RAISE EXCEPTION 'Duplicate payment: UPI transaction reference % has already been recorded for Order %.',
+                v_clean_ref, v_existing_utr_order;
+        END IF;
+    END IF;
+
+    -- 5. Lock order row for update to ensure concurrency safety
     SELECT * INTO v_order
     FROM public.orders
     WHERE id = p_order_id
@@ -196,49 +246,63 @@ BEGIN
             p_amount_paise, v_order.order_number, v_remaining_due;
     END IF;
 
-    -- Prevent duplicate UPI transaction reference for this order
-    IF p_payment_method = 'upi_manual' AND p_transaction_reference IS NOT NULL AND TRIM(p_transaction_reference) <> '' THEN
-        IF EXISTS (
-            SELECT 1 FROM public.payments
-            WHERE order_id = p_order_id
-              AND transaction_reference = TRIM(p_transaction_reference)
-        ) THEN
-            RAISE EXCEPTION 'Duplicate payment: UPI transaction reference % has already been recorded for Order #%.',
-                TRIM(p_transaction_reference), v_order.order_number;
+    -- 6. Insert atomic payment ledger entry with concurrency catch
+    BEGIN
+        INSERT INTO public.payments (
+            order_id,
+            amount_paise,
+            payment_method,
+            transaction_reference,
+            notes,
+            recorded_by,
+            idempotency_key,
+            created_at
+        ) VALUES (
+            p_order_id,
+            p_amount_paise,
+            p_payment_method,
+            v_clean_ref,
+            NULLIF(TRIM(p_notes), ''),
+            auth.uid(),
+            v_clean_key,
+            timezone('utc', now())
+        ) RETURNING id INTO v_payment_id;
+    EXCEPTION WHEN unique_violation THEN
+        -- Handle concurrent identical submission race
+        IF v_clean_key IS NOT NULL THEN
+            SELECT id, order_id, amount_paise, payment_method, transaction_reference, created_at
+            INTO v_existing_payment
+            FROM public.payments
+            WHERE idempotency_key = v_clean_key;
+
+            IF FOUND THEN
+                IF v_existing_payment.order_id = p_order_id AND
+                   v_existing_payment.amount_paise = p_amount_paise AND
+                   v_existing_payment.payment_method = p_payment_method AND
+                   COALESCE(v_existing_payment.transaction_reference, '') = COALESCE(v_clean_ref, '') THEN
+                    RETURN jsonb_build_object(
+                        'success', true,
+                        'idempotent_replay', true,
+                        'payment_id', v_existing_payment.id,
+                        'order_id', p_order_id,
+                        'amount_paise', v_existing_payment.amount_paise,
+                        'message', 'Payment was previously recorded successfully.'
+                    );
+                ELSE
+                    RAISE EXCEPTION 'Idempotency conflict: Concurrent key % conflict with different payment parameters.', v_clean_key;
+                END IF;
+            END IF;
         END IF;
-    END IF;
+        RAISE EXCEPTION 'Unique constraint violation: Duplicate transaction reference (UTR) or idempotency key.';
+    END;
 
-    -- 5. Insert atomic payment ledger entry
-    INSERT INTO public.payments (
-        order_id,
-        amount_paise,
-        payment_method,
-        transaction_reference,
-        notes,
-        recorded_by,
-        idempotency_key,
-        created_at
-    ) VALUES (
-        p_order_id,
-        p_amount_paise,
-        p_payment_method,
-        NULLIF(TRIM(p_transaction_reference), ''),
-        NULLIF(TRIM(p_notes), ''),
-        auth.uid(),
-        NULLIF(TRIM(p_idempotency_key), ''),
-        timezone('utc', now())
-    ) RETURNING id INTO v_payment_id;
-
-    -- 6. Update order balance atomically
+    -- 7. Update order balance atomically
     v_new_paid := v_total_paid + p_amount_paise;
     IF v_new_paid >= v_order.total_amount_paise THEN
         v_new_status := 'paid';
     ELSE
         v_new_status := 'partially_paid';
     END IF;
-
-    -- Signal the workflow trigger that this update is from the trusted atomic payment transaction
-    PERFORM set_config('app.payment_in_progress', 'true', true);
 
     UPDATE public.orders
     SET
@@ -272,7 +336,6 @@ RETURNS TRIGGER AS $$
 DECLARE
     user_role TEXT;
     effective_weight NUMERIC(5, 2);
-    is_payment_in_progress BOOLEAN;
 BEGIN
     -- Superuser and service-role maintenance tasks bypass trigger
     IF auth.role() = 'service_role' THEN
@@ -305,11 +368,34 @@ BEGIN
         RAISE EXCEPTION 'Invalid workflow transition: Cannot dispatch order without an assigned delivery courier.';
     END IF;
 
-    -- 5. Delivery Associate Strict Column Allowlists & State Transitions
-    IF user_role = 'delivery' THEN
-        -- Check if this update originated from trusted record_order_payment RPC
-        is_payment_in_progress := (COALESCE(current_setting('app.payment_in_progress', true), 'false') = 'true');
+    -- 5. Universal Payment Integrity Check (Applies to ALL roles: Manager, Owner, Delivery)
+    -- Payment balance on orders cannot be modified directly without an authentic matching payment ledger row
+    IF NEW.paid_amount_paise IS DISTINCT FROM OLD.paid_amount_paise OR
+       NEW.payment_status IS DISTINCT FROM OLD.payment_status OR
+       NEW.payment_method IS DISTINCT FROM OLD.payment_method THEN
 
+        IF NEW.paid_amount_paise < OLD.paid_amount_paise THEN
+            RAISE EXCEPTION 'Security violation: Paid amount on orders cannot decrease (% -> %).',
+                OLD.paid_amount_paise, NEW.paid_amount_paise;
+        END IF;
+
+        IF NEW.total_amount_paise IS NOT NULL AND NEW.paid_amount_paise > NEW.total_amount_paise THEN
+            RAISE EXCEPTION 'Security violation: Paid amount (% paise) cannot exceed bill total (% paise).',
+                NEW.paid_amount_paise, NEW.total_amount_paise;
+        END IF;
+
+        -- Must have a matching authentic row in public.payments
+        IF NOT EXISTS (
+            SELECT 1 FROM public.payments p
+            WHERE p.order_id = NEW.id
+              AND p.amount_paise = (NEW.paid_amount_paise - OLD.paid_amount_paise)
+        ) THEN
+            RAISE EXCEPTION 'Security violation: Direct payment field modification is prohibited. Payments must be processed through record_order_payment().';
+        END IF;
+    END IF;
+
+    -- 6. Delivery Associate Strict Column Allowlists & State Transitions
+    IF user_role = 'delivery' THEN
         -- A. Universal Invariants: 27 columns delivery associates can NEVER modify
         IF NEW.id IS DISTINCT FROM OLD.id THEN
             RAISE EXCEPTION 'Security violation: Delivery associates cannot change order ID.';
@@ -367,13 +453,6 @@ BEGIN
         END IF;
         IF NEW.order_status = 'cancelled' AND OLD.order_status != 'cancelled' THEN
             RAISE EXCEPTION 'Unauthorized: Order cancellation is restricted to Store Managers and Owners.';
-        END IF;
-
-        -- Direct tampering with payment fields outside atomic record_order_payment RPC is strictly rejected
-        IF (NEW.paid_amount_paise IS DISTINCT FROM OLD.paid_amount_paise OR
-            NEW.payment_status IS DISTINCT FROM OLD.payment_status OR
-            NEW.payment_method IS DISTINCT FROM OLD.payment_method) AND NOT is_payment_in_progress THEN
-            RAISE EXCEPTION 'Security violation: Direct payment balance updates on orders are prohibited. Use record_order_payment().';
         END IF;
 
         -- C. Task 1: Pickup Task (when OLD.order_status = 'pickup_assigned')
@@ -438,10 +517,12 @@ BEGIN
             IF NEW.delivered_at IS DISTINCT FROM OLD.delivered_at THEN
                 RAISE EXCEPTION 'Security violation: Delivered timestamp cannot be set during delivery dispatch.';
             END IF;
-            IF (NEW.paid_amount_paise IS DISTINCT FROM OLD.paid_amount_paise OR
-                NEW.payment_status IS DISTINCT FROM OLD.payment_status OR
-                NEW.payment_method IS DISTINCT FROM OLD.payment_method) AND NOT is_payment_in_progress THEN
-                RAISE EXCEPTION 'Security violation: Payment records cannot be modified directly during delivery dispatch.';
+            IF NEW.order_status IS DISTINCT FROM OLD.order_status THEN
+                IF (NEW.paid_amount_paise IS DISTINCT FROM OLD.paid_amount_paise OR
+                    NEW.payment_status IS DISTINCT FROM OLD.payment_status OR
+                    NEW.payment_method IS DISTINCT FROM OLD.payment_method) THEN
+                    RAISE EXCEPTION 'Security violation: Delivery dispatch cannot directly modify payment fields. Payments must be recorded separately via record_order_payment().';
+                END IF;
             END IF;
 
         -- E. Task 3: Delivery Handover Task (when OLD.order_status = 'out_for_delivery')
@@ -464,20 +545,54 @@ BEGIN
                 RAISE EXCEPTION 'Security violation: Weights and collection details cannot be modified during delivery handover.';
             END IF;
 
+            IF NEW.order_status IS DISTINCT FROM OLD.order_status THEN
+                IF (NEW.paid_amount_paise IS DISTINCT FROM OLD.paid_amount_paise OR
+                    NEW.payment_status IS DISTINCT FROM OLD.payment_status OR
+                    NEW.payment_method IS DISTINCT FROM OLD.payment_method) THEN
+                    RAISE EXCEPTION 'Security violation: Delivery handover cannot directly modify payment fields. Payments must be recorded separately via record_order_payment().';
+                END IF;
+            END IF;
+
             IF NEW.order_status = 'delivered' AND NEW.delivered_at IS NULL THEN
                 NEW.delivered_at := timezone('utc', now());
             END IF;
 
         -- F. Orders in any other state (booked, collected, weighed, washing, delivered, cancelled)
         ELSE
-            IF NEW.order_status IS DISTINCT FROM OLD.order_status THEN
-                RAISE EXCEPTION 'Unauthorized: Delivery associates cannot transition orders from status %.', OLD.order_status;
-            END IF;
+            RAISE EXCEPTION 'Unauthorized: Delivery associates cannot update orders in status %.', OLD.order_status;
         END IF;
     END IF;
 
-    -- 6. Store Manager & Owner Lifecycle State Machine Enforcement
+    -- 7. Store Manager & Owner Restrictions & Lifecycle State Machine
     IF user_role IN ('manager', 'owner') THEN
+        -- Immutable Booking & Pricing Snapshots: Managers/owners cannot retroactively alter booked customer details
+        IF NEW.id IS DISTINCT FROM OLD.id OR
+           NEW.order_number IS DISTINCT FROM OLD.order_number OR
+           NEW.customer_id IS DISTINCT FROM OLD.customer_id OR
+           NEW.customer_name IS DISTINCT FROM OLD.customer_name OR
+           NEW.customer_phone IS DISTINCT FROM OLD.customer_phone OR
+           NEW.pickup_address IS DISTINCT FROM OLD.pickup_address OR
+           NEW.pickup_pincode IS DISTINCT FROM OLD.pickup_pincode OR
+           NEW.pickup_date IS DISTINCT FROM OLD.pickup_date OR
+           NEW.pickup_slot IS DISTINCT FROM OLD.pickup_slot OR
+           NEW.service_id IS DISTINCT FROM OLD.service_id OR
+           NEW.service_name IS DISTINCT FROM OLD.service_name OR
+           NEW.pricing_unit IS DISTINCT FROM OLD.pricing_unit OR
+           NEW.price_per_kg_paise IS DISTINCT FROM OLD.price_per_kg_paise OR
+           NEW.min_weight_kg IS DISTINCT FROM OLD.min_weight_kg OR
+           NEW.delivery_charge_paise IS DISTINCT FROM OLD.delivery_charge_paise OR
+           NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+            RAISE EXCEPTION 'Security violation: Booking details and pricing snapshots are immutable once placed.';
+        END IF;
+
+        -- Cancellation reason mandatory when cancelling
+        IF NEW.order_status = 'cancelled' AND OLD.order_status != 'cancelled' THEN
+            IF NEW.cancellation_reason IS NULL OR TRIM(NEW.cancellation_reason) = '' THEN
+                RAISE EXCEPTION 'Validation error: A cancellation reason is mandatory when cancelling an order.';
+            END IF;
+        END IF;
+
+        -- Sequential Lifecycle State Machine
         IF OLD.order_status = 'booked' THEN
             IF NEW.order_status NOT IN ('booked', 'pickup_assigned', 'cancelled') THEN
                 RAISE EXCEPTION 'Invalid transition: Booked orders must be assigned for pickup before processing (attempted: %).', NEW.order_status;
@@ -512,7 +627,7 @@ BEGIN
             END IF;
         END IF;
 
-        -- Weight requirement: Clothes cannot enter washing without a recorded scale weight
+        -- Scale weight requirement: Clothes cannot enter washing without a recorded scale weight
         IF NEW.order_status = 'washing' AND OLD.order_status != 'washing' THEN
             IF COALESCE(NEW.measured_weight, OLD.measured_weight) IS NULL OR COALESCE(NEW.measured_weight, OLD.measured_weight) <= 0 THEN
                 RAISE EXCEPTION 'Intake weight required: Scale weight must be recorded before clothes can enter washing.';
@@ -536,7 +651,39 @@ CREATE TRIGGER trigger_enforce_order_workflow
     EXECUTE FUNCTION public.enforce_order_workflow_integrity();
 
 -- ------------------------------------------------------------------------------
--- 5. GRANTS AND PERMISSIONS
+-- 5. COLUMN-LEVEL PRIVILEGES & SECURITY HARDENING
 -- ------------------------------------------------------------------------------
-GRANT SELECT, INSERT ON TABLE public.payments TO authenticated;
-GRANT SELECT, UPDATE ON TABLE public.orders TO authenticated;
+-- Ensure public/authenticated callers CANNOT directly modify payment balance columns
+-- on public.orders. Direct UPDATE on payment fields is revoked for all standard roles.
+REVOKE UPDATE ON TABLE public.orders FROM authenticated, anon, public;
+
+GRANT SELECT ON TABLE public.orders TO authenticated, anon;
+
+-- Grant UPDATE only on operational workflow columns genuinely needed by frontend sessions:
+GRANT UPDATE (
+    order_status,
+    measured_weight,
+    pickup_measured_weight,
+    billable_weight,
+    total_amount_paise,
+    collected_at,
+    weighed_at,
+    delivered_at,
+    pickup_weighed_at,
+    pickup_weighed_by,
+    assigned_pickup_id,
+    assigned_pickup_name,
+    assigned_pickup_phone,
+    assigned_delivery_id,
+    assigned_delivery_name,
+    assigned_delivery_phone,
+    delivery_notes,
+    notes,
+    cancellation_reason,
+    updated_at
+) ON TABLE public.orders TO authenticated;
+
+-- Direct INSERT on public.payments is revoked from authenticated sessions.
+-- Payments can strictly and exclusively be processed through the atomic record_order_payment RPC.
+REVOKE INSERT ON TABLE public.payments FROM authenticated, anon, public;
+GRANT SELECT ON TABLE public.payments TO authenticated;

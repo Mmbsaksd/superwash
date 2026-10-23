@@ -167,8 +167,7 @@ export const DeliveryDashboard: React.FC = () => {
       const updated = await LaundryService.updateOrderStatus(
         order.id,
         'out_for_delivery',
-        `Dispatched by delivery associate ${currentUser?.full_name || 'Courier'}`,
-        currentUser?.full_name || 'Delivery Associate'
+        `Dispatched by delivery associate ${currentUser?.full_name || 'Courier'}`
       );
       if (updated) {
         setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
@@ -375,7 +374,10 @@ export const DeliveryDashboard: React.FC = () => {
                         <div className="flex justify-between items-start">
                           <div>
                             <span className="font-black text-slate-900 text-base block">#{order.order_number}</span>
-                            <span className="font-bold text-slate-800 text-sm">{order.customer_name}</span>
+                            <span className="inline-block px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 my-0.5">
+                              {order.service_name || 'Wash & Fold (Normal)'}
+                            </span>
+                            <span className="font-bold text-slate-800 text-sm block">{order.customer_name}</span>
                             <span className="text-[11px] text-slate-500 block">📞 {order.customer_phone}</span>
                           </div>
                           <StatusBadge status={order.order_status} size="sm" />
@@ -464,7 +466,10 @@ export const DeliveryDashboard: React.FC = () => {
                         <div className="flex justify-between items-start">
                           <div>
                             <span className="font-black text-slate-900 text-base block">#{order.order_number}</span>
-                            <span className="font-bold text-slate-800 text-sm">{order.customer_name}</span>
+                            <span className="inline-block px-2 py-0.5 rounded-md text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 my-0.5">
+                              {order.service_name || 'Wash & Fold (Normal)'}
+                            </span>
+                            <span className="font-bold text-slate-800 text-sm block">{order.customer_name}</span>
                             <span className="text-[11px] text-slate-500 block">📞 {order.customer_phone}</span>
                           </div>
                           <StatusBadge status={order.order_status} size="sm" />

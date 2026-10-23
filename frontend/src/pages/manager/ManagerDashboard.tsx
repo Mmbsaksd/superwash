@@ -110,8 +110,7 @@ export const ManagerDashboard: React.FC = () => {
       const updated = await LaundryService.updateOrderStatus(
         order.id,
         'washing',
-        'Clothes placed into washing machine',
-        currentUser?.full_name || 'Store Manager'
+        'Clothes placed into washing machine'
       );
       if (updated) {
         setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
@@ -127,8 +126,7 @@ export const ManagerDashboard: React.FC = () => {
       const updated = await LaundryService.updateOrderStatus(
         order.id,
         'ready_for_delivery',
-        'Clothes washed, dried, packed and ready for delivery',
-        currentUser?.full_name || 'Store Manager'
+        'Clothes washed, dried, packed and ready for delivery'
       );
       if (updated) {
         setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
@@ -149,8 +147,7 @@ export const ManagerDashboard: React.FC = () => {
       const updated = await LaundryService.updateOrderStatus(
         order.id,
         'out_for_delivery',
-        `Dispatched with delivery agent ${order.assigned_delivery_name}`,
-        currentUser?.full_name || 'Store Manager'
+        `Dispatched with delivery agent ${order.assigned_delivery_name}`
       );
       if (updated) {
         setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
@@ -358,7 +355,10 @@ export const ManagerDashboard: React.FC = () => {
                         <div className="flex justify-between items-start">
                           <div>
                             <span className="font-black text-slate-900 text-base block">#{order.order_number}</span>
-                            <span className="font-bold text-slate-800 text-sm">{order.customer_name}</span>
+                            <span className="inline-block px-2 py-0.5 rounded-md text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 my-0.5">
+                              {order.service_name || 'Wash & Fold (Normal)'}
+                            </span>
+                            <span className="font-bold text-slate-800 text-sm block">{order.customer_name}</span>
                             <span className="text-slate-500 block text-[11px] mt-0.5">📞 {order.customer_phone}</span>
                           </div>
                           <StatusBadge status={order.order_status} size="sm" />

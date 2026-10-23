@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { Order, CustomerAddress, PickupSlot, BusinessSettings, OrderFeedback } from '../../types';
+import { Order, CustomerAddress, PickupSlot, BusinessSettings, OrderFeedback, LaundryServiceItem } from '../../types';
 import { LaundryService } from '../../services/laundryService';
 import { supabase } from '../../services/supabase';
 import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
@@ -17,6 +17,8 @@ export const CustomerHome: React.FC = () => {
   const { currentUser, needsPhonePrompt, updateProfile, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<'book' | 'current' | 'history' | 'addresses' | 'contact'>('book');
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
+  const [services, setServices] = useState<LaundryServiceItem[]>([]);
+  const [selectedServiceId, setSelectedServiceId] = useState<string>('');
   const [slots, setSlots] = useState<PickupSlot[]>([]);
   const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -187,12 +189,17 @@ export const CustomerHome: React.FC = () => {
   const loadData = async () => {
     setIsLoading(true);
     try {
-      const [s, sl, ords] = await Promise.all([
+      const [s, sl, ords, srv] = await Promise.all([
         LaundryService.getSettings(),
         LaundryService.getPickupSlots(),
-        currentUser ? LaundryService.getCustomerOrders(currentUser.id, currentUser.phone) : []
+        currentUser ? LaundryService.getCustomerOrders(currentUser.id, currentUser.phone) : [],
+        LaundryService.getServices(false)
       ]);
       setSettings(s);
+      setServices(srv || []);
+      if (srv && srv.length > 0) {
+        setSelectedServiceId((prev) => prev || srv[0].id);
+      }
       const activeSlots = sl && sl.length > 0 ? sl.filter((x) => x.is_active) : [];
       setSlots(activeSlots);
       if (activeSlots.length > 0) {
@@ -298,6 +305,7 @@ export const CustomerHome: React.FC = () => {
         pickup_slot: selectedSlotName,
         pickup_latitude: latitude,
         pickup_longitude: longitude,
+        service_id: selectedServiceId || undefined
       });
 
       setBookingSuccessOrder(order);
@@ -311,9 +319,12 @@ export const CustomerHome: React.FC = () => {
   };
 
   const currentActiveOrder = orders.find((o) => o.order_status !== 'delivered' && o.order_status !== 'cancelled') || orders[0];
+  const selectedService = services.find((s) => s.id === selectedServiceId) || services[0];
   const pricePerKg = settings ? (settings.price_per_kg_paise / 100).toFixed(0) : '80';
   const minWeight = settings ? settings.min_weight_kg.toFixed(0) : '3';
   const minBill = settings ? ((settings.price_per_kg_paise * settings.min_weight_kg) / 100).toFixed(0) : '240';
+  const serviceRateStr = selectedService ? (((selectedService.unit_price_paise || selectedService.price_paise || 8000) / 100)).toFixed(0) : pricePerKg;
+  const serviceUnitLabel = selectedService ? (selectedService.pricing_unit === 'per_kg' ? 'kilogram' : selectedService.pricing_unit.replace('per_', '')) : 'kilogram';
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-24">
@@ -475,6 +486,54 @@ export const CustomerHome: React.FC = () => {
                 <h2 className="font-black text-slate-900 text-base flex items-center gap-2">
                   <Calendar className="w-5 h-5 text-brand-600" /> Schedule Home Pickup
                 </h2>
+
+                {/* 0. Service Selection */}
+                {services.length > 0 && (
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-brand-600" /> Select Laundry Service
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {services.map((srv) => {
+                        const isSelected = selectedServiceId === srv.id;
+                        return (
+                          <label
+                            key={srv.id}
+                            className={`flex items-start gap-2.5 p-3 rounded-2xl border cursor-pointer transition ${
+                              isSelected
+                                ? 'border-brand-600 bg-brand-50/70 text-slate-900 ring-2 ring-brand-500/20'
+                                : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name="selectedService"
+                              value={srv.id}
+                              checked={isSelected}
+                              onChange={() => setSelectedServiceId(srv.id)}
+                              className="mt-1 text-brand-600 focus:ring-brand-500"
+                            />
+                            <div className="text-xs flex-1">
+                              <div className="flex items-center justify-between">
+                                <span className="font-bold text-slate-900">{srv.name}</span>
+                                <span className="font-black text-brand-700">
+                                  ₹{(((srv.unit_price_paise || srv.price_paise || 8000) / 100)).toFixed(0)}
+                                  <span className="text-[10px] text-slate-400 font-normal">/{srv.pricing_unit === 'per_kg' ? 'kg' : srv.pricing_unit.replace('per_', '')}</span>
+                                </span>
+                              </div>
+                              {srv.description && (
+                                <span className="text-slate-500 text-[11px] block mt-0.5 line-clamp-1">{srv.description}</span>
+                              )}
+                              {srv.pricing_unit === 'per_kg' && srv.min_weight_kg > 0 && (
+                                <span className="text-[10px] text-slate-400 font-mono mt-0.5 block">Min. {srv.min_weight_kg} kg</span>
+                              )}
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 {/* 1. Address Section */}
                 <div className="space-y-2">
@@ -690,20 +749,23 @@ export const CustomerHome: React.FC = () => {
 
                 <div>
                   <div className="flex items-baseline gap-1">
-                    <span className="text-4xl font-black">₹{pricePerKg}</span>
-                    <span className="text-base font-semibold text-brand-100">/ kilogram</span>
+                    <span className="text-4xl font-black">₹{serviceRateStr}</span>
+                    <span className="text-base font-semibold text-brand-100">/ {serviceUnitLabel}</span>
                   </div>
                   <p className="text-xs text-brand-100 mt-1">
-                    Normal clothes washing • Min. weight {minWeight} kg (₹{minBill}).
+                    {selectedService ? selectedService.name : 'Normal clothes washing'}
+                    {selectedService?.pricing_unit === 'per_kg' && selectedService.min_weight_kg > 0
+                      ? ` • Min. weight ${selectedService.min_weight_kg} kg (₹${((selectedService.unit_price_paise * selectedService.min_weight_kg) / 100).toFixed(0)}).`
+                      : '.'}
                   </p>
                 </div>
 
                 <div className="p-3.5 bg-white/10 rounded-2xl text-xs space-y-1.5 text-brand-50">
-                  <span className="font-bold block text-white">How it works:</span>
+                  <span className="font-bold block text-white">How billing works:</span>
                   <p className="text-[11px] leading-relaxed">
                     1. We collect your laundry bag at your doorstep. <br />
-                    2. Certified scale weights clothes at our shop. <br />
-                    3. Final bill generated: <code className="bg-black/20 px-1 rounded">Weight × ₹{pricePerKg}</code>. <br />
+                    2. Service rate verified from official catalogue: <code className="bg-black/20 px-1 rounded">₹{serviceRateStr} / {serviceUnitLabel}</code>. <br />
+                    3. Exact bill generated upon store intake & scale verification. <br />
                     4. Delivered clean & crisp. Pay via Cash or UPI.
                   </p>
                 </div>
@@ -755,9 +817,14 @@ export const CustomerHome: React.FC = () => {
                     <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
                       Live Order Tracking
                     </span>
-                    <h2 className="font-black text-2xl text-slate-900 leading-tight">
-                      Order #{currentActiveOrder.order_number}
-                    </h2>
+                    <div className="flex items-center gap-2">
+                      <h2 className="font-black text-2xl text-slate-900 leading-tight">
+                        Order #{currentActiveOrder.order_number}
+                      </h2>
+                      <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-brand-50 text-brand-700 border border-brand-200">
+                        {currentActiveOrder.service_name || 'Wash & Fold (Normal)'}
+                      </span>
+                    </div>
                     <p className="text-xs text-slate-500 mt-0.5">
                       Pickup Scheduled: {currentActiveOrder.pickup_date} • {currentActiveOrder.pickup_slot}
                     </p>
@@ -1111,7 +1178,10 @@ export const CustomerHome: React.FC = () => {
                         <div className="flex justify-between items-start">
                           <div>
                             <span className="font-black text-slate-900 text-sm block">#{ord.order_number}</span>
-                            <span className="text-[11px] text-slate-500">{ord.pickup_date} • {ord.pickup_slot}</span>
+                            <span className="text-[10px] font-bold text-brand-700 bg-brand-50 border border-brand-200 px-2 py-0.5 rounded-md inline-block my-0.5">
+                              {ord.service_name || 'Wash & Fold (Normal)'}
+                            </span>
+                            <span className="text-[11px] text-slate-500 block">{ord.pickup_date} • {ord.pickup_slot}</span>
                           </div>
                           <StatusBadge status={ord.order_status} size="sm" />
                         </div>
