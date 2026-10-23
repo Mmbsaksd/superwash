@@ -81,6 +81,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     try {
       const staffUuid = recordedBy || currentUser?.id;
       const staffDisplayName = recordedByName || currentUser?.full_name || 'Staff';
+      const idempotencyKey = `pay-${order.id}-${Date.now()}`;
 
       const updated = await LaundryService.recordPayment(
         order.id,
@@ -89,7 +90,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
         utrReference.trim() || undefined,
         notes.trim() || undefined,
         staffUuid,
-        staffDisplayName
+        staffDisplayName,
+        idempotencyKey
       );
 
       if (updated) {

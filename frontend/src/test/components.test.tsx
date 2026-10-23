@@ -751,6 +751,212 @@ describe('End-to-End Workflow Transitions & Staff Task Queues', () => {
   });
 });
 
+describe('Hardened Workflow, Security Invariants & Payment Atomicity', () => {
+  it('reconciles ready_for_delivery and delivery_assigned: manager assigns courier, courier sees task, dispatches, and marks delivered', async () => {
+    // 1. Create and progress order to ready_for_delivery
+    const order = await LaundryService.createBooking({
+      customer_id: 'cust-uuid-reconcile',
+      customer_name: 'Workflow Reconcile Tester',
+      customer_phone: '9876543291',
+      pickup_address: 'Indiranagar 100ft Road',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-23',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    await LaundryService.assignPickupStaff(order.id, 'pickup-exec-1', 'Ramesh Courier', '9876543215');
+    await LaundryService.recordPickupCollectionAndWeight(order.id, 4.0, 'pickup-exec-1', 'Ramesh Courier');
+    await LaundryService.updateOrderStatus(order.id, 'washing', 'Started washing cycle', 'Store Manager');
+    const ready = await LaundryService.updateOrderStatus(order.id, 'ready_for_delivery', 'Packed and ready', 'Store Manager');
+    expect(ready.order_status).toBe('ready_for_delivery');
+
+    // 2. Manager assigns delivery courier -> transitions to delivery_assigned
+    const courierId = 'courier-suresh-uuid';
+    const assigned = await LaundryService.assignDeliveryStaff(order.id, courierId, 'Suresh Courier', '9876543216');
+    expect(assigned.order_status).toBe('delivery_assigned');
+    expect(assigned.assigned_delivery_id).toBe(courierId);
+
+    // 3. Courier checks their delivery queue -> order must appear in active deliveries
+    const courierTasks = await LaundryService.getOrdersForDelivery(courierId);
+    expect(courierTasks.deliveries.some(o => o.id === order.id)).toBe(true);
+    expect(courierTasks.completedDeliveries.some(o => o.id === order.id)).toBe(false);
+
+    // 4. Also verify Manager's ready queue includes delivery_assigned orders
+    const managerQueues = await LaundryService.getOrdersForManager();
+    expect(managerQueues.readyForDelivery.some(o => o.id === order.id)).toBe(true);
+
+    // 5. Courier dispatches order out for delivery
+    const dispatched = await LaundryService.updateOrderStatus(order.id, 'out_for_delivery', 'Departed store with parcel', 'Suresh Courier');
+    expect(dispatched.order_status).toBe('out_for_delivery');
+
+    // 6. Courier records payment and completes delivery
+    await LaundryService.recordPayment(order.id, 32000, 'cash', undefined, 'Collected cash on delivery', courierId, 'Suresh Courier');
+    const delivered = await LaundryService.markAsDelivered(order.id, 'Handed to customer at doorstep');
+    expect(delivered.order_status).toBe('delivered');
+    expect(delivered.payment_status).toBe('paid');
+
+    // 7. Queue updates: leaves active deliveries and enters completed queue
+    const finalCourierTasks = await LaundryService.getOrdersForDelivery(courierId);
+    expect(finalCourierTasks.deliveries.some(o => o.id === order.id)).toBe(false);
+    expect(finalCourierTasks.completedDeliveries.some(o => o.id === order.id)).toBe(true);
+  });
+
+  it('prohibits skipping out_for_delivery: rejects direct transitions from ready_for_delivery or delivery_assigned to delivered', async () => {
+    const order = await LaundryService.createBooking({
+      customer_id: 'cust-uuid-skip-test',
+      customer_name: 'Skip Tester',
+      customer_phone: '9876543292',
+      pickup_address: 'Koramangala 6th Block',
+      pickup_pincode: '560034',
+      pickup_date: '2026-10-23',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    await LaundryService.assignPickupStaff(order.id, 'staff-p1', 'Pickup Staff', '9876543215');
+    await LaundryService.recordPickupCollectionAndWeight(order.id, 3.5, 'staff-p1', 'Pickup Staff');
+    await LaundryService.updateOrderStatus(order.id, 'washing');
+    await LaundryService.updateOrderStatus(order.id, 'ready_for_delivery');
+
+    // Attempting to move directly from ready_for_delivery to delivered MUST fail
+    await expect(
+      LaundryService.updateOrderStatus(order.id, 'delivered')
+    ).rejects.toThrow(/must be out for delivery before being marked delivered/i);
+
+    // Assign courier (status becomes delivery_assigned)
+    await LaundryService.assignDeliveryStaff(order.id, 'staff-d1', 'Courier Staff', '9876543216');
+
+    // Attempting to move directly from delivery_assigned to delivered MUST ALSO fail
+    await expect(
+      LaundryService.updateOrderStatus(order.id, 'delivered')
+    ).rejects.toThrow(/must be out for delivery before being marked delivered/i);
+  });
+
+  it('enforces assigned vs unassigned courier permissions on dispatch', async () => {
+    const order = await LaundryService.createBooking({
+      customer_id: 'cust-uuid-unassigned',
+      customer_name: 'Unassigned Tester',
+      customer_phone: '9876543293',
+      pickup_address: 'Indiranagar 12th Main',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-23',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    await LaundryService.assignPickupStaff(order.id, 'staff-p1', 'Pickup Staff', '9876543215');
+    await LaundryService.recordPickupCollectionAndWeight(order.id, 3.0, 'staff-p1', 'Pickup Staff');
+    await LaundryService.updateOrderStatus(order.id, 'washing');
+    await LaundryService.updateOrderStatus(order.id, 'ready_for_delivery');
+
+    // Dispatch without assigned delivery courier MUST fail
+    await expect(
+      LaundryService.updateOrderStatus(order.id, 'out_for_delivery')
+    ).rejects.toThrow(/delivery courier must be assigned before dispatching/i);
+
+    // Associate not assigned to delivery does NOT see order in deliveries queue
+    const unassignedTasks = await LaundryService.getOrdersForDelivery('unassigned-courier-uuid');
+    expect(unassignedTasks.deliveries.some(o => o.id === order.id)).toBe(false);
+  });
+
+  it('enforces payment atomicity, idempotency key replay, and rejects duplicate UPI transaction references', async () => {
+    const order = await LaundryService.createBooking({
+      customer_id: 'cust-uuid-pay-atomicity',
+      customer_name: 'Atomicity Tester',
+      customer_phone: '9876543294',
+      pickup_address: 'HAL 2nd Stage',
+      pickup_pincode: '560008',
+      pickup_date: '2026-10-23',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    await LaundryService.assignPickupStaff(order.id, 'staff-p1', 'Pickup Staff', '9876543215');
+    await LaundryService.recordPickupCollectionAndWeight(order.id, 4.0, 'staff-p1', 'Pickup Staff'); // 32000 paise bill
+
+    // 1. First payment of ₹160 (16000 paise) with unique idempotency key
+    const idempotencyKey = `idemp-key-tx-12345`;
+    const res1 = await LaundryService.recordPayment(
+      order.id,
+      16000,
+      'upi_manual',
+      'UTR-987654321012',
+      'Partial advance payment',
+      'staff-d1',
+      'Delivery Staff',
+      idempotencyKey
+    );
+    expect(res1.paid_amount_paise).toBe(16000);
+    expect(res1.payment_status).toBe('partially_paid');
+
+    // 2. Replaying the EXACT SAME idempotency key must return existing payment and NOT double-charge!
+    const replayRes = await LaundryService.recordPayment(
+      order.id,
+      16000,
+      'upi_manual',
+      'UTR-987654321012',
+      'Duplicate submit retry',
+      'staff-d1',
+      'Delivery Staff',
+      idempotencyKey
+    );
+    expect(replayRes.paid_amount_paise).toBe(16000); // Balance remains 16000, NOT 32000!
+
+    // 3. Attempting to record duplicate UPI transaction reference with DIFFERENT idempotency key MUST be rejected
+    await expect(
+      LaundryService.recordPayment(
+        order.id,
+        5000,
+        'upi_manual',
+        'UTR-987654321012', // Reused UTR reference
+        'Second attempt with same UTR',
+        'staff-d1',
+        'Delivery Staff',
+        'idemp-key-new-attempt'
+      )
+    ).rejects.toThrow(/duplicate payment.*UTR-987654321012/i);
+
+    // 4. Overpayment rejection: remaining balance is 16000, attempting to pay 20000 must reject
+    await expect(
+      LaundryService.recordPayment(
+        order.id,
+        20000,
+        'cash',
+        undefined,
+        'Overpayment attempt'
+      )
+    ).rejects.toThrow(/exceeds the remaining balance/i);
+
+    // 5. Non-integer or negative paise rejected
+    await expect(
+      LaundryService.recordPayment(order.id, 100.5, 'cash')
+    ).rejects.toThrow(/positive integer value/i);
+    await expect(
+      LaundryService.recordPayment(order.id, -100, 'cash')
+    ).rejects.toThrow(/positive integer value/i);
+  });
+
+  it('rejects payments on cancelled or unbilled orders', async () => {
+    // Unbilled order (total_amount_paise is null)
+    const unbilledOrder = await LaundryService.createBooking({
+      customer_id: 'cust-uuid-unbilled',
+      customer_name: 'Unbilled Tester',
+      customer_phone: '9876543295',
+      pickup_address: 'Ulsoor Road',
+      pickup_pincode: '560008',
+      pickup_date: '2026-10-23',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    await expect(
+      LaundryService.recordPayment(unbilledOrder.id, 10000, 'cash')
+    ).rejects.toThrow(/has not yet been weighed and billed/i);
+
+    // Cancelled order
+    await LaundryService.updateOrderStatus(unbilledOrder.id, 'cancelled', 'Customer requested cancellation', 'Store Manager');
+    await expect(
+      LaundryService.recordPayment(unbilledOrder.id, 10000, 'cash')
+    ).rejects.toThrow(/cannot record payment for a cancelled order/i);
+  });
+});
+
 
 
 

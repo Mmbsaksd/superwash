@@ -589,7 +589,7 @@ export const ManagerDashboard: React.FC = () => {
                       </div>
                     </div>
 
-                    {order.order_status === 'ready_for_delivery' && (
+                    {(order.order_status === 'ready_for_delivery' || order.order_status === 'delivery_assigned') && (
                       <button
                         onClick={() => handleDispatchOutForDelivery(order)}
                         className="w-full py-2.5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5 cursor-pointer"

@@ -589,24 +589,46 @@ export class LaundryService {
     }
 
     const previousStatus = order.order_status;
+    if (order.order_status === 'ready_for_delivery') {
+      order.order_status = 'delivery_assigned';
+    }
     order.assigned_delivery_id = staffId;
     order.assigned_delivery_name = staffName;
     order.assigned_delivery_phone = staffPhone;
     order.updated_at = new Date().toISOString();
 
     if (isLiveMode) {
-      const updatePayload: any = {
+      let updatePayload: any = {
         assigned_delivery_id: staffId,
         assigned_delivery_name: staffName,
         assigned_delivery_phone: staffPhone,
+        order_status: order.order_status,
         updated_at: order.updated_at
       };
 
-      const { data, error } = await supabase
+      let { data, error } = await supabase
         .from('orders')
         .update(updatePayload)
         .eq('id', orderId)
         .select();
+
+      // Graceful fallback if remote schema has not yet applied delivery_assigned constraint
+      if (error && error.message?.includes('orders_order_status_check') && order.order_status === 'delivery_assigned') {
+        order.order_status = 'ready_for_delivery';
+        updatePayload = {
+          assigned_delivery_id: staffId,
+          assigned_delivery_name: staffName,
+          assigned_delivery_phone: staffPhone,
+          updated_at: order.updated_at
+        };
+        const retryResult = await supabase
+          .from('orders')
+          .update(updatePayload)
+          .eq('id', orderId)
+          .select();
+        data = retryResult.data;
+        error = retryResult.error;
+      }
 
       if (error) {
         throw new Error(`Failed to persist delivery assignment in database: ${error.message}`);
@@ -620,6 +642,7 @@ export class LaundryService {
 
       // Synchronize with authoritative database row
       const persisted = data[0] as Order;
+      order.order_status = persisted.order_status;
       order.assigned_delivery_id = persisted.assigned_delivery_id;
       order.assigned_delivery_name = persisted.assigned_delivery_name;
       order.assigned_delivery_phone = persisted.assigned_delivery_phone;
@@ -963,6 +986,9 @@ export class LaundryService {
       if (!order.assigned_delivery_id) {
         throw new Error('Cannot dispatch order: A delivery courier must be assigned before dispatching out for delivery.');
       }
+      if (order.order_status !== 'ready_for_delivery' && order.order_status !== 'delivery_assigned') {
+        throw new Error(`Invalid transition: Order #${order.order_number} must be ready for delivery before dispatch (Current status: ${order.order_status}).`);
+      }
     }
     if (newStatus === 'washing') {
       if (!order.measured_weight && order.measured_weight !== 0) {
@@ -970,7 +996,7 @@ export class LaundryService {
       }
     }
     if (newStatus === 'delivered') {
-      if (order.order_status !== 'out_for_delivery' && order.order_status !== 'ready_for_delivery') {
+      if (order.order_status !== 'out_for_delivery') {
         throw new Error(`Invalid transition: Order #${order.order_number} must be out for delivery before being marked delivered.`);
       }
     }
@@ -1075,15 +1101,24 @@ export class LaundryService {
     transactionReference?: string,
     notes?: string,
     recordedByOrName?: string,
-    recordedByNameDisplay?: string
+    recordedByNameDisplay?: string,
+    idempotencyKey?: string
   ): Promise<Order & { payment: Payment }> {
-    if (!amountPaise || amountPaise <= 0) {
-      throw new Error('Payment amount must be a positive value greater than zero.');
+    if (!amountPaise || amountPaise <= 0 || !Number.isInteger(amountPaise)) {
+      throw new Error('Payment amount must be a positive integer value greater than zero (in paise).');
     }
 
     const orders = await this.getOrders();
     const order = orders.find(o => o.id === orderId);
     if (!order) throw new Error('Order not found');
+
+    if (order.order_status === 'cancelled') {
+      throw new Error('Cannot record payment for a cancelled order.');
+    }
+
+    if (order.total_amount_paise === null || order.total_amount_paise === undefined) {
+      throw new Error('Cannot record payment: Order has not yet been weighed and billed.');
+    }
 
     const totalDue = order.total_amount_paise || 0;
     const remainingBalance = Math.max(0, totalDue - order.paid_amount_paise);
@@ -1096,17 +1131,28 @@ export class LaundryService {
       throw new Error('A valid UPI transaction reference (UTR) is required for manual UPI verification.');
     }
 
-    const newPaidAmount = order.paid_amount_paise + amountPaise;
-    order.paid_amount_paise = newPaidAmount;
-    order.payment_method = paymentMethod;
+    const storedPayments: Payment[] = JSON.parse(localStorage.getItem(STORAGE_KEYS.PAYMENTS) || '[]');
 
-    if (totalDue > 0 && newPaidAmount >= totalDue) {
-      order.payment_status = 'paid';
-    } else if (newPaidAmount > 0) {
-      order.payment_status = 'partially_paid';
+    // Check idempotency key replay FIRST
+    const effectiveIdempotencyKey = idempotencyKey?.trim() || undefined;
+    if (effectiveIdempotencyKey) {
+      const existingPayment = storedPayments.find(p => p.idempotency_key === effectiveIdempotencyKey);
+      if (existingPayment) {
+        if (existingPayment.order_id !== order.id) {
+          throw new Error(`Idempotency conflict: Key ${effectiveIdempotencyKey} already used for another order.`);
+        }
+        return Object.assign(order, { payment: existingPayment });
+      }
     }
 
-    order.updated_at = new Date().toISOString();
+    // Prevent duplicate UPI transaction reference for this order (on distinct payment attempts)
+    if (paymentMethod === 'upi_manual' && transactionReference) {
+      const cleanRef = transactionReference.trim();
+      const duplicateRef = storedPayments.find(p => p.order_id === order.id && p.transaction_reference === cleanRef);
+      if (duplicateRef) {
+        throw new Error(`Duplicate payment: UPI transaction reference ${cleanRef} has already been recorded for this order.`);
+      }
+    }
 
     // Helper to validate UUID format for PostgreSQL recorded_by column
     const isUUID = (str?: string): boolean =>
@@ -1139,7 +1185,7 @@ export class LaundryService {
         : `Recorded by: ${staffNameDisplay}`;
     }
 
-    const payment: Payment = {
+    let payment: Payment = {
       id: generateUUID(),
       order_id: order.id,
       amount_paise: amountPaise,
@@ -1147,68 +1193,106 @@ export class LaundryService {
       transaction_reference: transactionReference?.trim(),
       notes: finalNotes,
       recorded_by: recordedByUuid || undefined,
+      idempotency_key: effectiveIdempotencyKey,
       created_at: new Date().toISOString()
     };
 
     if (isLiveMode) {
-      const dbPaymentPayload = {
-        id: payment.id,
-        order_id: payment.order_id,
-        amount_paise: payment.amount_paise,
-        payment_method: payment.payment_method,
-        transaction_reference: payment.transaction_reference || null,
-        notes: payment.notes || null,
-        recorded_by: recordedByUuid || null,
-        created_at: payment.created_at
-      };
+      // Execute via atomic PostgreSQL database RPC
+      const { data: rpcData, error: rpcError } = await supabase.rpc('record_order_payment', {
+        p_order_id: order.id,
+        p_amount_paise: amountPaise,
+        p_payment_method: paymentMethod,
+        p_transaction_reference: transactionReference?.trim() || null,
+        p_notes: finalNotes || null,
+        p_idempotency_key: effectiveIdempotencyKey || null
+      });
 
-      const { data: insertedPayment, error: payError } = await supabase
-        .from('payments')
-        .insert(dbPaymentPayload)
-        .select();
+      if (!rpcError && rpcData) {
+        if (rpcData.payment_id) {
+          payment.id = rpcData.payment_id;
+        }
+        order.paid_amount_paise = rpcData.paid_amount_paise ?? (order.paid_amount_paise + amountPaise);
+        order.payment_status = rpcData.payment_status ?? ((order.paid_amount_paise >= totalDue) ? 'paid' : 'partially_paid');
+        order.payment_method = paymentMethod;
+        order.updated_at = new Date().toISOString();
+      } else {
+        const isRpcMissing = rpcError?.code === '42883' || rpcError?.message?.includes('record_order_payment');
+        if (isRpcMissing) {
+          console.warn('Database RPC record_order_payment is pending remote migration; executing fallback payment update.');
+          const dbPaymentPayload = {
+            id: payment.id,
+            order_id: payment.order_id,
+            amount_paise: payment.amount_paise,
+            payment_method: payment.payment_method,
+            transaction_reference: payment.transaction_reference || null,
+            notes: payment.notes || null,
+            recorded_by: recordedByUuid || null,
+            idempotency_key: effectiveIdempotencyKey || null,
+            created_at: payment.created_at
+          };
 
-      if (payError) {
-        throw new Error(`Failed to record payment in database ledger: ${payError.message}`);
+          const { data: insertedPayment, error: payError } = await supabase
+            .from('payments')
+            .insert(dbPaymentPayload)
+            .select();
+
+          if (payError) {
+            throw new Error(`Failed to record payment in database ledger: ${payError.message}`);
+          }
+
+          if (insertedPayment && insertedPayment.length > 0) {
+            payment.id = insertedPayment[0].id;
+            payment.created_at = insertedPayment[0].created_at;
+          }
+
+          const newPaidAmount = order.paid_amount_paise + amountPaise;
+          order.paid_amount_paise = newPaidAmount;
+          order.payment_method = paymentMethod;
+          order.payment_status = (totalDue > 0 && newPaidAmount >= totalDue) ? 'paid' : 'partially_paid';
+          order.updated_at = new Date().toISOString();
+
+          const { data: updatedOrders, error: orderError } = await supabase
+            .from('orders')
+            .update({
+              paid_amount_paise: order.paid_amount_paise,
+              payment_status: order.payment_status,
+              payment_method: order.payment_method,
+              updated_at: order.updated_at
+            })
+            .eq('id', order.id)
+            .select();
+
+          if (orderError) {
+            throw new Error(`Failed to update order payment balance: ${orderError.message}`);
+          }
+
+          if (updatedOrders && updatedOrders.length > 0) {
+            const persistedOrder = updatedOrders[0] as Order;
+            order.paid_amount_paise = persistedOrder.paid_amount_paise;
+            order.payment_status = persistedOrder.payment_status;
+            order.payment_method = persistedOrder.payment_method;
+            order.updated_at = persistedOrder.updated_at;
+          }
+        } else {
+          throw new Error(rpcError?.message || 'Payment transaction failed in database RPC.');
+        }
       }
-
-      if (insertedPayment && insertedPayment.length > 0) {
-        const persistedPayment = insertedPayment[0];
-        payment.id = persistedPayment.id;
-        payment.created_at = persistedPayment.created_at;
-      }
-
-      const { data: updatedOrders, error: orderError } = await supabase
-        .from('orders')
-        .update({
-          paid_amount_paise: order.paid_amount_paise,
-          payment_status: order.payment_status,
-          payment_method: order.payment_method,
-          updated_at: order.updated_at
-        })
-        .eq('id', order.id)
-        .select();
-
-      if (orderError) {
-        throw new Error(`Failed to update order payment balance: ${orderError.message}`);
-      }
-
-      if (updatedOrders && updatedOrders.length > 0) {
-        const persistedOrder = updatedOrders[0] as Order;
-        order.paid_amount_paise = persistedOrder.paid_amount_paise;
-        order.payment_status = persistedOrder.payment_status;
-        order.payment_method = persistedOrder.payment_method;
-        order.updated_at = persistedOrder.updated_at;
-      }
+    } else {
+      const newPaidAmount = order.paid_amount_paise + amountPaise;
+      order.paid_amount_paise = newPaidAmount;
+      order.payment_method = paymentMethod;
+      order.payment_status = (totalDue > 0 && newPaidAmount >= totalDue) ? 'paid' : 'partially_paid';
+      order.updated_at = new Date().toISOString();
     }
 
-    const prevPayments = JSON.parse(localStorage.getItem(STORAGE_KEYS.PAYMENTS) || '[]');
-    localStorage.setItem(STORAGE_KEYS.PAYMENTS, JSON.stringify([payment, ...prevPayments]));
+    localStorage.setItem(STORAGE_KEYS.PAYMENTS, JSON.stringify([payment, ...storedPayments]));
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
 
     await WhatsAppService.sendNotification(
       order.customer_phone,
       'payment_received',
-      `Receipt: Received ₹${amountPaise / 100} via ${paymentMethod === 'cash' ? 'Cash' : 'UPI'} for SuperWash Order #${order.order_number}. Remaining Balance: ₹${Math.max(0, totalDue - newPaidAmount) / 100}. Thank you!`,
+      `Receipt: Received ₹${amountPaise / 100} via ${paymentMethod === 'cash' ? 'Cash' : 'UPI'} for SuperWash Order #${order.order_number}. Remaining Balance: ₹${Math.max(0, totalDue - order.paid_amount_paise) / 100}. Thank you!`,
       order.id
     );
 
@@ -1238,9 +1322,13 @@ export class LaundryService {
       return o.assigned_pickup_id === staffId && o.order_status === 'pickup_assigned';
     });
 
-    // 2. Deliveries: Strictly assigned for delivery to this staff member at ready or out_for_delivery stage
+    // 2. Deliveries: Strictly assigned for delivery to this staff member at ready, delivery_assigned, or out_for_delivery stage
     const deliveries = all.filter(o => {
-      return o.assigned_delivery_id === staffId && (o.order_status === 'ready_for_delivery' || o.order_status === 'out_for_delivery');
+      return o.assigned_delivery_id === staffId && (
+        o.order_status === 'ready_for_delivery' ||
+        o.order_status === 'delivery_assigned' ||
+        o.order_status === 'out_for_delivery'
+      );
     });
 
     // 3. Completed Deliveries: STRICTLY delivered orders completed by this delivery associate
@@ -1250,7 +1338,9 @@ export class LaundryService {
 
     // 4. Pickup History: Orders collected by this pickup associate (doorstep scale measurements)
     const pickupHistory = all.filter(o => {
-      return o.assigned_pickup_id === staffId && ['collected', 'washing', 'ready_for_delivery', 'out_for_delivery', 'delivered'].includes(o.order_status);
+      return o.assigned_pickup_id === staffId && [
+        'collected', 'washing', 'ready_for_delivery', 'delivery_assigned', 'out_for_delivery', 'delivered'
+      ].includes(o.order_status);
     });
 
     return {
@@ -1271,7 +1361,7 @@ export class LaundryService {
     return {
       newCollected: all.filter(o => o.order_status === 'collected' || (o.order_status === 'booked' && !o.measured_weight)),
       washing: all.filter(o => o.order_status === 'washing'),
-      readyForDelivery: all.filter(o => o.order_status === 'ready_for_delivery')
+      readyForDelivery: all.filter(o => o.order_status === 'ready_for_delivery' || o.order_status === 'delivery_assigned')
     };
   }
 

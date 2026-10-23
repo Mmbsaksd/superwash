@@ -237,6 +237,7 @@ export interface Payment {
   transaction_reference?: string;
   notes?: string;
   recorded_by?: string;
+  idempotency_key?: string;
   created_at: string;
 }
 

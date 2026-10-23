@@ -98,10 +98,10 @@ export const DeliveryDashboard: React.FC = () => {
     o.order_status === 'pickup_assigned'
   );
 
-  // 2. Deliveries: Strictly assigned to this associate for delivery in ready_for_delivery or out_for_delivery
+  // 2. Deliveries: Strictly assigned to this associate for delivery in ready_for_delivery, delivery_assigned, or out_for_delivery
   const deliveries = filteredOrders.filter((o) =>
     (currentUser?.role === 'owner' || o.assigned_delivery_id === currentUser?.id) &&
-    (o.order_status === 'ready_for_delivery' || o.order_status === 'out_for_delivery')
+    (o.order_status === 'ready_for_delivery' || o.order_status === 'delivery_assigned' || o.order_status === 'out_for_delivery')
   );
 
   // 3. Completed Deliveries: STRICTLY delivered orders handed over by this delivery courier
@@ -113,7 +113,7 @@ export const DeliveryDashboard: React.FC = () => {
   // 4. Pickup History: Orders collected by this pickup associate (doorstep weight recorded)
   const pickupHistory = filteredOrders.filter((o) =>
     (currentUser?.role === 'owner' || o.assigned_pickup_id === currentUser?.id) &&
-    ['collected', 'washing', 'ready_for_delivery', 'out_for_delivery', 'delivered'].includes(o.order_status)
+    ['collected', 'washing', 'ready_for_delivery', 'delivery_assigned', 'out_for_delivery', 'delivered'].includes(o.order_status)
   );
 
   const handleMarkCollected = async (e: React.FormEvent) => {
@@ -552,8 +552,8 @@ export const DeliveryDashboard: React.FC = () => {
                           </>
                         )}
 
-                        {/* 2. READY FOR DELIVERY -> At Store, Waiting Dispatch */}
-                        {order.order_status === 'ready_for_delivery' && (
+                        {/* 2. READY FOR DELIVERY / DELIVERY ASSIGNED -> At Store, Waiting Dispatch */}
+                        {(order.order_status === 'ready_for_delivery' || order.order_status === 'delivery_assigned') && (
                           <div className="space-y-2">
                             <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-900 space-y-1">
                               <div className="flex items-center gap-1.5 font-bold">
