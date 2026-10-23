@@ -272,8 +272,8 @@ export class LaundryService {
   static async getSlots(): Promise<PickupSlot[]> {
     if (isSupabaseConfigured) {
       try {
-        const { data } = await supabase.from('pickup_slots').select('*').eq('is_active', true);
-        if (data && data.length > 0) return data;
+        const { data, error } = await supabase.from('pickup_slots').select('*').eq('is_active', true);
+        if (!error && data && data.length > 0) return data;
       } catch (e) {
         console.warn('Falling back to local slots:', e);
       }
@@ -281,7 +281,10 @@ export class LaundryService {
 
     const saved = localStorage.getItem(STORAGE_KEYS.SLOTS);
     if (saved) {
-      try { return JSON.parse(saved); } catch {}
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch {}
     }
     localStorage.setItem(STORAGE_KEYS.SLOTS, JSON.stringify(DEFAULT_SLOTS));
     return DEFAULT_SLOTS;
@@ -1221,29 +1224,42 @@ export class LaundryService {
     return all.filter(o => o.customer_phone.replace(/[^0-9]/g, '').slice(-10) === cleanPhone);
   }
 
-  static async getOrdersForDelivery(staffId: string): Promise<{ pickups: Order[]; deliveries: Order[]; completed: Order[] }> {
+  static async getOrdersForDelivery(staffId: string): Promise<{
+    pickups: Order[];
+    deliveries: Order[];
+    completedDeliveries: Order[];
+    pickupHistory: Order[];
+    completed: Order[];
+  }> {
     const all = await this.getOrders();
 
-    // Pickups: Strictly assigned for pickup to this staff member and awaiting collection
+    // 1. Pickups: Strictly assigned for pickup to this staff member and awaiting collection
     const pickups = all.filter(o => {
-      const isAssigned = o.assigned_pickup_id === staffId;
-      return isAssigned && o.order_status === 'pickup_assigned';
+      return o.assigned_pickup_id === staffId && o.order_status === 'pickup_assigned';
     });
 
-    // Deliveries: Strictly assigned for delivery to this staff member at delivery dispatch stage
+    // 2. Deliveries: Strictly assigned for delivery to this staff member at ready or out_for_delivery stage
     const deliveries = all.filter(o => {
-      const isAssigned = o.assigned_delivery_id === staffId;
-      return isAssigned && (o.order_status === 'ready_for_delivery' || o.order_status === 'out_for_delivery');
+      return o.assigned_delivery_id === staffId && (o.order_status === 'ready_for_delivery' || o.order_status === 'out_for_delivery');
     });
 
-    // Completed: Pickups collected or final orders delivered by this staff member
-    const completed = all.filter(o => {
-      const wasPickup = o.assigned_pickup_id === staffId && ['collected', 'washing', 'ready_for_delivery', 'out_for_delivery', 'delivered'].includes(o.order_status);
-      const wasDelivery = o.assigned_delivery_id === staffId && o.order_status === 'delivered';
-      return wasPickup || wasDelivery;
+    // 3. Completed Deliveries: STRICTLY delivered orders completed by this delivery associate
+    const completedDeliveries = all.filter(o => {
+      return o.assigned_delivery_id === staffId && o.order_status === 'delivered';
     });
 
-    return { pickups, deliveries, completed };
+    // 4. Pickup History: Orders collected by this pickup associate (doorstep scale measurements)
+    const pickupHistory = all.filter(o => {
+      return o.assigned_pickup_id === staffId && ['collected', 'washing', 'ready_for_delivery', 'out_for_delivery', 'delivered'].includes(o.order_status);
+    });
+
+    return {
+      pickups,
+      deliveries,
+      completedDeliveries,
+      pickupHistory,
+      completed: completedDeliveries // backwards-compatibility: strictly delivered orders only
+    };
   }
 
   static async getOrdersForManager(): Promise<{

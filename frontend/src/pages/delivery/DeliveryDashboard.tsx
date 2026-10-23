@@ -7,16 +7,20 @@ import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
 import { PaymentModal } from '../../components/PaymentModal';
 import {
   Phone, MapPin, CheckCircle, Package, Truck,
-  AlertCircle, IndianRupee, RefreshCw, X, Search, Calendar, LogOut, Scale
+  AlertCircle, IndianRupee, RefreshCw, X, Search, Calendar, LogOut, Scale, Clock, CheckCircle2
 } from 'lucide-react';
+
+type DeliveryTab = 'pickups' | 'deliveries' | 'completed_deliveries' | 'pickup_history';
 
 export const DeliveryDashboard: React.FC = () => {
   const { currentUser, logout } = useAuth();
-  const [activeTab, setActiveTab] = useState<'pickups' | 'deliveries' | 'history'>('pickups');
+  const [activeTab, setActiveTab] = useState<DeliveryTab>('pickups');
   const [orders, setOrders] = useState<Order[]>([]);
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [deliveryActionError, setDeliveryActionError] = useState<string | null>(null);
+  const [deliveryActionSuccess, setDeliveryActionSuccess] = useState<string | null>(null);
 
   // Doorstep Intake & Scale Weighing Modal state
   const [collectedOrder, setCollectedOrder] = useState<Order | null>(null);
@@ -88,26 +92,29 @@ export const DeliveryDashboard: React.FC = () => {
     );
   });
 
-  // Pickups: Strictly assigned to this associate for pickup and in pickup_assigned state
+  // 1. Pickups: Strictly assigned to this associate for pickup and in pickup_assigned state
   const pickups = filteredOrders.filter((o) =>
     (currentUser?.role === 'owner' || o.assigned_pickup_id === currentUser?.id) &&
     o.order_status === 'pickup_assigned'
   );
 
-  // Deliveries: Strictly assigned to this associate for delivery at ready or out_for_delivery stage
+  // 2. Deliveries: Strictly assigned to this associate for delivery in ready_for_delivery or out_for_delivery
   const deliveries = filteredOrders.filter((o) =>
     (currentUser?.role === 'owner' || o.assigned_delivery_id === currentUser?.id) &&
     (o.order_status === 'ready_for_delivery' || o.order_status === 'out_for_delivery')
   );
 
-  // Completed Tasks: Doorstep collections completed or deliveries handed over
-  const historyOrders = filteredOrders.filter((o) => {
-    const isMyPickup = (currentUser?.role === 'owner' || o.assigned_pickup_id === currentUser?.id) &&
-      ['collected', 'washing', 'ready_for_delivery', 'out_for_delivery', 'delivered'].includes(o.order_status);
-    const isMyDelivery = (currentUser?.role === 'owner' || o.assigned_delivery_id === currentUser?.id) &&
-      o.order_status === 'delivered';
-    return isMyPickup || isMyDelivery;
-  });
+  // 3. Completed Deliveries: STRICTLY delivered orders handed over by this delivery courier
+  const completedDeliveries = filteredOrders.filter((o) =>
+    (currentUser?.role === 'owner' || o.assigned_delivery_id === currentUser?.id) &&
+    o.order_status === 'delivered'
+  );
+
+  // 4. Pickup History: Orders collected by this pickup associate (doorstep weight recorded)
+  const pickupHistory = filteredOrders.filter((o) =>
+    (currentUser?.role === 'owner' || o.assigned_pickup_id === currentUser?.id) &&
+    ['collected', 'washing', 'ready_for_delivery', 'out_for_delivery', 'delivered'].includes(o.order_status)
+  );
 
   const handleMarkCollected = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -137,9 +144,11 @@ export const DeliveryDashboard: React.FC = () => {
 
       if (updated) {
         setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
+        setDeliveryActionSuccess(`Order #${collectedOrder.order_number} collected & weighed (${parsedWeight.toFixed(2)} kg)! Stored in database.`);
         setCollectedOrder(null);
         setMeasuredWeightInput('');
         setCollectedNote('');
+        await loadData();
       }
     } catch (err: any) {
       console.error('Error recording pickup collection & weight:', err);
@@ -149,24 +158,64 @@ export const DeliveryDashboard: React.FC = () => {
     }
   };
 
+  const handleStartDelivery = async (order: Order) => {
+    setDeliveryActionError(null);
+    setDeliveryActionSuccess(null);
+
+    try {
+      setIsSubmitting(true);
+      const updated = await LaundryService.updateOrderStatus(
+        order.id,
+        'out_for_delivery',
+        `Dispatched by delivery associate ${currentUser?.full_name || 'Courier'}`,
+        currentUser?.full_name || 'Delivery Associate'
+      );
+      if (updated) {
+        setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
+        setDeliveryActionSuccess(`Order #${order.order_number} is now Out for Delivery! You can now complete the customer handover.`);
+        await loadData();
+      }
+    } catch (err: any) {
+      console.error('Error starting delivery:', err);
+      setDeliveryActionError(err?.message || 'Failed to dispatch order for delivery.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleMarkDelivered = async (order: Order) => {
+    setDeliveryActionError(null);
+    setDeliveryActionSuccess(null);
+
+    if (order.order_status !== 'out_for_delivery') {
+      setDeliveryActionError(`Order #${order.order_number} must be in 'out_for_delivery' status before completing delivery.`);
+      return;
+    }
+
     if (order.payment_status !== 'paid') {
-      const confirmMsg = `Order #${order.order_number} has an unpaid balance of ₹${(((order.total_amount_paise || 0) - order.paid_amount_paise) / 100).toFixed(2)}. Are you sure you want to mark it as Delivered?`;
+      const remainingDue = ((order.total_amount_paise || 0) - order.paid_amount_paise) / 100;
+      const confirmMsg = `Order #${order.order_number} has an unpaid balance of ₹${remainingDue.toFixed(2)}. Are you sure you want to mark it as Delivered?`;
       if (!window.confirm(confirmMsg)) {
         return;
       }
     }
 
     try {
+      setIsSubmitting(true);
       const updated = await LaundryService.markOrderDelivered(
         order.id,
         currentUser?.full_name || 'Delivery Staff'
       );
       if (updated) {
         setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
+        setDeliveryActionSuccess(`Order #${order.order_number} delivered successfully! Customer notified on WhatsApp.`);
+        await loadData();
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error marking delivered:', err);
+      setDeliveryActionError(err?.message || 'Database rejected delivery completion. Please check network/session.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -211,10 +260,10 @@ export const DeliveryDashboard: React.FC = () => {
       {/* Tabs & Search */}
       <div className="bg-white border-b border-slate-200 sticky top-[68px] z-20">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="grid grid-cols-3 gap-2 w-full sm:w-auto">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 w-full sm:w-auto">
             <button
-              onClick={() => setActiveTab('pickups')}
-              className={`py-2 px-3 sm:px-4 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+              onClick={() => { setActiveTab('pickups'); setDeliveryActionError(null); setDeliveryActionSuccess(null); }}
+              className={`py-2 px-3 sm:px-4 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
                 activeTab === 'pickups'
                   ? 'bg-emerald-600 text-white shadow-sm'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -226,8 +275,8 @@ export const DeliveryDashboard: React.FC = () => {
             </button>
 
             <button
-              onClick={() => setActiveTab('deliveries')}
-              className={`py-2 px-3 sm:px-4 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+              onClick={() => { setActiveTab('deliveries'); setDeliveryActionError(null); setDeliveryActionSuccess(null); }}
+              className={`py-2 px-3 sm:px-4 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
                 activeTab === 'deliveries'
                   ? 'bg-emerald-600 text-white shadow-sm'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -239,16 +288,29 @@ export const DeliveryDashboard: React.FC = () => {
             </button>
 
             <button
-              onClick={() => setActiveTab('history')}
-              className={`py-2 px-3 sm:px-4 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
-                activeTab === 'history'
+              onClick={() => { setActiveTab('completed_deliveries'); setDeliveryActionError(null); setDeliveryActionSuccess(null); }}
+              className={`py-2 px-3 sm:px-4 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                activeTab === 'completed_deliveries'
                   ? 'bg-emerald-600 text-white shadow-sm'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
               <CheckCircle className="w-4 h-4" />
-              <span>Completed</span>
-              <span className="text-[10px] opacity-80">({historyOrders.length})</span>
+              <span>Delivered</span>
+              <span className="text-[10px] opacity-80">({completedDeliveries.length})</span>
+            </button>
+
+            <button
+              onClick={() => { setActiveTab('pickup_history'); setDeliveryActionError(null); setDeliveryActionSuccess(null); }}
+              className={`py-2 px-3 sm:px-4 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                activeTab === 'pickup_history'
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              <Clock className="w-4 h-4" />
+              <span>Pickup History</span>
+              <span className="text-[10px] opacity-80">({pickupHistory.length})</span>
             </button>
           </div>
 
@@ -259,7 +321,7 @@ export const DeliveryDashboard: React.FC = () => {
               placeholder="Search address, order #, name..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-3 py-1.5 text-xs rounded-xl border border-slate-300 focus:ring-2 focus:ring-emerald-600"
+              className="w-full pl-9 pr-3 py-1.5 text-xs rounded-xl border border-slate-300 focus:ring-2 focus:ring-emerald-600 font-medium"
             />
           </div>
         </div>
@@ -267,6 +329,31 @@ export const DeliveryDashboard: React.FC = () => {
 
       {/* Main Content Area */}
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full flex-1 space-y-4">
+        {/* Global Action Alerts */}
+        {deliveryActionSuccess && (
+          <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl text-xs flex justify-between items-center shadow-sm">
+            <span className="font-semibold">✓ {deliveryActionSuccess}</span>
+            <button
+              onClick={() => setDeliveryActionSuccess(null)}
+              className="text-emerald-700 font-bold p-1 hover:bg-emerald-100 rounded-lg"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {deliveryActionError && (
+          <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded-2xl text-xs flex justify-between items-center shadow-sm">
+            <span className="font-semibold">⚠ {deliveryActionError}</span>
+            <button
+              onClick={() => setDeliveryActionError(null)}
+              className="text-red-700 font-bold p-1 hover:bg-red-100 rounded-lg"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {/* ================= TAB 1: TODAY'S PICKUPS ================= */}
         {activeTab === 'pickups' && (
           <div className="space-y-4">
@@ -274,12 +361,11 @@ export const DeliveryDashboard: React.FC = () => {
               <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 text-slate-500 text-xs shadow-sm space-y-2">
                 <CheckCircle className="w-10 h-10 text-emerald-500 mx-auto" />
                 <h3 className="font-bold text-slate-800 text-base">All pickups completed!</h3>
-                <p>No pending clothes pickup tasks currently scheduled.</p>
+                <p>No pending clothes pickup tasks currently scheduled for collection.</p>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {pickups.map((order) => {
-                  const mapQuery = encodeURIComponent(`${order.pickup_address}, ${order.pickup_pincode}`);
                   return (
                     <div
                       key={order.id}
@@ -301,13 +387,14 @@ export const DeliveryDashboard: React.FC = () => {
                           {order.pickup_landmark && (
                             <p className="text-slate-500 text-[11px]">Landmark: {order.pickup_landmark}</p>
                           )}
-                          <div className="flex justify-between text-slate-500 text-[10px] mt-1 pt-1 border-t border-slate-200">
-                            <span>Slot: {order.pickup_slot}</span>
-                            <span>Date: {order.pickup_date}</span>
+                          <div className="pt-1 flex items-center gap-1.5 text-slate-500 text-[11px] font-mono">
+                            <span>PIN: {order.pickup_pincode}</span>
+                            <span>•</span>
+                            <span>{order.pickup_slot}</span>
                           </div>
                         </div>
 
-                        {/* Call & Maps Actions */}
+                        {/* Call & Maps */}
                         <div className="grid grid-cols-2 gap-2">
                           <a
                             href={`tel:${order.customer_phone}`}
@@ -322,7 +409,7 @@ export const DeliveryDashboard: React.FC = () => {
                             target="_blank"
                             rel="noreferrer"
                             className="py-2.5 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl font-bold flex items-center justify-center gap-1.5 transition text-center"
-                            title="Open driving directions in Google Maps"
+                            title="Open Google Maps Navigation"
                           >
                             <MapPin className="w-3.5 h-3.5 text-blue-600 shrink-0" />
                             <span>Directions</span>
@@ -330,13 +417,18 @@ export const DeliveryDashboard: React.FC = () => {
                         </div>
                       </div>
 
-                      {/* Tap button: Mark Collected */}
+                      {/* Action: Open Doorstep Weigh & Collect Modal */}
                       <button
-                        onClick={() => setCollectedOrder(order)}
-                        className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5"
+                        onClick={() => {
+                          setCollectedOrder(order);
+                          setMeasuredWeightInput('');
+                          setCollectedNote('');
+                          setWeightError(null);
+                        }}
+                        className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer"
                       >
-                        <CheckCircle className="w-4 h-4" />
-                        <span>Mark as Collected</span>
+                        <Scale className="w-4 h-4 text-emerald-200" />
+                        <span>Weigh & Confirm Pickup (Portable Scale)</span>
                       </button>
                     </div>
                   );
@@ -353,7 +445,7 @@ export const DeliveryDashboard: React.FC = () => {
               <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 text-slate-500 text-xs shadow-sm space-y-2">
                 <CheckCircle className="w-10 h-10 text-emerald-500 mx-auto" />
                 <h3 className="font-bold text-slate-800 text-base">No pending deliveries!</h3>
-                <p>Clean clothes ready for dispatch will appear here.</p>
+                <p>Clean clothes assigned to you for delivery will appear here.</p>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -362,7 +454,6 @@ export const DeliveryDashboard: React.FC = () => {
                   const paidPaise = order.paid_amount_paise || 0;
                   const balancePaise = Math.max(0, totalPaise - paidPaise);
                   const isPaid = order.payment_status === 'paid';
-                  const mapQuery = encodeURIComponent(`${order.pickup_address}, ${order.pickup_pincode}`);
 
                   return (
                     <div
@@ -428,26 +519,62 @@ export const DeliveryDashboard: React.FC = () => {
                         </div>
                       </div>
 
+                      {/* Lifecycle Controlled Actions */}
                       <div className="space-y-2 pt-2 border-t border-slate-100">
-                        {/* Doorstep payment collection */}
-                        {settings?.allow_delivery_payment_recording && !isPaid && (
-                          <button
-                            onClick={() => setPaymentOrder(order)}
-                            className="w-full py-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs rounded-xl shadow-sm transition flex items-center justify-center gap-1.5"
-                          >
-                            <IndianRupee className="w-4 h-4" />
-                            <span>Collect Doorstep Payment (Cash / UPI)</span>
-                          </button>
+                        {/* 1. OUT FOR DELIVERY -> Active Handover */}
+                        {order.order_status === 'out_for_delivery' && (
+                          <>
+                            <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-xl text-[11px] text-blue-800 flex items-center gap-1.5 font-semibold">
+                              <Truck className="w-4 h-4 text-blue-600 shrink-0" />
+                              <span>Dispatched: Package in transit to customer</span>
+                            </div>
+
+                            {/* Doorstep payment collection if balance remains */}
+                            {settings?.allow_delivery_payment_recording && !isPaid && (
+                              <button
+                                onClick={() => setPaymentOrder(order)}
+                                className="w-full py-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs rounded-xl shadow-sm transition flex items-center justify-center gap-1.5 cursor-pointer"
+                              >
+                                <IndianRupee className="w-4 h-4" />
+                                <span>Collect Doorstep Payment (Cash / UPI)</span>
+                              </button>
+                            )}
+
+                            {/* Mark Delivered button */}
+                            <button
+                              onClick={() => handleMarkDelivered(order)}
+                              disabled={isSubmitting}
+                              className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                            >
+                              <CheckCircle className="w-4 h-4" />
+                              <span>{isSubmitting ? 'Updating Database...' : 'Complete Delivery & Handover'}</span>
+                            </button>
+                          </>
                         )}
 
-                        {/* Mark Delivered */}
-                        <button
-                          onClick={() => handleMarkDelivered(order)}
-                          className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5"
-                        >
-                          <CheckCircle className="w-4 h-4" />
-                          <span>Mark as Delivered</span>
-                        </button>
+                        {/* 2. READY FOR DELIVERY -> At Store, Waiting Dispatch */}
+                        {order.order_status === 'ready_for_delivery' && (
+                          <div className="space-y-2">
+                            <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-900 space-y-1">
+                              <div className="flex items-center gap-1.5 font-bold">
+                                <Clock className="w-4 h-4 text-amber-600 shrink-0" />
+                                <span>Ready at Store • Awaiting Dispatch</span>
+                              </div>
+                              <p className="text-[10px] text-amber-700 leading-tight">
+                                Clean laundry is packed at the store. When departing with the package, click below to start delivery.
+                              </p>
+                            </div>
+
+                            <button
+                              onClick={() => handleStartDelivery(order)}
+                              disabled={isSubmitting}
+                              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-sm transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                            >
+                              <Truck className="w-4 h-4" />
+                              <span>Depart Store (Start Delivery)</span>
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -457,20 +584,81 @@ export const DeliveryDashboard: React.FC = () => {
           </div>
         )}
 
-        {/* ================= TAB 3: COMPLETED TASKS ================= */}
-        {activeTab === 'history' && (
+        {/* ================= TAB 3: DELIVERED HISTORY ================= */}
+        {activeTab === 'completed_deliveries' && (
           <div className="space-y-4">
-            {historyOrders.length === 0 ? (
+            {completedDeliveries.length === 0 ? (
               <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 text-slate-500 text-xs shadow-sm space-y-2">
-                <CheckCircle className="w-10 h-10 text-slate-400 mx-auto" />
-                <h3 className="font-bold text-slate-800 text-base">No completed tasks yet</h3>
-                <p>Pickups collected and deliveries completed by you will appear here.</p>
+                <CheckCircle className="w-10 h-10 text-emerald-400 mx-auto" />
+                <h3 className="font-bold text-slate-800 text-base">No delivered orders yet</h3>
+                <p>Deliveries successfully completed and handed over by you will appear here.</p>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {historyOrders.map((order) => {
-                  const wasMyPickup = order.assigned_pickup_id === currentUser?.id;
-                  const wasMyDelivery = order.assigned_delivery_id === currentUser?.id;
+                {completedDeliveries.map((order) => {
+                  return (
+                    <div
+                      key={order.id}
+                      className="bg-white rounded-3xl border border-slate-200 p-5 space-y-4 shadow-sm text-xs flex flex-col justify-between"
+                    >
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <span className="font-black text-slate-900 text-base block">#{order.order_number}</span>
+                            <span className="font-bold text-slate-800 text-sm">{order.customer_name}</span>
+                            <span className="text-[11px] text-slate-500 block truncate">📍 {order.pickup_address}</span>
+                          </div>
+                          <StatusBadge status="delivered" size="sm" />
+                        </div>
+
+                        <div className="p-3 bg-emerald-50 border border-emerald-100 rounded-2xl space-y-1 text-[11px] text-emerald-900">
+                          <div className="flex justify-between">
+                            <span>Delivered At:</span>
+                            <b>{order.delivered_at ? new Date(order.delivered_at).toLocaleString() : 'Completed'}</b>
+                          </div>
+                          {order.measured_weight && (
+                            <div className="flex justify-between">
+                              <span>Weight:</span>
+                              <b>{order.measured_weight.toFixed(2)} kg</b>
+                            </div>
+                          )}
+                          <div className="flex justify-between">
+                            <span>Amount Billed:</span>
+                            <b>₹{((order.total_amount_paise || 0) / 100).toFixed(2)}</b>
+                          </div>
+                          <div className="flex justify-between pt-1 border-t border-emerald-200">
+                            <span>Payment:</span>
+                            <PaymentBadge status={order.payment_status} />
+                          </div>
+                        </div>
+
+                        {order.delivery_notes && (
+                          <div className="p-2 bg-slate-50 rounded-xl text-[10px] text-slate-600 italic">
+                            "{order.delivery_notes}"
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ================= TAB 4: PICKUP HISTORY ================= */}
+        {activeTab === 'pickup_history' && (
+          <div className="space-y-4">
+            {pickupHistory.length === 0 ? (
+              <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 text-slate-500 text-xs shadow-sm space-y-2">
+                <Package className="w-10 h-10 text-blue-400 mx-auto" />
+                <h3 className="font-bold text-slate-800 text-base">No pickup history</h3>
+                <p>Clothes collected and weighed on the portable scale by you will appear here.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {pickupHistory.map((order) => {
+                  const weightKg = order.pickup_measured_weight || order.measured_weight;
                   return (
                     <div
                       key={order.id}
@@ -486,39 +674,25 @@ export const DeliveryDashboard: React.FC = () => {
                           <StatusBadge status={order.order_status} size="sm" />
                         </div>
 
-                        <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl space-y-1 text-[11px] text-slate-700">
-                          {order.measured_weight && (
-                            <div className="flex justify-between">
-                              <span>Measured Weight:</span>
-                              <b className="text-slate-900">{order.measured_weight.toFixed(2)} kg</b>
-                            </div>
-                          )}
+                        <div className="p-3 bg-blue-50 border border-blue-100 rounded-2xl space-y-1 text-[11px] text-blue-900">
                           <div className="flex justify-between">
-                            <span>Your Role:</span>
-                            <b className="text-brand-700">
-                              {wasMyPickup && wasMyDelivery
-                                ? 'Pickup & Delivery'
-                                : wasMyPickup
-                                ? 'Pickup Executive'
-                                : 'Delivery Courier'}
-                            </b>
+                            <span>Doorstep Scale Weight:</span>
+                            <b className="text-slate-950 text-xs">{weightKg ? `${weightKg.toFixed(2)} kg` : 'Recorded'}</b>
                           </div>
                           {order.collected_at && (
-                            <div className="flex justify-between text-[10px] text-slate-500">
-                              <span>Collected:</span>
+                            <div className="flex justify-between text-[10px] text-blue-700">
+                              <span>Collected At:</span>
                               <span>{new Date(order.collected_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                             </div>
                           )}
-                          {order.delivered_at && (
-                            <div className="flex justify-between text-[10px] text-slate-500">
-                              <span>Delivered:</span>
-                              <span>{new Date(order.delivered_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                            </div>
-                          )}
+                          <div className="flex justify-between">
+                            <span>Current Processing Stage:</span>
+                            <span className="font-bold capitalize">{order.order_status.replace(/_/g, ' ')}</span>
+                          </div>
                         </div>
 
                         <div className="flex justify-between items-center text-slate-600">
-                          <span>Total: <b>₹{((order.total_amount_paise || 0) / 100).toFixed(2)}</b></span>
+                          <span>Total Bill: <b>₹{((order.total_amount_paise || 0) / 100).toFixed(2)}</b></span>
                           <PaymentBadge status={order.payment_status} />
                         </div>
                       </div>
@@ -549,49 +723,38 @@ export const DeliveryDashboard: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <Scale className="w-5 h-5 text-emerald-200" />
                   <div>
-                    <h3 className="font-bold text-sm">Doorstep Laundry Weighing</h3>
-                    <p className="text-[10px] text-emerald-100">Portable Scale Intake • Order #{collectedOrder.order_number}</p>
+                    <h3 className="font-black text-sm">Doorstep Laundry Weighing</h3>
+                    <p className="text-[11px] text-emerald-100">Order #{collectedOrder.order_number}</p>
                   </div>
                 </div>
-                <button onClick={() => setCollectedOrder(null)} className="p-1 text-white hover:bg-white/20 rounded-full cursor-pointer">
+                <button
+                  onClick={() => setCollectedOrder(null)}
+                  className="p-1 hover:bg-emerald-800 rounded-xl transition cursor-pointer"
+                >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
               <form onSubmit={handleMarkCollected} className="p-5 space-y-4 text-xs">
-                {/* Order Details Card */}
+                {/* Customer summary */}
                 <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl space-y-1">
-                  <div className="flex justify-between items-start">
-                    <span className="font-black text-slate-900">#{collectedOrder.order_number}</span>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500 font-medium">Customer:</span>
                     <span className="font-bold text-slate-800">{collectedOrder.customer_name}</span>
                   </div>
-                  <p className="text-slate-600 text-[11px] leading-relaxed">
+                  <div className="flex justify-between">
+                    <span className="text-slate-500 font-medium">Phone:</span>
+                    <span className="font-bold text-slate-800">{collectedOrder.customer_phone}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-600 truncate mt-1">
                     📍 {collectedOrder.pickup_address}
-                  </p>
-                  <p className="text-slate-500 text-[10px]">
-                    Slot: {collectedOrder.pickup_slot} ({collectedOrder.pickup_date})
-                  </p>
-                  {collectedOrder.notes && (
-                    <p className="text-amber-800 bg-amber-50 p-2 rounded-xl border border-amber-200 text-[10px] mt-1">
-                      <strong>Customer note:</strong> {collectedOrder.notes}
-                    </p>
-                  )}
+                  </div>
                 </div>
 
-                {weightError && (
-                  <div className="p-2.5 bg-red-50 text-red-700 rounded-xl border border-red-200 text-xs flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
-                    <span>{weightError}</span>
-                  </div>
-                )}
-
-                {/* Scale Weight Input */}
+                {/* Weight Input Field */}
                 <div>
-                  <label className="block font-bold text-slate-800 mb-1.5 flex justify-between items-center">
-                    <span>Enter Scale Weight (kg) *</span>
-                    <span className="text-[10px] text-emerald-700 font-semibold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                      Rate: ₹{ratePerKg.toFixed(0)}/kg (Min {minWeight}kg)
-                    </span>
+                  <label className="block text-xs font-bold text-slate-800 mb-1">
+                    Measured Scale Reading (kg) <span className="text-red-500">*</span>
                   </label>
                   <div className="relative">
                     <input
@@ -599,64 +762,76 @@ export const DeliveryDashboard: React.FC = () => {
                       step="0.05"
                       min="0.1"
                       max="100"
-                      placeholder="e.g. 4.50"
+                      autoFocus
+                      required
+                      placeholder="e.g. 4.25"
                       value={measuredWeightInput}
                       onChange={(e) => {
                         setMeasuredWeightInput(e.target.value);
                         setWeightError(null);
                       }}
-                      required
-                      autoFocus
-                      className="w-full pl-9 pr-12 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-emerald-500 font-mono text-sm font-bold text-slate-900"
+                      className="w-full px-3.5 py-2.5 text-base font-black rounded-xl border border-slate-300 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
                     />
-                    <Scale className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-                    <span className="absolute right-3 top-3 text-xs font-bold text-slate-400">kg</span>
+                    <span className="absolute right-3.5 top-2.5 text-slate-400 font-bold text-sm">kg</span>
                   </div>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Read exact weight from portable digital scale (0.10 kg to 100 kg).
+                  </p>
                 </div>
 
                 {/* Live Bill Preview */}
-                {hasValidWeight && previewTotalPaise !== null && (
-                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-950 space-y-1 animate-fade-in">
-                    <div className="flex justify-between items-center text-[11px]">
-                      <span>Billable Weight:</span>
-                      <b>{billableKg.toFixed(2)} kg {parsedWeight < minWeight && <span className="text-[10px] font-normal text-emerald-700">(Min weight applied)</span>}</b>
+                {hasValidWeight && (
+                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-1 animate-fade-in text-emerald-950">
+                    <div className="flex justify-between text-[11px]">
+                      <span>Rate:</span>
+                      <span>₹{ratePerKg.toFixed(0)}/kg (Min {minWeight.toFixed(0)} kg)</span>
                     </div>
-                    <div className="flex justify-between items-center text-xs font-black border-t border-emerald-200 pt-1 mt-1">
-                      <span>Calculated Customer Bill:</span>
-                      <span className="text-emerald-700 text-sm">₹{(previewTotalPaise / 100).toFixed(2)}</span>
+                    <div className="flex justify-between text-[11px]">
+                      <span>Billable Weight:</span>
+                      <span className="font-bold">{billableKg.toFixed(2)} kg {parsedWeight < minWeight && '(Min Applied)'}</span>
+                    </div>
+                    <div className="flex justify-between pt-1 border-t border-emerald-200 text-xs font-black">
+                      <span>Calculated Bill:</span>
+                      <span className="text-emerald-700 text-sm">₹{((previewTotalPaise || 0) / 100).toFixed(2)}</span>
                     </div>
                   </div>
                 )}
 
-                {/* Optional Collection Note */}
+                {/* Optional collection note */}
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    Optional Collection Note / Bag Count
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Pickup Notes (Optional)
                   </label>
                   <input
                     type="text"
-                    placeholder="e.g. 2 bags collected from doorstep"
+                    placeholder="e.g. 2 bags collected from security desk"
                     value={collectedNote}
                     onChange={(e) => setCollectedNote(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-emerald-500 text-xs"
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:ring-2 focus:ring-emerald-500"
                   />
                 </div>
 
-                <div className="flex gap-2 pt-1">
+                {weightError && (
+                  <div className="p-2.5 bg-red-50 border border-red-200 text-red-700 rounded-xl text-xs flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{weightError}</span>
+                  </div>
+                )}
+
+                <div className="flex gap-2 pt-2">
                   <button
                     type="button"
                     onClick={() => setCollectedOrder(null)}
-                    className="flex-1 py-2.5 px-3 border border-slate-200 rounded-xl font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                    className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition cursor-pointer"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
                     disabled={isSubmitting || !hasValidWeight}
-                    className="flex-1 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md transition disabled:opacity-50 flex items-center justify-center gap-1.5 cursor-pointer"
+                    className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md transition disabled:opacity-50 cursor-pointer"
                   >
-                    <CheckCircle className="w-4 h-4" />
-                    <span>{isSubmitting ? 'Recording...' : 'Confirm & Save Weight'}</span>
+                    {isSubmitting ? 'Saving...' : 'Confirm Pickup'}
                   </button>
                 </div>
               </form>
@@ -665,18 +840,20 @@ export const DeliveryDashboard: React.FC = () => {
         );
       })()}
 
-      {/* Payment Modal */}
+      {/* Payment Recording Modal */}
       {paymentOrder && (
         <PaymentModal
           order={paymentOrder}
-          isOpen={!!paymentOrder}
+          isOpen={true}
           onClose={() => setPaymentOrder(null)}
-          onPaymentSuccess={(updated) => {
+          onPaymentSuccess={async (updated) => {
             setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
             setPaymentOrder(null);
+            setDeliveryActionSuccess(`Payment of ₹${((updated.paid_amount_paise || 0) / 100).toFixed(2)} recorded for Order #${updated.order_number}!`);
+            await loadData();
           }}
           recordedBy={currentUser?.id}
-          recordedByName={currentUser?.full_name || 'Delivery Staff'}
+          recordedByName={currentUser?.full_name || 'Delivery Associate'}
           isStaff={true}
         />
       )}

@@ -193,9 +193,12 @@ export const CustomerHome: React.FC = () => {
         currentUser ? LaundryService.getCustomerOrders(currentUser.id, currentUser.phone) : []
       ]);
       setSettings(s);
-      setSlots(sl.filter((x) => x.is_active));
-      if (sl.length > 0) {
-        setSelectedSlotName(sl[0].name);
+      const activeSlots = sl && sl.length > 0 ? sl.filter((x) => x.is_active) : [];
+      setSlots(activeSlots);
+      if (activeSlots.length > 0) {
+        setSelectedSlotName((prev) => prev || activeSlots[0].name);
+      } else {
+        setSelectedSlotName('Morning (08:00 AM - 11:00 AM)');
       }
       setOrders(ords);
 
@@ -604,7 +607,12 @@ export const CustomerHome: React.FC = () => {
                     <Clock className="w-4 h-4 text-brand-600" /> Time Slot
                   </label>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {slots.map((s) => (
+                    {(slots.length > 0 ? slots : [
+                      { id: 'slot-1', name: 'Morning (08:00 AM - 11:00 AM)' },
+                      { id: 'slot-2', name: 'Noon (11:00 AM - 02:00 PM)' },
+                      { id: 'slot-3', name: 'Afternoon (02:00 PM - 05:00 PM)' },
+                      { id: 'slot-4', name: 'Evening (05:00 PM - 08:00 PM)' }
+                    ]).map((s) => (
                       <label
                         key={s.id}
                         className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition text-xs ${

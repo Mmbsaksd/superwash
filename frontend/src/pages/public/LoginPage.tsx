@@ -9,13 +9,13 @@ import {
 } from 'lucide-react';
 
 export const LoginPage: React.FC = () => {
-  const { signInWithGoogle, signInWithPassword, switchDemoRole, currentUser } = useAuth();
+  const { signInWithGoogle, signInWithPassword, switchDemoRole, currentUser, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
   const [authTab, setAuthTab] = useState<'customer' | 'staff'>('customer');
   const [staffEmail, setStaffEmail] = useState<string>('manager@superwash.in');
-  const [staffPassword, setStaffPassword] = useState<string>('SuperWashManager2026!');
+  const [staffPassword, setStaffPassword] = useState<string>('');
   const [isStaffSubmitting, setIsStaffSubmitting] = useState<boolean>(false);
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -36,8 +36,24 @@ export const LoginPage: React.FC = () => {
       setError(decodeURIComponent(errorDesc).replace(/\+/g, ' '));
     }
 
-    // If user is already authenticated, redirect to appropriate role portal
-    if (currentUser) {
+    const roleParam = params.get('role');
+    if (roleParam === 'manager' || roleParam === 'delivery' || roleParam === 'staff') {
+      setAuthTab('staff');
+      if (roleParam === 'delivery') {
+        setStaffEmail('superwash.audit.1792664886550@gmail.com');
+      } else {
+        setStaffEmail('manager@superwash.in');
+      }
+      return;
+    }
+
+    if (params.get('logout') === 'true') {
+      logout();
+      return;
+    }
+
+    // Only auto-redirect if user is logged in with a staff/manager account
+    if (currentUser && currentUser.role !== 'customer') {
       redirectByRole(currentUser.role);
     }
   }, [currentUser, location]);
@@ -203,6 +219,7 @@ export const LoginPage: React.FC = () => {
               <span>Customer</span>
             </button>
             <button
+              id="staff-tab-btn"
               type="button"
               onClick={() => { setAuthTab('staff'); setError(null); }}
               className={`flex-1 py-2 px-3 text-xs font-bold rounded-xl transition flex items-center justify-center gap-2 ${
@@ -296,6 +313,7 @@ export const LoginPage: React.FC = () => {
                     Staff Email Address
                   </label>
                   <input
+                    id="staff-email-input"
                     type="email"
                     value={staffEmail}
                     onChange={(e) => setStaffEmail(e.target.value)}
@@ -310,6 +328,7 @@ export const LoginPage: React.FC = () => {
                     Password
                   </label>
                   <input
+                    id="staff-password-input"
                     type="password"
                     value={staffPassword}
                     onChange={(e) => setStaffPassword(e.target.value)}
@@ -320,6 +339,7 @@ export const LoginPage: React.FC = () => {
                 </div>
 
                 <button
+                  id="staff-login-btn"
                   type="submit"
                   disabled={isStaffSubmitting}
                   className="w-full py-3 px-4 bg-purple-600 hover:bg-purple-700 active:scale-[0.99] text-white font-bold text-xs rounded-xl shadow-sm transition flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
@@ -343,7 +363,7 @@ export const LoginPage: React.FC = () => {
                     type="button"
                     onClick={() => {
                       setStaffEmail('manager@superwash.in');
-                      setStaffPassword('SuperWashManager2026!');
+                      setStaffPassword('');
                     }}
                     className="text-[11px] px-2.5 py-1 rounded-lg bg-purple-50 text-purple-700 hover:bg-purple-100 font-medium transition"
                   >
@@ -353,7 +373,7 @@ export const LoginPage: React.FC = () => {
                     type="button"
                     onClick={() => {
                       setStaffEmail('superwash.audit.1792664886550@gmail.com');
-                      setStaffPassword('SuperWashManager2026!');
+                      setStaffPassword('');
                     }}
                     className="text-[11px] px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 font-medium transition"
                   >

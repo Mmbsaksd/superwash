@@ -353,18 +353,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const switchDemoRole = async (role: UserRole): Promise<void> => {
     if (isLiveAuth) {
-      try {
-        if (role === 'manager' || role === 'owner') {
-          const res = await signInWithPassword('manager@superwash.in', 'SuperWashManager2026!');
-          if (res.success) return;
-        } else if (role === 'delivery') {
-          const res = await signInWithPassword('superwash.audit.1792664886550@gmail.com', 'SuperWashManager2026!');
-          if (res.success) return;
-        } else if (role === 'customer') {
-          await supabase.auth.signOut();
-        }
-      } catch (err) {
-        console.warn('Notice switching authenticated role:', err);
+      if (role === 'customer') {
+        await supabase.auth.signOut();
+        window.location.href = '/customer';
+        return;
+      } else {
+        window.location.href = `/login?role=${role}`;
+        return;
       }
     }
 

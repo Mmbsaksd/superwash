@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { Order, BusinessSettings } from '../../types';
 import { LaundryService } from '../../services/laundryService';
@@ -12,7 +13,8 @@ import {
 } from 'lucide-react';
 
 export const ManagerDashboard: React.FC = () => {
-  const { currentUser, logout, signInWithPassword } = useAuth();
+  const navigate = useNavigate();
+  const { currentUser, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<'collected' | 'washing' | 'ready' | 'out_for_delivery' | 'delivered'>('collected');
   const [orders, setOrders] = useState<Order[]>([]);
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
@@ -318,16 +320,7 @@ export const ManagerDashboard: React.FC = () => {
               </span>
             </div>
             <button
-              onClick={async () => {
-                setIsLoading(true);
-                const res = await signInWithPassword('manager@superwash.in', 'SuperWashManager2026!');
-                if (res.success) {
-                  await loadData();
-                } else {
-                  alert(res.message || 'Failed to authenticate as manager');
-                  setIsLoading(false);
-                }
-              }}
+              onClick={() => navigate('/login?tab=staff')}
               className="px-3.5 py-1.5 bg-purple-700 hover:bg-purple-800 text-white font-bold rounded-xl text-xs transition cursor-pointer shrink-0 self-start sm:self-auto"
             >
               Sign In as Store Manager

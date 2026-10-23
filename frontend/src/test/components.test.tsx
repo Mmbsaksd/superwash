@@ -660,7 +660,97 @@ describe('End-to-End Workflow Transitions & Staff Task Queues', () => {
       LaundryService.markAsDelivered(order.id)
     ).rejects.toThrow(/must be in 'out_for_delivery' status/i);
   });
+
+  it('prevents SW-1003 duplicate queue classification: active ready_for_delivery order never appears in completed deliveries', async () => {
+    // Replicate SW-1003 condition:
+    // Order booked -> assigned to Ramesh for pickup -> collected -> weighed -> marked ready -> assigned to Ramesh for delivery
+    const order = await LaundryService.createBooking({
+      customer_id: 'cust-uuid-4',
+      customer_name: 'SW-1003 Duplicate Queue Tester',
+      customer_phone: '9876543215',
+      pickup_address: '100ft Rd Indiranagar',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-22',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    const staffId = 'ramesh-courier-uuid';
+
+    // Pickup assignment
+    await LaundryService.assignPickupStaff(order.id, staffId, 'Ramesh Kumar', '9876543215');
+    // Doorstep collection & weighing
+    await LaundryService.recordPickupCollectionAndWeight(order.id, 3.5, staffId, 'Ramesh Kumar');
+    // Washing & processing
+    await LaundryService.updateOrderStatus(order.id, 'washing');
+    await LaundryService.updateOrderStatus(order.id, 'ready_for_delivery');
+    // Assign delivery courier (same staff member)
+    await LaundryService.assignDeliveryStaff(order.id, staffId, 'Ramesh Kumar', '9876543215');
+
+    // Query staff task queues
+    const tasks = await LaundryService.getOrdersForDelivery(staffId);
+
+    // 1. Must NOT appear in active pickups
+    expect(tasks.pickups.some(o => o.id === order.id)).toBe(false);
+
+    // 2. MUST appear in active deliveries (ready at store / awaiting dispatch)
+    expect(tasks.deliveries.some(o => o.id === order.id)).toBe(true);
+
+    // 3. Must NEVER appear in completed deliveries while in ready_for_delivery! (Bug A fix)
+    expect(tasks.completedDeliveries.some(o => o.id === order.id)).toBe(false);
+    expect(tasks.completed.some(o => o.id === order.id)).toBe(false);
+
+    // 4. May appear in pickup history (as it was collected earlier)
+    expect(tasks.pickupHistory.some(o => o.id === order.id)).toBe(true);
+
+    // 5. Attempting to mark as delivered prematurely MUST throw error (Bug B fix)
+    await expect(
+      LaundryService.markAsDelivered(order.id)
+    ).rejects.toThrow(/must be in 'out_for_delivery' status/i);
+
+    // 6. Once dispatched to out_for_delivery, delivery completion succeeds
+    await LaundryService.updateOrderStatus(order.id, 'out_for_delivery');
+    const delivered = await LaundryService.markAsDelivered(order.id, 'Handed over at doorstep');
+    expect(delivered.order_status).toBe('delivered');
+
+    // 7. After delivery: leaves active deliveries, enters completed deliveries
+    const finalTasks = await LaundryService.getOrdersForDelivery(staffId);
+    expect(finalTasks.deliveries.some(o => o.id === order.id)).toBe(false);
+    expect(finalTasks.completedDeliveries.some(o => o.id === order.id)).toBe(true);
+    expect(finalTasks.completed.some(o => o.id === order.id)).toBe(true);
+  });
+
+  it('prevents SW-1002 collected order from appearing in completed deliveries', async () => {
+    // Replicate SW-1002 condition:
+    // Order booked -> assigned to Ramesh -> collected & weighed on portable scale -> status is collected
+    const order = await LaundryService.createBooking({
+      customer_id: 'cust-uuid-5',
+      customer_name: 'SW-1002 Collected Queue Tester',
+      customer_phone: '9876543216',
+      pickup_address: 'Koramangala 5th Block',
+      pickup_pincode: '560034',
+      pickup_date: '2026-10-22',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    const staffId = 'ramesh-courier-uuid';
+
+    await LaundryService.assignPickupStaff(order.id, staffId, 'Ramesh Kumar', '9876543215');
+    await LaundryService.recordPickupCollectionAndWeight(order.id, 4.25, staffId, 'Ramesh Kumar');
+
+    const tasks = await LaundryService.getOrdersForDelivery(staffId);
+
+    // Must NOT be in active pickups
+    expect(tasks.pickups.some(o => o.id === order.id)).toBe(false);
+    // Must NOT be in active deliveries (hasn't been washed or marked ready)
+    expect(tasks.deliveries.some(o => o.id === order.id)).toBe(false);
+    // Must NOT be in completed deliveries! (Bug A fix)
+    expect(tasks.completedDeliveries.some(o => o.id === order.id)).toBe(false);
+    expect(tasks.completed.some(o => o.id === order.id)).toBe(false);
+    // MUST appear in pickup history
+    expect(tasks.pickupHistory.some(o => o.id === order.id)).toBe(true);
+  });
 });
+
 
 
 
