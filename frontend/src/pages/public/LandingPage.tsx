@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { BusinessSettings } from '../../types';
-import { LaundryService } from '../../services/laundryService';
+import { LaundryService, DEFAULT_SETTINGS } from '../../services/laundryService';
 import { useAuth } from '../../context/AuthContext';
 import {
   Sparkles, Clock, Truck, ShieldCheck, CheckCircle2,
@@ -46,8 +46,8 @@ export const LandingPage: React.FC = () => {
   const pricePerKg = settings ? (settings.price_per_kg_paise / 100).toFixed(0) : '80';
   const minWeight = settings ? settings.min_weight_kg.toFixed(0) : '3';
   const minBill = settings ? ((settings.price_per_kg_paise * settings.min_weight_kg) / 100).toFixed(0) : '240';
-  const phone = settings?.business_phone || '+91 98765 43210';
-  const address = settings?.business_address || 'Shop #14, Metro Pillar 78, Indiranagar, Bengaluru 560038';
+  const phone = settings?.business_phone || DEFAULT_SETTINGS.business_phone;
+  const address = settings?.business_address || DEFAULT_SETTINGS.business_address;
 
   const faqList = [
     {
@@ -93,7 +93,7 @@ export const LandingPage: React.FC = () => {
 
           <div className="flex items-center gap-3">
             <a
-              href={`tel:${phone.replace(/\s+/g, '')}`}
+              href={`tel:${phone.replace(/[^0-9+]/g, '')}`}
               className="hidden sm:flex items-center gap-1.5 text-xs font-bold text-slate-600 hover:text-brand-600 transition mr-2"
             >
               <Phone className="w-3.5 h-3.5 text-brand-600" />
@@ -433,7 +433,7 @@ export const LandingPage: React.FC = () => {
 
             <div className="flex flex-col gap-3">
               <a
-                href={`tel:${phone.replace(/\s+/g, '')}`}
+                href={`tel:${phone.replace(/[^0-9+]/g, '')}`}
                 className="w-full py-3 px-4 bg-brand-50 hover:bg-brand-100 text-brand-800 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition"
               >
                 <Phone className="w-4 h-4 text-brand-600" />

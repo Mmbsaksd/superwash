@@ -26,7 +26,7 @@ export const isUUID = (str?: string | null): boolean => {
 };
 
 // Default Business Settings
-const DEFAULT_SETTINGS: BusinessSettings = {
+export const DEFAULT_SETTINGS: BusinessSettings = {
   business_name: 'SuperWash Exprez',
   business_phone: '+91 98765 43210',
   business_address: 'Shop #14, Metro Pillar 78, Indiranagar, Bengaluru 560038',
@@ -289,13 +289,10 @@ export class LaundryService {
 
     if (isLiveMode && import.meta.env.MODE !== 'test') {
       try {
-        const { data } = await supabase.from('business_settings').select('*').limit(1).single();
-        if (data) {
-          if (!localSettings) {
-            localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(data));
-            return data;
-          }
-          return { ...data, ...localSettings };
+        const { data, error } = await supabase.from('business_settings').select('*').limit(1).single();
+        if (!error && data) {
+          localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(data));
+          return data;
         }
       } catch (e) {
         console.warn('Using local settings cache:', e);
@@ -312,10 +309,9 @@ export class LaundryService {
     const updated = { ...current, ...newSettings, updated_at: new Date().toISOString() };
 
     if (isLiveMode && import.meta.env.MODE !== 'test') {
-      try {
-        await supabase.from('business_settings').update(updated).eq('id', current.id);
-      } catch (e) {
-        console.warn('Could not update Supabase settings:', e);
+      const { error } = await supabase.from('business_settings').update(updated).eq('id', current.id);
+      if (error) {
+        throw new Error(error.message || 'Failed to update business settings in database');
       }
     }
 
@@ -443,6 +439,62 @@ export class LaundryService {
     return all.find(o => o.id === id) || null;
   }
 
+  private static inFlightBookings = new Map<string, Promise<Order>>();
+  private static localSequenceCounter: number = 0;
+
+  static resetOrderSequence(): void {
+    this.localSequenceCounter = 0;
+    this.inFlightBookings.clear();
+  }
+
+  static generateSafeOrderNumber(existingOrders: Order[]): string {
+    let maxSeq = 1000;
+    const existingSet = new Set<string>();
+
+    for (const o of existingOrders) {
+      if (o.order_number) {
+        existingSet.add(o.order_number);
+        const match = o.order_number.match(/^SW-(\d+)$/i);
+        if (match) {
+          const val = parseInt(match[1], 10);
+          if (!isNaN(val) && val > maxSeq) {
+            maxSeq = val;
+          }
+        }
+      }
+    }
+
+    try {
+      const stored = JSON.parse(localStorage.getItem(STORAGE_KEYS.ORDERS) || '[]');
+      if (Array.isArray(stored)) {
+        for (const o of stored) {
+          if (o.order_number) {
+            existingSet.add(o.order_number);
+            const match = o.order_number.match(/^SW-(\d+)$/i);
+            if (match) {
+              const val = parseInt(match[1], 10);
+              if (!isNaN(val) && val > maxSeq) {
+                maxSeq = val;
+              }
+            }
+          }
+        }
+      }
+    } catch {}
+
+    this.localSequenceCounter = Math.max(this.localSequenceCounter, maxSeq);
+    let nextSeq = this.localSequenceCounter + 1;
+    let candidate = `SW-${nextSeq}`;
+
+    while (existingSet.has(candidate)) {
+      nextSeq++;
+      candidate = `SW-${nextSeq}`;
+    }
+
+    this.localSequenceCounter = nextSeq;
+    return candidate;
+  }
+
   static async createBooking(data: {
     customer_id?: string;
     customer_name: string;
@@ -457,6 +509,41 @@ export class LaundryService {
     service_id?: string;
     notes?: string;
   }): Promise<Order> {
+    const dedupePhone = (data.customer_phone || '').replace(/[^0-9]/g, '');
+    const inFlightKey = `${dedupePhone}_${data.pickup_date}_${data.pickup_slot}`;
+
+    // Concurrency protection: Return active in-flight request to prevent race duplicate creation
+    if (this.inFlightBookings.has(inFlightKey)) {
+      return this.inFlightBookings.get(inFlightKey)!;
+    }
+
+    const bookingPromise = this.internalCreateBooking(data, dedupePhone);
+    this.inFlightBookings.set(inFlightKey, bookingPromise);
+
+    try {
+      return await bookingPromise;
+    } finally {
+      this.inFlightBookings.delete(inFlightKey);
+    }
+  }
+
+  private static async internalCreateBooking(
+    data: {
+      customer_id?: string;
+      customer_name: string;
+      customer_phone: string;
+      pickup_address: string;
+      pickup_landmark?: string;
+      pickup_pincode: string;
+      pickup_date: string;
+      pickup_slot: string;
+      pickup_latitude?: number | null;
+      pickup_longitude?: number | null;
+      service_id?: string;
+      notes?: string;
+    },
+    dedupePhone: string
+  ): Promise<Order> {
     // 1. Coverage validation: Authoritatively check PIN code serviceability
     const isServiceable = await this.isPincodeServiceable(data.pickup_pincode);
     if (!isServiceable) {
@@ -500,7 +587,7 @@ export class LaundryService {
     // 4. Anti-duplicate protection: check if identical booking created in last 15 seconds
     const now = Date.now();
     const duplicate = existingOrders.find(o => 
-      o.customer_phone.replace(/[^0-9]/g, '') === data.customer_phone.replace(/[^0-9]/g, '') &&
+      o.customer_phone.replace(/[^0-9]/g, '') === dedupePhone &&
       o.pickup_date === data.pickup_date &&
       o.pickup_slot === data.pickup_slot &&
       (now - new Date(o.created_at).getTime()) < 15000
@@ -509,7 +596,8 @@ export class LaundryService {
       return duplicate;
     }
 
-    const orderNumber = `SW-${1000 + existingOrders.length + 1}`;
+    // Authoritative, collision-safe candidate generation
+    const orderNumber = this.generateSafeOrderNumber(existingOrders);
 
     const newOrder: Order = {
       id: generateUUID(),
@@ -557,13 +645,101 @@ export class LaundryService {
         } catch {}
       }
 
-      const { data: inserted, error } = await supabase.from('orders').insert(newOrder).select().single();
-      if (error) {
-        throw new Error(`Failed to save booking to database: ${error.message}`);
+      // Live mode recent duplicate check in Supabase
+      try {
+        const { data: recentOrders } = await supabase
+          .from('orders')
+          .select('*')
+          .eq('customer_phone', dedupePhone)
+          .eq('pickup_date', data.pickup_date)
+          .eq('pickup_slot', data.pickup_slot)
+          .order('created_at', { ascending: false })
+          .limit(1);
+
+        if (recentOrders && recentOrders.length > 0) {
+          const recent = recentOrders[0];
+          const ageMs = Date.now() - new Date(recent.created_at).getTime();
+          if (ageMs < 15000) {
+            return recent;
+          }
+        }
+      } catch {}
+
+      // Concurrency-safe insertion: strictly omit order_number so Supabase's atomic sequence & trigger generate it
+      let insertedOrder: Order | null = null;
+      let lastError: any = null;
+      let requireClientFallback = false;
+      const maxRetries = 3;
+
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        const payload: any = { ...newOrder };
+
+        if (!requireClientFallback) {
+          // Strictly omit order_number: database sequence & trigger is authoritative generator
+          delete payload.order_number;
+        } else {
+          // Fallback only if database trigger is uninstalled and rejects NULL
+          payload.order_number = this.generateSafeOrderNumber(existingOrders);
+        }
+
+        const { data: inserted, error } = await supabase
+          .from('orders')
+          .insert(payload)
+          .select()
+          .single();
+
+        if (!error && inserted) {
+          insertedOrder = inserted;
+          break;
+        }
+
+        lastError = error;
+
+        const isCollision =
+          error?.message?.includes('orders_order_number_key') ||
+          error?.code === '23505' ||
+          error?.details?.includes('order_number');
+        const isNotNull = error?.message?.includes('null value in column "order_number"');
+
+        if (isNotNull) {
+          requireClientFallback = true;
+          continue;
+        }
+
+        if (isCollision) {
+          // Sequence collision retry: backoff and retry omitting order_number to advance sequence
+          await new Promise((resolve) => setTimeout(resolve, 50 * attempt));
+          continue;
+        }
+
+        // Other errors (e.g. auth / RLS) terminate immediately
+        break;
       }
-      const orderToReturn = inserted || newOrder;
+
+      if (!insertedOrder) {
+        throw new Error(`Failed to save booking to database: ${lastError?.message || 'Order number collision'}`);
+      }
+
+      const orderToReturn = insertedOrder;
       const existing = JSON.parse(localStorage.getItem(STORAGE_KEYS.ORDERS) || '[]');
-      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify([orderToReturn, ...existing.filter((o: Order) => o.id !== orderToReturn.id)]));
+      localStorage.setItem(
+        STORAGE_KEYS.ORDERS,
+        JSON.stringify([orderToReturn, ...existing.filter((o: Order) => o.id !== orderToReturn.id)])
+      );
+
+      // WhatsApp notification using authoritative returned order number
+      let rateMsg = `Rate: ₹${unitPricePaise / 100}/${pricingUnit === 'per_kg' ? 'kg' : pricingUnit}`;
+      if (pricingUnit === 'per_kg' && minWeightKg > 0) {
+        rateMsg += ` (Min ${minWeightKg} kg)`;
+      }
+
+      await WhatsAppService.sendNotification(
+        data.customer_phone,
+        'booking_confirmed',
+        `Namaste ${data.customer_name}! Your laundry pickup #${orderToReturn.order_number} has been booked for ${data.pickup_date} (${data.pickup_slot}). ${rateMsg}.`,
+        orderToReturn.id
+      );
+
       return orderToReturn;
     }
 
@@ -579,7 +755,7 @@ export class LaundryService {
     await WhatsAppService.sendNotification(
       data.customer_phone,
       'booking_confirmed',
-      `Namaste ${data.customer_name}! Your laundry pickup #${orderNumber} has been booked for ${data.pickup_date} (${data.pickup_slot}). ${rateMsg}.`,
+      `Namaste ${data.customer_name}! Your laundry pickup #${newOrder.order_number} has been booked for ${data.pickup_date} (${data.pickup_slot}). ${rateMsg}.`,
       newOrder.id
     );
 

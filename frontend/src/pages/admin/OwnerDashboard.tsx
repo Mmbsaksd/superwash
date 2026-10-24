@@ -4,7 +4,7 @@ import {
   Order, BusinessSettings, Profile, PickupSlot,
   Payment, OrderFeedback, FeedbackStatus, FeedbackSummaryMetrics, UserRole
 } from '../../types';
-import { LaundryService } from '../../services/laundryService';
+import { LaundryService, DEFAULT_SETTINGS } from '../../services/laundryService';
 import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
 import { AssignStaffModal } from '../../components/AssignStaffModal';
 import { PaymentModal } from '../../components/PaymentModal';
@@ -50,6 +50,8 @@ export const OwnerDashboard: React.FC = () => {
   const [selectedSlot, setSelectedSlot] = useState<string>('');
 
   // Settings Form State
+  const [businessPhoneInput, setBusinessPhoneInput] = useState<string>(DEFAULT_SETTINGS.business_phone);
+  const [businessAddressInput, setBusinessAddressInput] = useState<string>(DEFAULT_SETTINGS.business_address);
   const [pricePerKgInput, setPricePerKgInput] = useState<string>('80');
   const [minWeightInput, setMinWeightInput] = useState<string>('3.0');
   const [deliveryChargeInput, setDeliveryChargeInput] = useState<string>('0');
@@ -57,6 +59,8 @@ export const OwnerDashboard: React.FC = () => {
   const [allowDeliveryPay, setAllowDeliveryPay] = useState<boolean>(true);
   const [pincodesInput, setPincodesInput] = useState<string>('560038, 560008, 560103, 560075, 560001, 560066, 560037');
   const [settingsSavedMsg, setSettingsSavedMsg] = useState<string | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [isSavingSettings, setIsSavingSettings] = useState<boolean>(false);
 
   // Service Area Creation State
   const [isAddingArea, setIsAddingArea] = useState<boolean>(false);
@@ -170,6 +174,8 @@ export const OwnerDashboard: React.FC = () => {
       setServicesList(srv);
       setPeriodAnalytics(pa);
 
+      setBusinessPhoneInput(s.business_phone || DEFAULT_SETTINGS.business_phone);
+      setBusinessAddressInput(s.business_address || DEFAULT_SETTINGS.business_address);
       setPricePerKgInput((s.price_per_kg_paise / 100).toString());
       setMinWeightInput(s.min_weight_kg.toString());
       setDeliveryChargeInput((s.delivery_charge_paise / 100).toString());
@@ -322,9 +328,35 @@ export const OwnerDashboard: React.FC = () => {
 
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSavingSettings) return;
+
+    const cleanPhone = businessPhoneInput.trim();
+    const cleanAddress = businessAddressInput.trim();
+
+    if (!cleanPhone) {
+      setSettingsError('Business phone number is required.');
+      return;
+    }
+    const digitsOnly = cleanPhone.replace(/[^0-9]/g, '');
+    if (digitsOnly.length < 7 || digitsOnly.length > 15) {
+      setSettingsError('Please enter a valid phone number (7 to 15 digits).');
+      return;
+    }
+
+    if (!cleanAddress || cleanAddress.length < 5) {
+      setSettingsError('Please enter a valid business address (at least 5 characters).');
+      return;
+    }
+
+    setIsSavingSettings(true);
+    setSettingsError(null);
+    setSettingsSavedMsg(null);
+
     try {
       const pins = pincodesInput.split(',').map((p) => p.trim()).filter((p) => p.length >= 6);
       const updated = await LaundryService.updateSettings({
+        business_phone: cleanPhone,
+        business_address: cleanAddress,
         price_per_kg_paise: Math.round(parseFloat(pricePerKgInput) * 100),
         min_weight_kg: parseFloat(minWeightInput),
         delivery_charge_paise: Math.round(parseFloat(deliveryChargeInput) * 100),
@@ -333,10 +365,14 @@ export const OwnerDashboard: React.FC = () => {
         serviceable_pincodes: pins.length > 0 ? pins : undefined
       });
       setSettings(updated);
-      setSettingsSavedMsg('Settings updated successfully! New rates and coverage will apply to upcoming orders.');
-      setTimeout(() => setSettingsSavedMsg(null), 3000);
-    } catch (err) {
-      alert('Error updating settings');
+      setBusinessPhoneInput(updated.business_phone);
+      setBusinessAddressInput(updated.business_address);
+      setSettingsSavedMsg('Settings updated successfully! Business contact details and operational rates have been saved.');
+      setTimeout(() => setSettingsSavedMsg(null), 4000);
+    } catch (err: any) {
+      setSettingsError(err?.message || 'Error updating settings');
+    } finally {
+      setIsSavingSettings(false);
     }
   };
 
@@ -2072,11 +2108,58 @@ export const OwnerDashboard: React.FC = () => {
                 </p>
               </div>
 
+              {settingsError && (
+                <div className="p-4 bg-red-50 border border-red-200 text-red-800 rounded-2xl font-semibold flex items-center gap-2">
+                  <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
+                  <span>{settingsError}</span>
+                </div>
+              )}
+
+              {/* Business Contact Details */}
+              <div className="border-t border-slate-100 pt-5">
+                <h3 className="font-bold text-slate-900 text-sm mb-1">Business Contact & Store Location</h3>
+                <p className="text-slate-500 text-xs mb-4">Official customer-facing phone number and shop address displayed across all website pages and receipts.</p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1.5">
+                      Business Phone Number <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={businessPhoneInput}
+                      onChange={(e) => setBusinessPhoneInput(e.target.value)}
+                      placeholder="+91 98765 43210"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 font-bold text-slate-900 text-sm"
+                      required
+                    />
+                    <p className="text-[11px] text-slate-400 mt-1">Displayed in website header, footer, contact page, and used for click-to-call.</p>
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1.5">
+                      Business Address <span className="text-red-500">*</span>
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={businessAddressInput}
+                      onChange={(e) => setBusinessAddressInput(e.target.value)}
+                      placeholder="Shop #14, Metro Pillar 78, Indiranagar, Bengaluru 560038"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 font-medium text-slate-900 text-xs"
+                      required
+                    />
+                    <p className="text-[11px] text-slate-400 mt-1">Physical store and counter drop-off address displayed to customers.</p>
+                  </div>
+                </div>
+              </div>
+
               <button
                 type="submit"
-                className="py-3 px-8 bg-slate-900 hover:bg-slate-800 text-white font-black rounded-2xl text-xs shadow-md transition"
+                disabled={isSavingSettings}
+                className="py-3 px-8 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-white font-black rounded-2xl text-xs shadow-md transition flex items-center gap-2"
               >
-                Save Configuration
+                {isSavingSettings && <Loader2 className="w-4 h-4 animate-spin" />}
+                <span>{isSavingSettings ? 'Saving Configuration...' : 'Save Configuration'}</span>
               </button>
             </form>
 

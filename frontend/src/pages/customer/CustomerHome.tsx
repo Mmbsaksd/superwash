@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { Order, CustomerAddress, PickupSlot, BusinessSettings, OrderFeedback, LaundryServiceItem } from '../../types';
-import { LaundryService } from '../../services/laundryService';
+import { LaundryService, DEFAULT_SETTINGS } from '../../services/laundryService';
 import { supabase } from '../../services/supabase';
 import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
 import { PaymentModal } from '../../components/PaymentModal';
@@ -1283,16 +1283,16 @@ export const CustomerHome: React.FC = () => {
 
             <div className="space-y-3 pt-2">
               <a
-                href={`tel:${settings?.business_phone || '+919876543210'}`}
+                href={`tel:${(settings?.business_phone || DEFAULT_SETTINGS.business_phone).replace(/[^0-9+]/g, '')}`}
                 className="flex items-center gap-3 p-3.5 bg-brand-50 text-brand-800 rounded-2xl font-bold hover:bg-brand-100 transition"
               >
                 <Phone className="w-5 h-5 text-brand-600" />
-                <span>Call Store: {settings?.business_phone || '+91 98765 43210'}</span>
+                <span>Call Store: {settings?.business_phone || DEFAULT_SETTINGS.business_phone}</span>
               </a>
 
               <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 text-slate-700 space-y-1">
                 <span className="font-bold text-slate-900 block text-xs">Facility & Drop-off Shop:</span>
-                <p>{settings?.business_address || 'Shop #14, Metro Pillar 78, Indiranagar, Bengaluru 560038'}</p>
+                <p>{settings?.business_address || DEFAULT_SETTINGS.business_address}</p>
                 <span className="text-slate-500 block text-[11px] pt-1">Open 7 days a week: 8:00 AM – 9:00 PM</span>
               </div>
             </div>

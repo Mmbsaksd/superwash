@@ -1,7 +1,20 @@
-import React from 'react';
-import { MapPin, Phone, Mail, Clock, ShieldCheck, Sparkles } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { MapPin, Phone, Mail, Clock, ShieldCheck, Sparkles, MessageSquare } from 'lucide-react';
+import { BusinessSettings } from '../../types';
+import { LaundryService, DEFAULT_SETTINGS } from '../../services/laundryService';
 
 export const ContactPage: React.FC = () => {
+  const [settings, setSettings] = useState<BusinessSettings | null>(null);
+
+  useEffect(() => {
+    LaundryService.getSettings().then(setSettings);
+  }, []);
+
+  const phone = settings?.business_phone || DEFAULT_SETTINGS.business_phone;
+  const address = settings?.business_address || DEFAULT_SETTINGS.business_address;
+  const cleanTel = phone.replace(/[^0-9+]/g, '');
+  const whatsappDigits = phone.replace(/[^0-9]/g, '');
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 space-y-12">
       <div className="text-center max-w-2xl mx-auto space-y-2">
@@ -26,7 +39,7 @@ export const ContactPage: React.FC = () => {
               </div>
               <div>
                 <strong className="block text-slate-900 text-sm">Physical Shop Address</strong>
-                <p className="text-slate-600 mt-0.5">Shop #14, Metro Pillar 78, Indiranagar 100ft Road, Bengaluru, Karnataka 560038</p>
+                <p className="text-slate-600 mt-0.5">{address}</p>
                 <span className="inline-block mt-1 text-[11px] text-emerald-700 font-semibold">
                   ✓ Ample 2-wheeler & 4-wheeler customer parking available
                 </span>
@@ -39,9 +52,21 @@ export const ContactPage: React.FC = () => {
               </div>
               <div>
                 <strong className="block text-slate-900 text-sm">Phone Helpline</strong>
-                <a href="tel:+919876543210" className="text-brand-600 font-bold hover:underline font-mono text-sm">
-                  +91 98765 43210
-                </a>
+                <div className="flex items-center gap-3 mt-0.5">
+                  <a href={`tel:${cleanTel}`} className="text-brand-600 font-bold hover:underline font-mono text-sm">
+                    {phone}
+                  </a>
+                  {whatsappDigits && (
+                    <a
+                      href={`https://wa.me/${whatsappDigits}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-200 transition"
+                    >
+                      <MessageSquare className="w-3 h-3" /> WhatsApp
+                    </a>
+                  )}
+                </div>
                 <p className="text-slate-500 text-[11px] mt-0.5">Available 8:00 AM - 9:00 PM (Call or WhatsApp)</p>
               </div>
             </div>

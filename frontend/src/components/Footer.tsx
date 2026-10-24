@@ -1,8 +1,20 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Sparkles, Phone, Mail, MapPin, Clock, ShieldCheck } from 'lucide-react';
+import { BusinessSettings } from '../types';
+import { LaundryService, DEFAULT_SETTINGS } from '../services/laundryService';
 
 export const Footer: React.FC = () => {
+  const [settings, setSettings] = useState<BusinessSettings | null>(null);
+
+  useEffect(() => {
+    LaundryService.getSettings().then(setSettings);
+  }, []);
+
+  const phone = settings?.business_phone || DEFAULT_SETTINGS.business_phone;
+  const address = settings?.business_address || DEFAULT_SETTINGS.business_address;
+  const cleanTel = phone.replace(/[^0-9+]/g, '');
+
   return (
     <footer className="bg-slate-900 text-slate-400 border-t border-slate-800 text-sm no-print">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 lg:py-16">
@@ -55,11 +67,11 @@ export const Footer: React.FC = () => {
             <ul className="space-y-3 text-xs">
               <li className="flex items-start gap-2.5">
                 <MapPin className="w-4 h-4 text-brand-400 shrink-0 mt-0.5" />
-                <span>Shop #14, Metro Pillar 78, Indiranagar 100ft Road, Bengaluru, Karnataka 560038</span>
+                <span>{address}</span>
               </li>
               <li className="flex items-center gap-2.5">
                 <Phone className="w-4 h-4 text-brand-400 shrink-0" />
-                <a href="tel:+919876543210" className="hover:text-white transition font-medium">+91 98765 43210</a>
+                <a href={`tel:${cleanTel}`} className="hover:text-white transition font-medium">{phone}</a>
               </li>
               <li className="flex items-center gap-2.5">
                 <Mail className="w-4 h-4 text-brand-400 shrink-0" />

@@ -8,13 +8,19 @@ import { AuthProvider, useAuth } from '../context/AuthContext';
 import { ProtectedRoute } from '../components/ProtectedRoute';
 import { LoginPage } from '../pages/public/LoginPage';
 import { OwnerDashboard } from '../pages/admin/OwnerDashboard';
-import { LaundryService, DEMO_PROFILES } from '../services/laundryService';
+import { Navbar } from '../components/Navbar';
+import { Footer } from '../components/Footer';
+import { LandingPage } from '../pages/public/LandingPage';
+import { ContactPage } from '../pages/public/ContactPage';
+import { CustomerHome } from '../pages/customer/CustomerHome';
+import { LaundryService, DEMO_PROFILES, DEFAULT_SETTINGS } from '../services/laundryService';
 import { supabase } from '../services/supabase';
 import { FunctionsClient } from '@supabase/functions-js';
 import { Profile } from '../types';
 
 beforeEach(async () => {
   localStorage.clear();
+  LaundryService.resetOrderSequence();
   await LaundryService.updateSettings({
     price_per_kg_paise: 8000,
     min_weight_kg: 3.0,
@@ -2005,8 +2011,426 @@ describe('Service Catalogue Management & Referential Integrity', () => {
   });
 });
 
+describe('Concurrency-Safe Order Number Generation, Repeated Bookings & Collision Protection', () => {
+  it('safely handles repeated bookings idempotently without duplicate orders or collision errors', async () => {
+    const bookingData = {
+      customer_name: 'Repeat Customer',
+      customer_phone: '9876543290',
+      pickup_address: 'Flat 101, Indiranagar',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-25',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    };
 
+    const first = await LaundryService.createBooking(bookingData);
+    expect(first.id).toBeDefined();
+    expect(first.order_number).toMatch(/^SW-\d+$/);
 
+    // Second repeated booking call with exact parameters returns the identical booking
+    const second = await LaundryService.createBooking(bookingData);
+    expect(second.id).toBe(first.id);
+    expect(second.order_number).toBe(first.order_number);
+
+    // Confirm only one new order exists in storage
+    const allOrders = await LaundryService.getOrders();
+    const matches = allOrders.filter(o => o.id === first.id);
+    expect(matches.length).toBe(1);
+  });
+
+  it('guarantees unique, distinct order numbers for concurrent booking requests', async () => {
+    const slots = [
+      'Morning (08:00 AM - 11:00 AM)',
+      'Noon (11:00 AM - 02:00 PM)',
+      'Evening (04:00 PM - 07:00 PM)'
+    ];
+
+    // Fire 3 simultaneous bookings for different customers
+    const promises = [1, 2, 3].map((num) =>
+      LaundryService.createBooking({
+        customer_name: `Concurrent User ${num}`,
+        customer_phone: `987654320${num}`,
+        pickup_address: `10${num} 100ft Road, Indiranagar`,
+        pickup_pincode: '560038',
+        pickup_date: '2026-10-26',
+        pickup_slot: slots[num - 1]
+      })
+    );
+
+    const results = await Promise.all(promises);
+
+    expect(results.length).toBe(3);
+
+    // Assert that each order received a distinct unique order number
+    const orderNumbers = results.map(r => r.order_number);
+    const uniqueOrderNumbers = new Set(orderNumbers);
+    expect(uniqueOrderNumbers.size).toBe(3);
+
+    // Assert that each order received a distinct unique ID
+    const ids = results.map(r => r.id);
+    const uniqueIds = new Set(ids);
+    expect(uniqueIds.size).toBe(3);
+
+    // All order numbers must adhere to SW-XXXX format
+    for (const num of orderNumbers) {
+      expect(num).toMatch(/^SW-\d+$/);
+    }
+  });
+
+  it('deduplicates in-flight identical requests to the exact same order without race collisions', async () => {
+    const identicalBooking = {
+      customer_name: 'Rapid Clicker',
+      customer_phone: '9876543299',
+      pickup_address: '22 Cambridge Layout',
+      pickup_pincode: '560008',
+      pickup_date: '2026-10-27',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    };
+
+    // Simulate parallel asynchronous execution (e.g. user double clicking button)
+    const [orderA, orderB] = await Promise.all([
+      LaundryService.createBooking(identicalBooking),
+      LaundryService.createBooking(identicalBooking)
+    ]);
+
+    expect(orderA.id).toBe(orderB.id);
+    expect(orderA.order_number).toBe(orderB.order_number);
+
+    // Verify storage has exactly 1 order for this customer
+    const all = await LaundryService.getOrders();
+    const count = all.filter(o => o.customer_phone === identicalBooking.customer_phone).length;
+    expect(count).toBe(1);
+  });
+
+  it('handles existing out-of-order and gap numbers without colliding with existing records', async () => {
+    // Seed an order with a high order number (e.g. SW-1050)
+    const orders = await LaundryService.getOrders();
+    const highOrder: any = {
+      ...orders[0],
+      id: '00000000-0000-4000-b000-000000000999',
+      order_number: 'SW-1050',
+      customer_phone: '9876543298',
+      created_at: new Date(Date.now() - 3600000 * 24).toISOString()
+    };
+    localStorage.setItem('superwash_orders', JSON.stringify([highOrder, ...orders]));
+    LaundryService.resetOrderSequence();
+
+    // Next booking must advance past the maximum existing number SW-1050 to avoid collision
+    const newBooking = await LaundryService.createBooking({
+      customer_name: 'High Sequence Tester',
+      customer_phone: '9876543297',
+      pickup_address: '45 MG Road',
+      pickup_pincode: '560001',
+      pickup_date: '2026-10-28',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    expect(newBooking.order_number).toBe('SW-1051');
+    expect(newBooking.order_number).not.toBe('SW-1050');
+  });
+
+  it('collision protection loop skips over existing occupied numbers to find next available sequence', () => {
+    const existingOrders: any[] = [
+      { order_number: 'SW-1001' },
+      { order_number: 'SW-1002' },
+      { order_number: 'SW-1003' },
+      { order_number: 'SW-1004' }
+    ];
+
+    LaundryService.resetOrderSequence();
+    const nextNum = LaundryService.generateSafeOrderNumber(existingOrders);
+    expect(nextNum).toBe('SW-1005');
+
+    // If SW-1005 already exists in a gap
+    existingOrders.push({ order_number: 'SW-1005' });
+    const skippedNum = LaundryService.generateSafeOrderNumber(existingOrders);
+    expect(skippedNum).toBe('SW-1006');
+  });
+
+  it('ensures failed booking displays a clear error and creates no duplicate bookings or payments', async () => {
+    const initialOrders = await LaundryService.getOrders();
+    const initialPayments = JSON.parse(localStorage.getItem('superwash_payments') || '[]');
+
+    // Invalid PIN code triggers coverage rejection
+    await expect(
+      LaundryService.createBooking({
+        customer_name: 'Fail Tester',
+        customer_phone: '9876543296',
+        pickup_address: 'Delhi Cantt',
+        pickup_pincode: '110001', // Unserviceable PIN
+        pickup_date: '2026-10-28',
+        pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+      })
+    ).rejects.toThrow('PIN code 110001 is currently outside our service coverage');
+
+    // Confirm database / storage integrity: zero orders added, zero payments created
+    const finalOrders = await LaundryService.getOrders();
+    const finalPayments = JSON.parse(localStorage.getItem('superwash_payments') || '[]');
+
+    expect(finalOrders.length).toBe(initialOrders.length);
+    expect(finalPayments.length).toBe(initialPayments.length);
+  });
+});
+
+describe('Centralized Business Contact Settings & Multi-Page Propagation', () => {
+  it('Owner Dashboard loads the current business phone and address into settings form', async () => {
+    await LaundryService.updateSettings({
+      business_phone: '+91 98765 11111',
+      business_address: 'Shop 99, 100ft Road, Indiranagar, Bengaluru 560038'
+    });
+
+    const ownerProfile: Profile = {
+      id: '00000000-0000-4000-a000-000000000001',
+      email: 'owner@superwash.in',
+      phone: '9876543210',
+      full_name: 'Store Owner',
+      role: 'owner',
+      is_active: true,
+      created_at: new Date().toISOString()
+    };
+    localStorage.setItem('superwash_auth_profile', JSON.stringify(ownerProfile));
+
+    render(
+      <MemoryRouter>
+        <AuthProvider>
+          <OwnerDashboard />
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    // Navigate to Settings tab
+    const settingsTabBtn = await screen.findByRole('button', { name: /Pricing & Coverage/i });
+    fireEvent.click(settingsTabBtn);
+
+    const phoneInput = (await screen.findByDisplayValue('+91 98765 11111')) as HTMLInputElement;
+    const addressInput = (await screen.findByDisplayValue('Shop 99, 100ft Road, Indiranagar, Bengaluru 560038')) as HTMLTextAreaElement;
+
+    expect(phoneInput).toBeDefined();
+    expect(addressInput).toBeDefined();
+  });
+
+  it('an authorized owner can edit and save both business contact fields with UI reflection', async () => {
+    const ownerProfile: Profile = {
+      id: '00000000-0000-4000-a000-000000000001',
+      email: 'owner@superwash.in',
+      phone: '9876543210',
+      full_name: 'Store Owner',
+      role: 'owner',
+      is_active: true,
+      created_at: new Date().toISOString()
+    };
+    localStorage.setItem('superwash_auth_profile', JSON.stringify(ownerProfile));
+
+    render(
+      <MemoryRouter>
+        <AuthProvider>
+          <OwnerDashboard />
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    const settingsTabBtn = await screen.findByRole('button', { name: /Pricing & Coverage/i });
+    fireEvent.click(settingsTabBtn);
+
+    // Locate phone and address inputs
+    const phoneInput = (await screen.findByPlaceholderText('+91 98765 43210')) as HTMLInputElement;
+    const addressInput = (await screen.findByPlaceholderText('Shop #14, Metro Pillar 78, Indiranagar, Bengaluru 560038')) as HTMLTextAreaElement;
+
+    // Change values
+    fireEvent.change(phoneInput, { target: { value: ' +91 91234 56789  ' } });
+    fireEvent.change(addressInput, { target: { value: '  Shop 77, 12th Main, Indiranagar, Bengaluru 560038  ' } });
+
+    // Submit form
+    const saveBtn = screen.getByRole('button', { name: /Save Configuration/i });
+    fireEvent.click(saveBtn);
+
+    // Verify success feedback
+    await waitFor(() => {
+      expect(screen.getByText(/Business contact details and operational rates have been saved/i)).toBeDefined();
+    });
+
+    // Verify trimmed values persisted in LaundryService
+    const savedSettings = await LaundryService.getSettings();
+    expect(savedSettings.business_phone).toBe('+91 91234 56789');
+    expect(savedSettings.business_address).toBe('Shop 77, 12th Main, Indiranagar, Bengaluru 560038');
+  });
+
+  it('displays a clear error when saving invalid phone or address and prevents false success', async () => {
+    const ownerProfile: Profile = {
+      id: '00000000-0000-4000-a000-000000000001',
+      email: 'owner@superwash.in',
+      phone: '9876543210',
+      full_name: 'Store Owner',
+      role: 'owner',
+      is_active: true,
+      created_at: new Date().toISOString()
+    };
+    localStorage.setItem('superwash_auth_profile', JSON.stringify(ownerProfile));
+
+    render(
+      <MemoryRouter>
+        <AuthProvider>
+          <OwnerDashboard />
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    const settingsTabBtn = await screen.findByRole('button', { name: /Pricing & Coverage/i });
+    fireEvent.click(settingsTabBtn);
+
+    const phoneInput = (await screen.findByPlaceholderText('+91 98765 43210')) as HTMLInputElement;
+    const addressInput = (await screen.findByPlaceholderText('Shop #14, Metro Pillar 78, Indiranagar, Bengaluru 560038')) as HTMLTextAreaElement;
+
+    // Invalid phone with only 3 digits
+    fireEvent.change(phoneInput, { target: { value: '123' } });
+    const saveBtn = screen.getByRole('button', { name: /Save Configuration/i });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Please enter a valid phone number/i)).toBeDefined();
+    });
+
+    // Provide valid phone, but invalid short address
+    fireEvent.change(phoneInput, { target: { value: '+91 98765 43210' } });
+    fireEvent.change(addressInput, { target: { value: 'Shop' } });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Please enter a valid business address/i)).toBeDefined();
+    });
+  });
+
+  it('Navbar, Footer, LandingPage, ContactPage, and CustomerHome consistently render the same central settings', async () => {
+    const customPhone = '+91 99999 88888';
+    const customAddress = 'Shop #202, Indiranagar 100ft Road, Bengaluru, Karnataka 560038';
+
+    await LaundryService.updateSettings({
+      business_phone: customPhone,
+      business_address: customAddress
+    });
+
+    // 1. Test Navbar
+    const { unmount: unmountNavbar } = render(
+      <MemoryRouter>
+        <AuthProvider>
+          <Navbar />
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      const navbarPhone = screen.getByText(customPhone);
+      expect(navbarPhone).toBeDefined();
+      const navbarTelLink = screen.getByRole('link', { name: customPhone, hidden: true });
+      expect(navbarTelLink.getAttribute('href')).toBe('tel:+919999988888');
+    });
+    unmountNavbar();
+
+    // 2. Test Footer
+    const { unmount: unmountFooter } = render(
+      <MemoryRouter>
+        <Footer />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(customAddress)).toBeDefined();
+      const footerTelLink = screen.getByRole('link', { name: customPhone });
+      expect(footerTelLink.getAttribute('href')).toBe('tel:+919999988888');
+    });
+    unmountFooter();
+
+    // 3. Test ContactPage
+    const { unmount: unmountContact } = render(
+      <MemoryRouter>
+        <ContactPage />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(customAddress)).toBeDefined();
+      const contactTelLink = screen.getByRole('link', { name: customPhone });
+      expect(contactTelLink.getAttribute('href')).toBe('tel:+919999988888');
+      const whatsappLink = screen.getByRole('link', { name: /WhatsApp/i });
+      expect(whatsappLink.getAttribute('href')).toBe('https://wa.me/919999988888');
+    });
+    unmountContact();
+
+    // 4. Test LandingPage
+    const { unmount: unmountLanding } = render(
+      <MemoryRouter>
+        <AuthProvider>
+          <LandingPage />
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(customAddress)).toBeDefined();
+      const callStoreBtns = screen.getAllByRole('link', { name: (content) => content.includes(customPhone) });
+      expect(callStoreBtns.length).toBeGreaterThanOrEqual(1);
+      expect(callStoreBtns[0].getAttribute('href')).toBe('tel:+919999988888');
+    });
+    unmountLanding();
+  });
+
+  it('uses DEFAULT_SETTINGS fallback cleanly when settings are uninitialized or offline', async () => {
+    localStorage.clear();
+
+    const settings = await LaundryService.getSettings();
+    expect(settings.business_phone).toBe(DEFAULT_SETTINGS.business_phone);
+    expect(settings.business_address).toBe(DEFAULT_SETTINGS.business_address);
+
+    const { unmount } = render(
+      <MemoryRouter>
+        <Footer />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(DEFAULT_SETTINGS.business_address)).toBeDefined();
+      expect(screen.getByRole('link', { name: DEFAULT_SETTINGS.business_phone })).toBeDefined();
+    });
+    unmount();
+  });
+
+  it('restricts business contact settings editing strictly to owner role', async () => {
+    // Delivery staff profile cannot see or edit settings
+    const deliveryProfile: Profile = {
+      id: '00000000-0000-4000-a000-000000000003',
+      email: 'driver@superwash.in',
+      phone: '9876543212',
+      full_name: 'Delivery Driver',
+      role: 'delivery',
+      is_active: true,
+      created_at: new Date().toISOString()
+    };
+    localStorage.setItem('superwash_auth_profile', JSON.stringify(deliveryProfile));
+
+    // ProtectedRoute for owner denies delivery staff
+    render(
+      <MemoryRouter initialEntries={['/admin']}>
+        <AuthProvider>
+          <Routes>
+            <Route
+              path="/admin"
+              element={
+                <ProtectedRoute allowedRoles={['owner']}>
+                  <OwnerDashboard />
+                </ProtectedRoute>
+              }
+            />
+            <Route path="/" element={<div>Access Denied / Public Home</div>} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    // Delivery staff is denied and sees Access Restricted
+    await waitFor(() => {
+      expect(screen.getByText(/Access Restricted/i)).toBeDefined();
+    });
+  });
+});
 
 
 

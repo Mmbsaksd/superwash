@@ -1,15 +1,25 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Sparkles, Phone, User as UserIcon, LogOut,
   Menu, X, Shield, CalendarCheck, Search, ShoppingBag
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { BusinessSettings } from '../types';
+import { LaundryService, DEFAULT_SETTINGS } from '../services/laundryService';
 
 export const Navbar: React.FC = () => {
   const { user, logout, isStaff } = useAuth();
   const navigate = useNavigate();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [settings, setSettings] = useState<BusinessSettings | null>(null);
+
+  useEffect(() => {
+    LaundryService.getSettings().then(setSettings);
+  }, []);
+
+  const phone = settings?.business_phone || DEFAULT_SETTINGS.business_phone;
+  const cleanTel = phone.replace(/[^0-9+]/g, '');
 
   const handleLogout = () => {
     logout();
@@ -22,9 +32,9 @@ export const Navbar: React.FC = () => {
       <div className="bg-slate-900 text-slate-300 text-xs py-1.5 px-4 hidden sm:block">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
           <div className="flex items-center gap-4">
-            <span className="flex items-center gap-1.5 text-slate-300">
-              <Phone className="w-3.5 h-3.5 text-brand-400" /> +91 98765 43210 (Indiranagar, Bengaluru)
-            </span>
+            <a href={`tel:${cleanTel}`} className="flex items-center gap-1.5 text-slate-300 hover:text-white transition">
+              <Phone className="w-3.5 h-3.5 text-brand-400" /> {phone}
+            </a>
             <span className="text-slate-500">|</span>
             <span>Shop Hours: Mon - Sun, 8:00 AM - 9:00 PM</span>
           </div>

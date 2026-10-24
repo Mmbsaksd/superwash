@@ -1,8 +1,18 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { MapPin, Truck, CheckCircle2, Clock, CalendarCheck, HelpCircle } from 'lucide-react';
+import { BusinessSettings } from '../../types';
+import { LaundryService, DEFAULT_SETTINGS } from '../../services/laundryService';
 
 export const HowItWorksPage: React.FC = () => {
+  const [settings, setSettings] = useState<BusinessSettings | null>(null);
+
+  useEffect(() => {
+    LaundryService.getSettings().then(setSettings);
+  }, []);
+
+  const address = settings?.business_address || DEFAULT_SETTINGS.business_address;
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 space-y-16">
       <div className="text-center max-w-3xl mx-auto space-y-3">
@@ -32,7 +42,7 @@ export const HowItWorksPage: React.FC = () => {
             <ul className="space-y-3 pt-2 text-xs text-slate-700">
               <li className="flex items-start gap-2.5">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                <span>Visit our store at Indiranagar 100ft Road (Open 8 AM - 9 PM daily).</span>
+                <span>Visit our store at {address} (Open 8 AM - 9 PM daily).</span>
               </li>
               <li className="flex items-start gap-2.5">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
