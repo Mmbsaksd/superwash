@@ -952,29 +952,22 @@ export class LaundryService {
     );
 
     const now = new Date().toISOString();
-    order.order_status = 'collected';
-    order.pickup_measured_weight = weightKg;
-    order.pickup_weighed_at = now;
-    order.pickup_weighed_by = staffId;
-    order.measured_weight = weightKg;
-    order.billable_weight = billableWeightKg;
-    order.total_amount_paise = totalAmountPaise;
-    order.collected_at = now;
-    order.weighed_at = now;
-    if (notes) {
-      order.delivery_notes = notes;
-    }
-    order.updated_at = now;
+    const effectiveStaffUuid = (staffId && isUUID(staffId)) ? staffId : null;
+    const deliveryNotes = notes || `Doorstep collection: ${weightKg.toFixed(2)} kg recorded on portable scale by ${staffName}`;
 
     if (isLiveMode) {
+      // Strictly avoid modifying store intake timestamp (weighed_at). Doorstep scale
+      // collection sets pickup_weighed_at and pickup_measured_weight under associate permissions.
       const updatePayload: any = {
         order_status: 'collected',
+        pickup_measured_weight: weightKg,
+        pickup_weighed_at: now,
+        pickup_weighed_by: effectiveStaffUuid,
         measured_weight: weightKg,
         billable_weight: billableWeightKg,
         total_amount_paise: totalAmountPaise,
         collected_at: now,
-        weighed_at: now,
-        delivery_notes: notes || `Doorstep collection: ${weightKg.toFixed(2)} kg recorded on portable scale by ${staffName}`,
+        delivery_notes: deliveryNotes,
         updated_at: now
       };
 
@@ -992,23 +985,38 @@ export class LaundryService {
         throw new Error('Database denied update: 0 rows modified. You are not authorized under Row-Level Security.');
       }
 
+      // Mutate in-memory order ONLY after database update succeeds
       const persisted = data[0] as Order;
       order.order_status = persisted.order_status;
+      order.pickup_measured_weight = persisted.pickup_measured_weight;
+      order.pickup_weighed_at = persisted.pickup_weighed_at;
+      order.pickup_weighed_by = persisted.pickup_weighed_by;
       order.measured_weight = persisted.measured_weight;
       order.billable_weight = persisted.billable_weight;
       order.total_amount_paise = persisted.total_amount_paise;
       order.collected_at = persisted.collected_at;
-      order.weighed_at = persisted.weighed_at;
+      order.delivery_notes = persisted.delivery_notes;
       order.updated_at = persisted.updated_at;
 
-      const auditUuid = (staffId && isUUID(staffId)) ? staffId : null;
       await supabase.from('order_status_history').insert({
         order_id: orderId,
         previous_status: previousStatus,
         new_status: 'collected',
         notes: `Collected & weighed at doorstep: ${weightKg.toFixed(2)} kg (Bill: ₹${(totalAmountPaise / 100).toFixed(2)}) by ${staffName}`,
-        changed_by: auditUuid
+        changed_by: effectiveStaffUuid
       });
+    } else {
+      // Local/demo/offline mode
+      order.order_status = 'collected';
+      order.pickup_measured_weight = weightKg;
+      order.pickup_weighed_at = now;
+      order.pickup_weighed_by = staffId;
+      order.measured_weight = weightKg;
+      order.billable_weight = billableWeightKg;
+      order.total_amount_paise = totalAmountPaise;
+      order.collected_at = now;
+      order.delivery_notes = deliveryNotes;
+      order.updated_at = now;
     }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
@@ -1344,18 +1352,44 @@ export class LaundryService {
   // ----------------------------------------------------
   // Maps & Navigation URL Helper
   // ----------------------------------------------------
-  static getGoogleMapsDirectionsUrl(order: Order): string {
-    if (order.pickup_latitude && order.pickup_longitude) {
-      return `https://www.google.com/maps/dir/?api=1&destination=${order.pickup_latitude},${order.pickup_longitude}&travelmode=driving`;
+  // ----------------------------------------------------
+  // Maps & Navigation URL Helper
+  // ----------------------------------------------------
+  static hasValidCoordinates(order: { pickup_latitude?: number | null; pickup_longitude?: number | null }): boolean {
+    if (order.pickup_latitude === null || order.pickup_latitude === undefined ||
+        order.pickup_longitude === null || order.pickup_longitude === undefined) {
+      return false;
     }
-    const destinationParts = [
-      order.pickup_address,
-      order.pickup_landmark,
-      order.pickup_pincode,
-      'Bengaluru',
-      'Karnataka'
-    ].filter(Boolean).join(', ');
-    return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destinationParts)}&travelmode=driving`;
+    const lat = typeof order.pickup_latitude === 'number' ? order.pickup_latitude : parseFloat(String(order.pickup_latitude));
+    const lng = typeof order.pickup_longitude === 'number' ? order.pickup_longitude : parseFloat(String(order.pickup_longitude));
+
+    if (isNaN(lat) || isNaN(lng) || !isFinite(lat) || !isFinite(lng)) return false;
+    // Reject Null Island (0, 0)
+    if (lat === 0 && lng === 0) return false;
+    // Standard global coordinate bounds
+    return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+  }
+
+  static getGoogleMapsDirectionsUrl(order: Order): string {
+    // 1. When valid saved pickup coordinates exist, generate a direct driving directions URL
+    if (this.hasValidCoordinates(order)) {
+      const lat = Number(order.pickup_latitude);
+      const lng = Number(order.pickup_longitude);
+      return `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
+    }
+
+    // 2. Fallback when coordinates are absent or invalid:
+    // Generate a properly encoded Google Maps Search URL based on available address, landmark, and postcode.
+    // Google Maps Search drops a pin on the matching street or building and avoids "Cannot seem to find a way there"
+    // that occurs when complex room/flat strings are fed into the strict directions router.
+    const addressComponents = [
+      order.pickup_address?.trim(),
+      order.pickup_landmark?.trim(),
+      order.pickup_pincode?.trim()
+    ].filter(Boolean);
+
+    const query = addressComponents.join(', ');
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
   }
 
   // ----------------------------------------------------

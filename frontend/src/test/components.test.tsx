@@ -8,6 +8,7 @@ import { AuthProvider, useAuth } from '../context/AuthContext';
 import { ProtectedRoute } from '../components/ProtectedRoute';
 import { LoginPage } from '../pages/public/LoginPage';
 import { OwnerDashboard } from '../pages/admin/OwnerDashboard';
+import { DeliveryDashboard } from '../pages/delivery/DeliveryDashboard';
 import { Navbar } from '../components/Navbar';
 import { Footer } from '../components/Footer';
 import { LandingPage } from '../pages/public/LandingPage';
@@ -344,7 +345,7 @@ describe('PIN Code Coverage & Capacity Protection', () => {
 });
 
 describe('Google Maps Navigation & Directions URL', () => {
-  it('builds navigation URL prioritizing GPS coordinates when available', () => {
+  it('builds direct driving directions URL prioritizing GPS coordinates when valid', () => {
     const orderWithGps: any = {
       pickup_address: '14th Cross, 100ft Rd',
       pickup_landmark: 'Near Metro Pillar 78',
@@ -353,24 +354,59 @@ describe('Google Maps Navigation & Directions URL', () => {
       pickup_longitude: 77.5945627
     };
 
+    expect(LaundryService.hasValidCoordinates(orderWithGps)).toBe(true);
     const url = LaundryService.getGoogleMapsDirectionsUrl(orderWithGps);
     expect(url).toContain('https://www.google.com/maps/dir/?api=1&destination=');
     expect(url).toContain('12.9715987,77.5945627');
     expect(url).toContain('travelmode=driving');
   });
 
-  it('builds directions URL using structured address fallback when coordinates are missing', () => {
+  it('builds search URL using properly encoded address fallback when coordinates are missing', () => {
     const orderWithoutGps: any = {
       pickup_address: 'Flat 402, Sunshine Apartments, Indiranagar',
       pickup_landmark: 'Opposite BDA Complex',
       pickup_pincode: '560038'
     };
 
+    expect(LaundryService.hasValidCoordinates(orderWithoutGps)).toBe(false);
     const url = LaundryService.getGoogleMapsDirectionsUrl(orderWithoutGps);
-    expect(url).toContain('https://www.google.com/maps/dir/?api=1&destination=');
-    expect(url).toContain('Indiranagar');
-    expect(url).toContain('560038');
-    expect(url).toContain('travelmode=driving');
+    expect(url).toContain('https://www.google.com/maps/search/?api=1&query=');
+    expect(url).toContain(encodeURIComponent('Flat 402, Sunshine Apartments, Indiranagar, Opposite BDA Complex, 560038'));
+  });
+
+  it('falls back safely to search URL when coordinates are invalid, null island, or out of range', () => {
+    // Null island (0, 0)
+    const orderNullIsland: any = {
+      pickup_address: 'MG Road',
+      pickup_pincode: '560001',
+      pickup_latitude: 0,
+      pickup_longitude: 0
+    };
+    expect(LaundryService.hasValidCoordinates(orderNullIsland)).toBe(false);
+    const urlNullIsland = LaundryService.getGoogleMapsDirectionsUrl(orderNullIsland);
+    expect(urlNullIsland).toContain('https://www.google.com/maps/search/?api=1&query=');
+
+    // Out-of-range latitude (> 90)
+    const orderOutOfRange: any = {
+      pickup_address: 'Whitefield',
+      pickup_pincode: '560066',
+      pickup_latitude: 120.5,
+      pickup_longitude: 77.5
+    };
+    expect(LaundryService.hasValidCoordinates(orderOutOfRange)).toBe(false);
+    const urlOutOfRange = LaundryService.getGoogleMapsDirectionsUrl(orderOutOfRange);
+    expect(urlOutOfRange).toContain('https://www.google.com/maps/search/?api=1&query=');
+
+    // NaN or non-numeric
+    const orderNaN: any = {
+      pickup_address: 'Koramangala',
+      pickup_pincode: '560034',
+      pickup_latitude: 'invalid-coord',
+      pickup_longitude: 'invalid-coord'
+    };
+    expect(LaundryService.hasValidCoordinates(orderNaN)).toBe(false);
+    const urlNaN = LaundryService.getGoogleMapsDirectionsUrl(orderNaN);
+    expect(urlNaN).toContain('https://www.google.com/maps/search/?api=1&query=');
   });
 });
 
@@ -673,9 +709,12 @@ describe('End-to-End Workflow Transitions & Staff Task Queues', () => {
 
     expect(collectedOrder.order_status).toBe('collected');
     expect(collectedOrder.pickup_measured_weight).toBe(3.5);
+    expect(collectedOrder.pickup_weighed_at).toBeDefined();
+    expect(collectedOrder.pickup_weighed_by).toBe('courier-1');
     expect(collectedOrder.measured_weight).toBe(3.5);
     expect(collectedOrder.billable_weight).toBe(3.5);
     expect(collectedOrder.total_amount_paise).toBe(28000);
+    expect(collectedOrder.weighed_at).toBeUndefined(); // Store intake weighing timestamp must remain untouched
     expect(collectedOrder.delivery_notes).toContain('Doorstep scale measured 3.5 kg');
 
     // Once collected, order must leave active pickups queue
@@ -2429,6 +2468,128 @@ describe('Centralized Business Contact Settings & Multi-Page Propagation', () =>
     await waitFor(() => {
       expect(screen.getByText(/Access Restricted/i)).toBeDefined();
     });
+  });
+});
+
+describe('Doorstep Weighing Security & Location Differentiation', () => {
+  it('doorstep collection sets doorstep scale fields and does not set store intake weighed_at', async () => {
+    const order = await LaundryService.createBooking({
+      customer_name: 'Weighing Audit Test',
+      customer_phone: '9876543210',
+      pickup_address: '100ft Road, Indiranagar',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-25',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    await LaundryService.assignPickupStaff(order.id, 'courier-uuid-1', 'Rajesh Delivery', '9876543219');
+
+    const updated = await LaundryService.recordPickupCollectionAndWeight(
+      order.id,
+      4.75,
+      'courier-uuid-1',
+      'Rajesh Delivery',
+      'Measured at customer door'
+    );
+
+    expect(updated.order_status).toBe('collected');
+    expect(updated.pickup_measured_weight).toBe(4.75);
+    expect(updated.pickup_weighed_at).toBeDefined();
+    expect(updated.pickup_weighed_by).toBe('courier-uuid-1');
+    expect(updated.collected_at).toBeDefined();
+    expect(updated.measured_weight).toBe(4.75);
+    expect(updated.billable_weight).toBe(4.75);
+    expect(updated.total_amount_paise).toBe(38000);
+    // CRITICAL: weighed_at is the store manager intake timestamp and must remain untouched
+    expect(updated.weighed_at).toBeUndefined();
+  });
+
+  it('failed database update in recordPickupCollectionAndWeight does not corrupt local order state', async () => {
+    const order = await LaundryService.createBooking({
+      customer_name: 'Rollback Test',
+      customer_phone: '9876543211',
+      pickup_address: 'Koramangala 5th Block',
+      pickup_pincode: '560034',
+      pickup_date: '2026-10-25',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    const originalStatus = order.order_status;
+
+    // Simulate database failure for a nonexistent order ID
+    await expect(
+      LaundryService.recordPickupCollectionAndWeight('non-existent-order-id', 5.0)
+    ).rejects.toThrow(/Order not found/i);
+
+    // Verify existing order was not mutated
+    const orders = await LaundryService.getOrders();
+    const target = orders.find(o => o.id === order.id);
+    expect(target?.order_status).toBe(originalStatus);
+    expect(target?.pickup_measured_weight).toBeUndefined();
+  });
+
+  it('delivery interface clearly distinguishes coordinate-based locations from text-only locations', async () => {
+    // 1. Order with valid GPS
+    const orderGps = await LaundryService.createBooking({
+      customer_name: 'GPS Customer',
+      customer_phone: '9876543220',
+      pickup_address: 'Flat 101, Galaxy Apts',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-25',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)',
+      pickup_latitude: 12.9716,
+      pickup_longitude: 77.5946
+    });
+
+    // 2. Order without GPS (text only)
+    const orderTextOnly = await LaundryService.createBooking({
+      customer_name: 'Text Only Customer',
+      customer_phone: '9876543221',
+      pickup_address: 'House #44, 2nd Main, Indiranagar',
+      pickup_landmark: 'Near Water Tank',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-25',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    const deliveryProfile: Profile = {
+      id: '00000000-0000-4000-a000-000000000003',
+      email: 'driver@superwash.in',
+      phone: '9876543212',
+      full_name: 'Delivery Driver',
+      role: 'delivery',
+      is_active: true,
+      created_at: new Date().toISOString()
+    };
+    localStorage.setItem('superwash_auth_profile', JSON.stringify(deliveryProfile));
+
+    await LaundryService.assignPickupStaff(orderGps.id, deliveryProfile.id, deliveryProfile.full_name, deliveryProfile.phone);
+    await LaundryService.assignPickupStaff(orderTextOnly.id, deliveryProfile.id, deliveryProfile.full_name, deliveryProfile.phone);
+
+    render(
+      <MemoryRouter>
+        <AuthProvider>
+          <DeliveryDashboard />
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    // Verify GPS Pinned badge appears for orderGps
+    await waitFor(() => {
+      expect(screen.getByText(/GPS Pinned/i)).toBeDefined();
+    });
+
+    // Verify Text Address badge appears for orderTextOnly
+    expect(screen.getByText(/Text Address/i)).toBeDefined();
+
+    // Verify Directions buttons are present with distinct labels
+    const directionsGps = screen.getByRole('link', { name: /Directions \(GPS\)/i });
+    expect(directionsGps).toBeDefined();
+    expect(directionsGps.getAttribute('href')).toContain('https://www.google.com/maps/dir/?api=1&destination=12.9716,77.5946');
+
+    const searchMaps = screen.getByRole('link', { name: /Search Maps/i });
+    expect(searchMaps).toBeDefined();
+    expect(searchMaps.getAttribute('href')).toContain('https://www.google.com/maps/search/?api=1&query=');
   });
 });
 

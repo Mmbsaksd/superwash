@@ -34,6 +34,10 @@ export const CustomerHome: React.FC = () => {
   const [newLatitude, setNewLatitude] = useState<number | null>(null);
   const [newLongitude, setNewLongitude] = useState<number | null>(null);
   const [isLocating, setIsLocating] = useState<boolean>(false);
+  const [locationFeedback, setLocationFeedback] = useState<{
+    type: 'loading' | 'success' | 'permission_denied' | 'timeout' | 'error';
+    message: string;
+  } | null>(null);
 
   const [pickupDate, setPickupDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [selectedSlotName, setSelectedSlotName] = useState<string>('');
@@ -54,6 +58,7 @@ export const CustomerHome: React.FC = () => {
   const [onboardLatitude, setOnboardLatitude] = useState<number | null>(null);
   const [onboardLongitude, setOnboardLongitude] = useState<number | null>(null);
   const [isOnboardLocating, setIsOnboardLocating] = useState<boolean>(false);
+  const [onboardLocationFeedback, setOnboardLocationFeedback] = useState<string | null>(null);
   const [isOnboardingSaving, setIsOnboardingSaving] = useState<boolean>(false);
   const [onboardingError, setOnboardingError] = useState<string | null>(null);
 
@@ -98,20 +103,34 @@ export const CustomerHome: React.FC = () => {
 
   const handleGetOnboardLocation = () => {
     if (!navigator.geolocation) {
-      alert('Geolocation is not supported by your browser.');
+      setOnboardLocationFeedback('Geolocation is not supported by your browser.');
       return;
     }
     setIsOnboardLocating(true);
+    setOnboardLocationFeedback('Acquiring device GPS...');
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setOnboardLatitude(pos.coords.latitude);
-        setOnboardLongitude(pos.coords.longitude);
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        if (typeof lat === 'number' && typeof lng === 'number' && !isNaN(lat) && !isNaN(lng)) {
+          setOnboardLatitude(lat);
+          setOnboardLongitude(lng);
+          setOnboardLocationFeedback('GPS location attached!');
+        } else {
+          setOnboardLocationFeedback('Invalid location received from device.');
+        }
         setIsOnboardLocating(false);
       },
       (err) => {
         console.warn('Geolocation error:', err);
         setIsOnboardLocating(false);
-        alert('Could not retrieve current location.');
+        if (err.code === 1) {
+          setOnboardLocationFeedback('Location permission denied. Enter address manually.');
+        } else if (err.code === 3) {
+          setOnboardLocationFeedback('Location request timed out. Enter address manually.');
+        } else {
+          setOnboardLocationFeedback('Could not determine GPS position.');
+        }
       },
       { timeout: 8000, enableHighAccuracy: true }
     );
@@ -167,23 +186,64 @@ export const CustomerHome: React.FC = () => {
 
   const handleGetCurrentLocation = () => {
     if (!navigator.geolocation) {
-      alert('Geolocation is not supported by your browser.');
+      setLocationFeedback({
+        type: 'error',
+        message: 'Geolocation is not supported by your browser. Please enter address manually.'
+      });
       return;
     }
     setIsLocating(true);
+    setLocationFeedback({
+      type: 'loading',
+      message: 'Requesting device GPS position...'
+    });
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setNewLatitude(pos.coords.latitude);
-        setNewLongitude(pos.coords.longitude);
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        if (typeof lat === 'number' && typeof lng === 'number' && !isNaN(lat) && !isNaN(lng)) {
+          setNewLatitude(lat);
+          setNewLongitude(lng);
+          setLocationFeedback({
+            type: 'success',
+            message: 'GPS location attached! Delivery associates will navigate directly to your coordinates.'
+          });
+        } else {
+          setLocationFeedback({
+            type: 'error',
+            message: 'Invalid coordinates received from device. Please enter address manually.'
+          });
+        }
         setIsLocating(false);
       },
       (err) => {
         console.warn('Geolocation error:', err);
         setIsLocating(false);
-        alert('Could not retrieve current location. Please enter your address manually.');
+        if (err.code === 1) { // PERMISSION_DENIED
+          setLocationFeedback({
+            type: 'permission_denied',
+            message: 'Location permission was denied. You can continue by entering your address manually.'
+          });
+        } else if (err.code === 3) { // TIMEOUT
+          setLocationFeedback({
+            type: 'timeout',
+            message: 'GPS location request timed out. Please enter your address manually.'
+          });
+        } else {
+          setLocationFeedback({
+            type: 'error',
+            message: 'Could not determine GPS position. Please enter your address manually.'
+          });
+        }
       },
       { timeout: 8000, enableHighAccuracy: true }
     );
+  };
+
+  const handleClearLocation = () => {
+    setNewLatitude(null);
+    setNewLongitude(null);
+    setLocationFeedback(null);
   };
 
   const loadData = async () => {
@@ -592,20 +652,44 @@ export const CustomerHome: React.FC = () => {
                         className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-medium"
                         required
                       />
-                      <div className="flex items-center justify-between pt-0.5">
-                        <button
-                          type="button"
-                          onClick={handleGetCurrentLocation}
-                          disabled={isLocating}
-                          className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 px-3 py-1.5 rounded-lg border border-brand-200 transition"
-                        >
-                          <MapPin className="w-3.5 h-3.5 text-brand-600" />
-                          <span>{isLocating ? 'Locating...' : '📍 Use current location'}</span>
-                        </button>
-                        {newLatitude && newLongitude && (
-                          <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
-                            ✓ GPS Attached
-                          </span>
+                      <div className="space-y-1.5 pt-0.5">
+                        <div className="flex items-center justify-between">
+                          <button
+                            type="button"
+                            onClick={handleGetCurrentLocation}
+                            disabled={isLocating}
+                            className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 disabled:opacity-50 px-3 py-1.5 rounded-lg border border-brand-200 transition cursor-pointer"
+                          >
+                            <MapPin className="w-3.5 h-3.5 text-brand-600" />
+                            <span>{isLocating ? 'Acquiring GPS...' : '📍 Use current location'}</span>
+                          </button>
+                          {newLatitude && newLongitude && (
+                            <div className="flex items-center gap-2">
+                              <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
+                                ✓ GPS Attached
+                              </span>
+                              <button
+                                type="button"
+                                onClick={handleClearLocation}
+                                className="text-[10px] text-slate-400 hover:text-slate-600 underline cursor-pointer"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        {locationFeedback && (
+                          <p
+                            className={`text-[11px] leading-tight ${
+                              locationFeedback.type === 'success'
+                                ? 'text-emerald-700 font-medium'
+                                : locationFeedback.type === 'loading'
+                                ? 'text-brand-600 animate-pulse'
+                                : 'text-amber-700'
+                            }`}
+                          >
+                            {locationFeedback.message}
+                          </p>
                         )}
                       </div>
                       <div className="grid grid-cols-2 gap-2">
@@ -1391,15 +1475,20 @@ export const CustomerHome: React.FC = () => {
               <div className="pt-2 border-t border-slate-100 space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="block font-bold text-slate-700">Default Home Address (Optional)</label>
-                  <button
-                    type="button"
-                    onClick={handleGetOnboardLocation}
-                    disabled={isOnboardLocating}
-                    className="text-[11px] text-brand-600 font-bold hover:underline flex items-center gap-1 cursor-pointer"
-                  >
-                    <MapPin className="w-3 h-3" />
-                    <span>{isOnboardLocating ? 'Locating...' : '📍 GPS'}</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {onboardLocationFeedback && (
+                      <span className="text-[10px] text-slate-500">{onboardLocationFeedback}</span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleGetOnboardLocation}
+                      disabled={isOnboardLocating}
+                      className="text-[11px] text-brand-600 font-bold hover:underline flex items-center gap-1 cursor-pointer"
+                    >
+                      <MapPin className="w-3 h-3" />
+                      <span>{isOnboardLocating ? 'Locating...' : onboardLatitude ? '✓ GPS Attached' : '📍 GPS'}</span>
+                    </button>
+                  </div>
                 </div>
                 <input
                   type="text"
