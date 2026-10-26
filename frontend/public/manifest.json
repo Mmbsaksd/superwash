@@ -1,22 +1,31 @@
 {
-  "name": "SuperWash Exprez — Laundry Pickup & Delivery",
-  "short_name": "SuperWash Exprez",
+  "name": "SuperWash Exprez",
+  "short_name": "SuperWash",
   "description": "Simple mobile-first laundry pickup and delivery app by kilogram",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#0284c7",
   "orientation": "portrait-primary",
   "icons": [
     {
-      "src": "pwa-192.png",
+      "src": "/pwa-192.png",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
     },
     {
-      "src": "pwa-512.png",
+      "src": "/pwa-512.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

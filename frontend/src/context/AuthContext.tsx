@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Profile, UserRole } from '../types';
-import { DEMO_PROFILES } from '../services/laundryService';
+import { DEMO_PROFILES, LaundryService } from '../services/laundryService';
 import { supabase, isSupabaseConfigured } from '../services/supabase';
 
 interface AuthContextType {
@@ -16,7 +16,7 @@ interface AuthContextType {
   sendOtp: (phone: string) => Promise<{ success: boolean; message: string }>;
   verifyOtp: (phone: string, otp: string, roleHint?: UserRole) => Promise<{ success: boolean; message: string }>;
   switchDemoRole: (role: UserRole) => Promise<void>;
-  logout: () => Promise<void>;
+  logout: () => Promise<{ success: boolean; error?: any }>;
   isCustomer: boolean;
   isDelivery: boolean;
   isManager: boolean;
@@ -205,6 +205,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (isMounted) {
             setCurrentUser(null);
             localStorage.removeItem(AUTH_STORAGE_KEY);
+            LaundryService.clearUserOperationalCache();
           }
         } else if ((event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED' || event === 'PASSWORD_RECOVERY') && session?.user) {
           const profile = await syncSupabaseProfile(session.user);
@@ -217,9 +218,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       authListener = data.subscription;
     }
 
+    // Cross-tab storage listener to ensure multi-tab logout and account switching sync immediately
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === AUTH_STORAGE_KEY) {
+        if (!e.newValue) {
+          if (isMounted) {
+            setCurrentUser(null);
+            LaundryService.clearUserOperationalCache();
+          }
+        } else {
+          try {
+            const newProfile = JSON.parse(e.newValue);
+            if (isMounted) {
+              LaundryService.clearUserOperationalCache();
+              setCurrentUser(newProfile);
+            }
+          } catch {
+            // ignore JSON parse errors
+          }
+        }
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+
     return () => {
       isMounted = false;
       if (authListener) authListener.unsubscribe();
+      window.removeEventListener('storage', handleStorageChange);
     };
   }, []);
 
@@ -311,6 +336,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             message: 'Your staff account has been deactivated. Please contact the business owner.'
           };
         }
+        LaundryService.clearUserOperationalCache();
         setCurrentUser(profile);
         localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profile));
         return { success: true, role: profile.role };
@@ -327,6 +353,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           message: 'Your staff account has been deactivated. Please contact the business owner.'
         };
       }
+      LaundryService.clearUserOperationalCache();
       setCurrentUser(matchedProfile);
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(matchedProfile));
       return { success: true, role: matchedProfile.role };
@@ -508,6 +535,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (isLiveAuth) {
       if (role === 'customer') {
         await supabase.auth.signOut();
+        LaundryService.clearUserOperationalCache();
         window.location.href = '/customer';
         return;
       } else {
@@ -518,21 +546,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const profile = DEMO_PROFILES.find(p => p.role === role);
     if (profile) {
+      LaundryService.clearUserOperationalCache();
       setCurrentUser(profile);
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profile));
     }
   };
 
-  const logout = async () => {
+  const logout = async (): Promise<{ success: boolean; error?: any }> => {
+    let signoutError: any = null;
     if (isSupabaseConfigured) {
       try {
-        await supabase.auth.signOut();
-      } catch (err) {
-        console.warn('Sign-out error:', err);
+        const { error } = await supabase.auth.signOut();
+        if (error) {
+          signoutError = error;
+          console.warn('Sign-out error notice:', error.message);
+        }
+      } catch (err: any) {
+        signoutError = err;
+        console.warn('Sign-out exception notice:', err);
       }
     }
+    // Clear local authentication and sensitive user operational caches
     localStorage.removeItem(AUTH_STORAGE_KEY);
+    LaundryService.clearUserOperationalCache();
     setCurrentUser(null);
+    return { success: !signoutError, error: signoutError };
   };
 
   // Phone onboarding prompt needed if customer is missing mobile number

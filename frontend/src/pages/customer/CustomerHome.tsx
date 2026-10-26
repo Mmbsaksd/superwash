@@ -6,6 +6,7 @@ import { supabase } from '../../services/supabase';
 import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
 import { PaymentModal } from '../../components/PaymentModal';
 import { FeedbackModal } from '../../components/FeedbackModal';
+import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
 import {
   Calendar, Clock, MapPin, Plus, Phone,
   CheckCircle2, AlertCircle, Sparkles,
@@ -388,6 +389,9 @@ export const CustomerHome: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-24">
+      {/* PWA Installation Banner */}
+      <PwaInstallPrompt variant="customer-banner" />
+
       {/* Top Customer Brand Bar */}
       <div className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex items-center justify-between">

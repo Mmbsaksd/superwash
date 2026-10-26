@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import {
   Order, BusinessSettings, Profile, PickupSlot,
@@ -9,18 +10,20 @@ import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
 import { AssignStaffModal } from '../../components/AssignStaffModal';
 import { PaymentModal } from '../../components/PaymentModal';
 import { WeightEntryModal } from '../../components/WeightEntryModal';
+import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
 import {
   IndianRupee, Package, CheckCircle2,
   Users, Settings, Plus, RefreshCw,
   Search, Shield, Phone, Sparkles, Star, MessageSquareHeart,
   Calendar, Check, AlertCircle, X, MapPin, Download, TrendingUp, TrendingDown, LogOut, Loader2,
-  Edit2, Trash2
+  Edit2, Trash2, ArrowRight, Store, Truck, Scale
 } from 'lucide-react';
 import {
   ServiceArea, LaundryServiceItem, PeriodFilter, DashboardPeriodAnalytics
 } from '../../types';
 
 export const OwnerDashboard: React.FC = () => {
+  const navigate = useNavigate();
   const { currentUser, logout, sendPasswordResetEmail } = useAuth();
   const [activeTab, setActiveTab] = useState<'overview' | 'orders' | 'staff' | 'payments' | 'feedback' | 'settings'>('overview');
   const [orders, setOrders] = useState<Order[]>([]);
@@ -756,6 +759,11 @@ export const OwnerDashboard: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2">
+            <PwaInstallPrompt
+              variant="inline-button"
+              portalName="Business Owner"
+              className="bg-slate-800 hover:bg-slate-700 text-slate-300"
+            />
             <button
               onClick={() => setIsCreatingManualOrder(true)}
               className="py-2 px-3.5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-sm transition"
@@ -810,6 +818,128 @@ export const OwnerDashboard: React.FC = () => {
 
       {/* Main Container */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full flex-1 space-y-6">
+        {/* ================= QUICK ACCESS: OWNER PORTAL SHORTCUTS ================= */}
+        {currentUser?.role === 'owner' && currentUser?.is_active !== false && (
+          <section aria-label="Owner Quick Access" className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-amber-500/10 text-amber-600 flex items-center justify-center">
+                  <Shield className="w-4 h-4" />
+                </div>
+                <div>
+                  <h2 id="owner-quick-access-title" className="text-base font-black text-slate-900 tracking-tight">
+                    Quick Access
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Switch between business management portals with your owner credentials
+                  </p>
+                </div>
+              </div>
+              <span className="self-start sm:self-auto text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full uppercase tracking-wider">
+                Owner Direct Access
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+              {/* Card 1: Admin Portal */}
+              <button
+                type="button"
+                onClick={() => navigate('/admin')}
+                aria-label="Admin Portal — staff management and business settings; navigate to /admin"
+                className="group p-4 rounded-2xl border-2 border-slate-900 bg-slate-900 text-white text-left transition hover:shadow-md focus:outline-none focus:ring-2 focus:ring-slate-900 focus:ring-offset-2 flex flex-col justify-between cursor-pointer"
+              >
+                <div>
+                  <div className="flex items-center justify-between mb-2.5">
+                    <div className="w-9 h-9 rounded-xl bg-white/10 text-amber-400 flex items-center justify-center group-hover:scale-105 transition">
+                      <Shield className="w-5 h-5" />
+                    </div>
+                    <span className="text-[10px] font-bold bg-white/20 text-white px-2 py-0.5 rounded-full uppercase tracking-wider">
+                      Current Portal
+                    </span>
+                  </div>
+                  <h3 className="font-black text-sm text-white group-hover:text-amber-300 transition">
+                    Admin Portal
+                  </h3>
+                  <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                    Staff management and business settings
+                  </p>
+                </div>
+                <div className="mt-3.5 pt-2 border-t border-slate-800 flex items-center justify-between text-[11px] font-bold text-amber-400">
+                  <span className="font-mono">/admin</span>
+                  <div className="flex items-center gap-1 group-hover:translate-x-0.5 transition">
+                    <span>Active</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </div>
+                </div>
+              </button>
+
+              {/* Card 2: Store Manager */}
+              <button
+                type="button"
+                onClick={() => navigate('/manager')}
+                aria-label="Store Manager — intake, weighing, washing, and order processing; navigate to /manager"
+                className="group p-4 rounded-2xl border border-slate-200 hover:border-purple-300 bg-gradient-to-br from-white to-purple-50/30 text-left transition hover:shadow-md focus:outline-none focus:ring-2 focus:ring-purple-600 focus:ring-offset-2 flex flex-col justify-between cursor-pointer"
+              >
+                <div>
+                  <div className="flex items-center justify-between mb-2.5">
+                    <div className="w-9 h-9 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center group-hover:scale-105 transition">
+                      <Store className="w-5 h-5" />
+                    </div>
+                    <span className="text-[10px] font-bold bg-purple-100 text-purple-800 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                      Intake & Wash
+                    </span>
+                  </div>
+                  <h3 className="font-black text-sm text-slate-900 group-hover:text-purple-700 transition">
+                    Store Manager
+                  </h3>
+                  <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                    Intake, weighing, washing, and order processing
+                  </p>
+                </div>
+                <div className="mt-3.5 pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] font-bold text-purple-700">
+                  <span className="font-mono">/manager</span>
+                  <div className="flex items-center gap-1 group-hover:translate-x-0.5 transition">
+                    <span>Open Portal</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </div>
+                </div>
+              </button>
+
+              {/* Card 3: Delivery Portal */}
+              <button
+                type="button"
+                onClick={() => navigate('/delivery')}
+                aria-label="Delivery Portal — assigned pickups, deliveries, and delivery operations; navigate to /delivery"
+                className="group p-4 rounded-2xl border border-slate-200 hover:border-emerald-300 bg-gradient-to-br from-white to-emerald-50/30 text-left transition hover:shadow-md focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:ring-offset-2 flex flex-col justify-between cursor-pointer"
+              >
+                <div>
+                  <div className="flex items-center justify-between mb-2.5">
+                    <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center group-hover:scale-105 transition">
+                      <Truck className="w-5 h-5" />
+                    </div>
+                    <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                      Logistics
+                    </span>
+                  </div>
+                  <h3 className="font-black text-sm text-slate-900 group-hover:text-emerald-700 transition">
+                    Delivery Portal
+                  </h3>
+                  <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                    Assigned pickups, deliveries, and delivery operations
+                  </p>
+                </div>
+                <div className="mt-3.5 pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] font-bold text-emerald-700">
+                  <span className="font-mono">/delivery</span>
+                  <div className="flex items-center gap-1 group-hover:translate-x-0.5 transition">
+                    <span>Open Portal</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </div>
+                </div>
+              </button>
+            </div>
+          </section>
+        )}
+
         {/* ================= TAB 1: EXECUTIVE DASHBOARD ================= */}
         {activeTab === 'overview' && (
           <div className="space-y-6">

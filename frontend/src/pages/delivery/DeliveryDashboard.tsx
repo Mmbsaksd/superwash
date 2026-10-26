@@ -5,6 +5,7 @@ import { LaundryService } from '../../services/laundryService';
 import { supabase } from '../../services/supabase';
 import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
 import { PaymentModal } from '../../components/PaymentModal';
+import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
 import {
   Phone, MapPin, CheckCircle, Package, Truck,
   AlertCircle, IndianRupee, RefreshCw, X, Search, Calendar, LogOut, Scale, Clock, CheckCircle2
@@ -236,6 +237,11 @@ export const DeliveryDashboard: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2">
+            <PwaInstallPrompt
+              variant="inline-button"
+              portalName="Delivery Associate"
+              className="bg-emerald-800 hover:bg-emerald-600 text-emerald-100"
+            />
             <button
               onClick={loadData}
               className="p-2 rounded-xl bg-emerald-800 hover:bg-emerald-600 transition text-emerald-100 flex items-center gap-1.5 text-xs font-semibold cursor-pointer"

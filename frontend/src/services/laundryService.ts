@@ -149,7 +149,7 @@ export const DEMO_PROFILES: Profile[] = [
 ];
 
 // Local fallback storage keys
-const STORAGE_KEYS = {
+export const STORAGE_KEYS = {
   ORDERS: 'superwash_orders',
   SETTINGS: 'superwash_settings',
   SLOTS: 'superwash_slots',
@@ -446,6 +446,29 @@ export class LaundryService {
     this.localSequenceCounter = 0;
     this.inFlightBookings.clear();
   }
+
+  static clearUserOperationalCache(): void {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.removeItem(STORAGE_KEYS.ORDERS);
+      localStorage.removeItem(STORAGE_KEYS.PAYMENTS);
+      localStorage.removeItem(STORAGE_KEYS.WEIGHT_HISTORY);
+      localStorage.removeItem(STORAGE_KEYS.STATUS_HISTORY);
+      localStorage.removeItem(STORAGE_KEYS.FEEDBACK);
+
+      // Clear all user-specific address cache keys (superwash_addresses_*)
+      Object.keys(localStorage).forEach((key) => {
+        if (key.startsWith(STORAGE_KEYS.ADDRESSES) || key.startsWith('superwash_addresses')) {
+          localStorage.removeItem(key);
+        }
+      });
+
+      this.resetOrderSequence();
+    } catch (e) {
+      console.warn('Notice clearing local operational cache:', e);
+    }
+  }
+
 
   static generateSafeOrderNumber(existingOrders: Order[]): string {
     let maxSeq = 1000;

@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { BusinessSettings } from '../../types';
 import { LaundryService, DEFAULT_SETTINGS } from '../../services/laundryService';
 import { useAuth } from '../../context/AuthContext';
+import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
 import {
   Sparkles, Clock, Truck, ShieldCheck, CheckCircle2,
   CalendarCheck, ArrowRight, Scale, Phone, MapPin,
@@ -74,6 +75,9 @@ export const LandingPage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
+      {/* PWA Installation Banner */}
+      <PwaInstallPrompt variant="customer-banner" />
+
       {/* Top Navigation */}
       <header className="bg-white/95 backdrop-blur-md border-b border-slate-200 sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 sm:h-20 flex items-center justify-between">
