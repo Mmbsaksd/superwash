@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useSearchParams, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { Order, CustomerAddress, PickupSlot, BusinessSettings, OrderFeedback, LaundryServiceItem } from '../../types';
 import { LaundryService, DEFAULT_SETTINGS } from '../../services/laundryService';
@@ -7,16 +8,36 @@ import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
 import { PaymentModal } from '../../components/PaymentModal';
 import { FeedbackModal } from '../../components/FeedbackModal';
 import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
+import { formatCustomerError } from '../../utils/errorHandling';
+import {
+  getPendingBooking,
+  savePendingBooking,
+  clearPendingBooking,
+  updatePendingBookingStatus,
+  calculateBookingFingerprint,
+  isAmbiguousNetworkError,
+  PendingBookingRecord,
+  PendingBookingPayload
+} from '../../utils/pendingBooking';
 import {
   Calendar, Clock, MapPin, Plus, Phone,
   CheckCircle2, AlertCircle, Sparkles,
   QrCode, ArrowRight, User, Star, MessageSquareHeart,
-  ShieldCheck, RefreshCw, LogOut, X, Truck, Scale, Package
+  ShieldCheck, RefreshCw, LogOut, X, Truck, Scale, Package, Lock,
+  AlertTriangle, Loader2
 } from 'lucide-react';
 
+const CONFIRMED_ORDER_KEY = 'superwash_last_confirmed_order';
+
 export const CustomerHome: React.FC = () => {
-  const { currentUser, needsPhonePrompt, updateProfile, logout } = useAuth();
-  const [activeTab, setActiveTab] = useState<'book' | 'current' | 'history' | 'addresses' | 'contact'>('book');
+  const { currentUser, needsPhonePrompt, updateProfile, logout, isLoading: isAuthLoading } = useAuth();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get('tab');
+  const validTabs: Array<'book' | 'current' | 'history' | 'addresses' | 'contact'> = ['book', 'current', 'history', 'addresses', 'contact'];
+  const [activeTab, setActiveTab] = useState<'book' | 'current' | 'history' | 'addresses' | 'contact'>(
+    tabParam && validTabs.includes(tabParam as any) ? (tabParam as any) : 'book'
+  );
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [services, setServices] = useState<LaundryServiceItem[]>([]);
   const [selectedServiceId, setSelectedServiceId] = useState<string>('');
@@ -49,6 +70,75 @@ export const CustomerHome: React.FC = () => {
   const [bookingSuccessOrder, setBookingSuccessOrder] = useState<Order | null>(null);
   const [bookingError, setBookingError] = useState<string | null>(null);
 
+  // Pending Booking Recovery State
+  const [pendingRecovery, setPendingRecovery] = useState<PendingBookingRecord | null>(null);
+  const [isResolvingPending, setIsResolvingPending] = useState<boolean>(false);
+  const [statusCheckOutcome, setStatusCheckOutcome] = useState<'not_found' | null>(null);
+
+  // Client submission request ID for safe idempotency & timeout retries
+  const [submissionId, setSubmissionId] = useState<string>(() =>
+    typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
+  );
+
+  // Restore pending uncertain booking from sessionStorage across refreshes on mount
+  useEffect(() => {
+    if (!currentUser) {
+      setPendingRecovery(null);
+      return;
+    }
+
+    const pending = getPendingBooking(currentUser.id);
+    if (pending) {
+      setPendingRecovery(pending);
+      setSubmissionId(pending.clientSubmissionId);
+      if (pending.payload.pickup_date) setPickupDate(pending.payload.pickup_date);
+      if (pending.payload.pickup_slot) setSelectedSlotName(pending.payload.pickup_slot);
+      if (pending.payload.service_id) setSelectedServiceId(pending.payload.service_id);
+    }
+  }, [currentUser]);
+
+  // Renew submission ID whenever booking parameters change so each distinct booking request gets a unique ID
+  useEffect(() => {
+    // If an uncertain booking is pending resolution, NEVER silently wipe it on form changes!
+    if (pendingRecovery) {
+      if (pendingRecovery.status === 'uncertain_timeout') {
+        return;
+      }
+
+      const currentFingerprint = calculateBookingFingerprint({
+        customer_phone: customerPhone || currentUser?.phone || '',
+        pickup_address: isEnteringNewAddress
+          ? newAddressLine
+          : (addresses.find((a) => a.id === selectedAddressId)?.address_line || ''),
+        pickup_pincode: isEnteringNewAddress
+          ? newPincode
+          : (addresses.find((a) => a.id === selectedAddressId)?.pincode || ''),
+        pickup_date: pickupDate,
+        pickup_slot: selectedSlotName,
+        service_id: selectedServiceId
+      });
+
+      if (currentFingerprint !== pendingRecovery.fingerprint) {
+        // Only discard if status is strictly in_flight and was uncompleted
+        clearPendingBooking(currentUser?.id);
+        setPendingRecovery(null);
+        setSubmissionId(
+          typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
+        );
+      }
+    } else {
+      setSubmissionId(
+        typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
+      );
+    }
+  }, [selectedServiceId, selectedSlotName, pickupDate, selectedAddressId, newAddressLine, newPincode, pendingRecovery, customerPhone, currentUser]);
+
   // Onboarding Modal State (Prompt for phone and initial address if missing after Google sign-in)
   const [isOnboardingModalOpen, setIsOnboardingModalOpen] = useState<boolean>(false);
   const [onboardPhone, setOnboardPhone] = useState<string>('');
@@ -66,6 +156,120 @@ export const CustomerHome: React.FC = () => {
   // Modals
   const [selectedPaymentOrder, setSelectedPaymentOrder] = useState<Order | null>(null);
   const [selectedFeedbackOrder, setSelectedFeedbackOrder] = useState<Order | null>(null);
+
+  const handleTabChange = (tab: 'book' | 'current' | 'history' | 'addresses' | 'contact') => {
+    if (tab === 'book') {
+      setSubmissionId(
+        typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
+      );
+    }
+    setActiveTab(tab);
+    setSearchParams(
+      (prev) => {
+        const p = new URLSearchParams(prev);
+        p.set('tab', tab);
+        return p;
+      },
+      { replace: true }
+    );
+  };
+
+  const handleDismissConfirmation = () => {
+    setBookingSuccessOrder(null);
+    try {
+      sessionStorage.removeItem(CONFIRMED_ORDER_KEY);
+    } catch {}
+    setSearchParams(
+      (prev) => {
+        const p = new URLSearchParams(prev);
+        p.delete('confirmed');
+        return p;
+      },
+      { replace: true }
+    );
+  };
+
+  // FIX 2: Restore confirmed booking state ONLY on explicit ?confirmed=... URL and valid ownership
+  useEffect(() => {
+    // Wait until auth state finishes hydrating before checking ownership
+    if (isAuthLoading) {
+      return;
+    }
+
+    const confirmedParam = searchParams.get('confirmed');
+    // Never resurrect an old confirmation on a clean /customer visit without an explicit query parameter
+    if (!confirmedParam) {
+      return;
+    }
+
+    if (!bookingSuccessOrder) {
+      try {
+        const stored = sessionStorage.getItem(CONFIRMED_ORDER_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          const isRecent = parsed && typeof parsed.timestamp === 'number' && Date.now() - parsed.timestamp < 86400000;
+          const isOrderMatch = parsed && parsed.order_number === confirmedParam;
+
+          // Verify ownership: order must belong to the currently authenticated customer
+          const isOwner = currentUser && (
+            (parsed.customer_id && parsed.customer_id === currentUser.id) ||
+            (currentUser.phone && parsed.customer_phone && parsed.customer_phone.replace(/[^0-9]/g, '') === currentUser.phone.replace(/[^0-9]/g, ''))
+          );
+
+          if (isOrderMatch && isRecent && isOwner) {
+            setBookingSuccessOrder(parsed as Order);
+            if (!tabParam) {
+              setActiveTab('current');
+            }
+          } else {
+            // Mismatched, expired, or belongs to another user: clear invalid stored data
+            sessionStorage.removeItem(CONFIRMED_ORDER_KEY);
+          }
+        }
+      } catch {
+        sessionStorage.removeItem(CONFIRMED_ORDER_KEY);
+      }
+    }
+  }, [searchParams, bookingSuccessOrder, tabParam, currentUser, isAuthLoading]);
+
+  // Keep bookingSuccessOrder in sync with loaded database orders (with ownership verification)
+  useEffect(() => {
+    if (isAuthLoading) return;
+    const confirmedParam = searchParams.get('confirmed');
+    if (confirmedParam && orders.length > 0) {
+      const matched = orders.find((o) => o.order_number === confirmedParam);
+      if (matched) {
+        const isOwner = currentUser && (
+          matched.customer_id === currentUser.id ||
+          (currentUser.phone && matched.customer_phone && matched.customer_phone.replace(/[^0-9]/g, '') === currentUser.phone.replace(/[^0-9]/g, ''))
+        );
+        if (isOwner) {
+          setBookingSuccessOrder(matched);
+        }
+      }
+    }
+  }, [orders, searchParams, currentUser, isAuthLoading]);
+
+  // FIX 2: Clear stored confirmation on logout or account switch
+  useEffect(() => {
+    if (isAuthLoading) return;
+    if (bookingSuccessOrder) {
+      if (!currentUser) {
+        setBookingSuccessOrder(null);
+        try { sessionStorage.removeItem(CONFIRMED_ORDER_KEY); } catch {}
+      } else {
+        const isOwner =
+          (bookingSuccessOrder.customer_id && bookingSuccessOrder.customer_id === currentUser.id) ||
+          (currentUser.phone && bookingSuccessOrder.customer_phone && bookingSuccessOrder.customer_phone.replace(/[^0-9]/g, '') === currentUser.phone.replace(/[^0-9]/g, ''));
+        if (!isOwner) {
+          setBookingSuccessOrder(null);
+          try { sessionStorage.removeItem(CONFIRMED_ORDER_KEY); } catch {}
+        }
+      }
+    }
+  }, [currentUser, bookingSuccessOrder, isAuthLoading]);
 
   useEffect(() => {
     if (currentUser) {
@@ -179,7 +383,7 @@ export const CustomerHome: React.FC = () => {
       setCustomerPhone(clean);
       setCustomerName(onboardName.trim() || customerName);
     } catch (err: any) {
-      setOnboardingError(err.message || 'Error saving profile.');
+      setOnboardingError(formatCustomerError(err, 'Error saving profile. Please verify your details and try again.'));
     } finally {
       setIsOnboardingSaving(false);
     }
@@ -298,6 +502,21 @@ export const CustomerHome: React.FC = () => {
     e.preventDefault();
     setBookingError(null);
 
+    // FIX 3: Unauthenticated booking guard - explain requirement and redirect preserving return destination
+    if (!currentUser) {
+      setBookingError('Sign-in required: Please sign in with your account to confirm your pickup booking.');
+      navigate('/login?redirect=/customer');
+      return;
+    }
+
+    // Guard against creating a duplicate booking while an uncertain submission is unresolved
+    if (pendingRecovery?.status === 'uncertain_timeout') {
+      setBookingError(
+        'You have an unconfirmed booking attempt pending verification. Please click "Verify & Complete Booking" in the banner above before creating a new booking.'
+      );
+      return;
+    }
+
     let addressLine = '';
     let landmark = '';
     let pincode = '';
@@ -352,34 +571,270 @@ export const CustomerHome: React.FC = () => {
       return;
     }
 
+    const payloadData: PendingBookingPayload = {
+      customer_name: customerName,
+      customer_phone: customerPhone || currentUser?.phone || '9876543212',
+      pickup_address: addressLine,
+      pickup_landmark: landmark,
+      pickup_pincode: pincode,
+      pickup_date: pickupDate,
+      pickup_slot: selectedSlotName,
+      pickup_latitude: latitude,
+      pickup_longitude: longitude,
+      service_id: selectedServiceId || undefined,
+      notes: undefined
+    };
+
+    // 1. Persist pending record in sessionStorage with status 'in_flight' BEFORE sending network request
+    if (currentUser?.id) {
+      savePendingBooking(currentUser.id, submissionId, payloadData, 'in_flight');
+    }
+
     setIsBookingSubmitting(true);
 
     try {
       const order = await LaundryService.createOrder({
         customer_id: currentUser?.id,
-        customer_name: customerName,
-        customer_phone: customerPhone || currentUser?.phone || '9876543212',
-        pickup_address: addressLine,
-        pickup_landmark: landmark,
-        pickup_pincode: pincode,
-        pickup_date: pickupDate,
-        pickup_slot: selectedSlotName,
-        pickup_latitude: latitude,
-        pickup_longitude: longitude,
-        service_id: selectedServiceId || undefined
+        ...payloadData,
+        client_submission_id: submissionId
       });
 
+      // Request succeeded: clear pending record immediately
+      if (currentUser?.id) {
+        clearPendingBooking(currentUser.id);
+      }
+      setPendingRecovery(null);
+
+      // Renew submission ID for any subsequent separate booking
+      setSubmissionId(
+        typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
+      );
+
       setBookingSuccessOrder(order);
-      setOrders((prev) => [order, ...prev]);
-      setActiveTab('current');
+      try {
+        sessionStorage.setItem(CONFIRMED_ORDER_KEY, JSON.stringify({
+          ...order,
+          timestamp: Date.now()
+        }));
+      } catch {}
+
+      setOrders((prev) => {
+        const exists = prev.some((o) => o.id === order.id);
+        return exists ? prev : [order, ...prev];
+      });
+      setBookingError(null);
+      handleTabChange('current');
+      setSearchParams(
+        (prev) => {
+          const p = new URLSearchParams(prev);
+          p.set('tab', 'current');
+          p.set('confirmed', order.order_number);
+          return p;
+        },
+        { replace: true }
+      );
     } catch (err: any) {
-      setBookingError(err.message || 'Failed to create booking. Please try again.');
+      if (isAmbiguousNetworkError(err)) {
+        // Retain pending record with 'uncertain_timeout' status
+        const updated = updatePendingBookingStatus('uncertain_timeout');
+        if (updated) {
+          setPendingRecovery(updated);
+        }
+        setBookingError(
+          'Network connection timed out. Your request may have reached our server. Please click "Verify & Complete Booking" to resolve your order without creating a duplicate.'
+        );
+      } else if (err?.code === 'BOOKING_SERVICE_UNAVAILABLE' || err?.code === 'SCHEMA_OR_SERVICE_UNAVAILABLE') {
+        // Database migration missing or service undergoing upgrades: PRESERVE pending record!
+        const updated = updatePendingBookingStatus('uncertain_timeout');
+        if (updated) {
+          setPendingRecovery(updated);
+        }
+        setBookingError(
+          'The booking service is temporarily undergoing upgrades. Your pending booking is safely preserved. Please retry once the service is available.'
+        );
+      } else {
+        // Definitive validation rejection: safe to clear pending record
+        if (currentUser?.id) {
+          clearPendingBooking(currentUser.id);
+        }
+        setPendingRecovery(null);
+        setBookingError(formatCustomerError(err, 'Failed to create booking. Please try again.'));
+      }
     } finally {
       setIsBookingSubmitting(false);
     }
   };
 
-  const currentActiveOrder = orders.find((o) => o.order_status !== 'delivered' && o.order_status !== 'cancelled') || orders[0];
+  const handleResolvePendingBooking = async () => {
+    if (!currentUser || !pendingRecovery) return;
+
+    setIsResolvingPending(true);
+    setBookingError(null);
+
+    try {
+      // 1. Safe status check: Query if order was already committed under this submission ID
+      const existingOrder = await LaundryService.getOrderBySubmissionId(
+        pendingRecovery.clientSubmissionId,
+        currentUser.id
+      );
+
+      if (existingOrder) {
+        clearPendingBooking(currentUser.id);
+        setPendingRecovery(null);
+        setStatusCheckOutcome(null);
+
+        setSubmissionId(
+          typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
+        );
+
+        setBookingSuccessOrder(existingOrder);
+        try {
+          sessionStorage.setItem(
+            CONFIRMED_ORDER_KEY,
+            JSON.stringify({
+              ...existingOrder,
+              timestamp: Date.now()
+            })
+          );
+        } catch {}
+
+        setOrders((prev) => {
+          const exists = prev.some((o) => o.id === existingOrder.id);
+          return exists ? prev : [existingOrder, ...prev];
+        });
+        handleTabChange('current');
+        setSearchParams(
+          (prev) => {
+            const p = new URLSearchParams(prev);
+            p.set('tab', 'current');
+            p.set('confirmed', existingOrder.order_number);
+            return p;
+          },
+          { replace: true }
+        );
+        return;
+      }
+
+      // 2. If no order exists in database, update status check outcome
+      setStatusCheckOutcome('not_found');
+      setBookingError(
+        'Verified: No order was created for this previous attempt. You can now complete the booking or start fresh.'
+      );
+    } catch (err: any) {
+      if (err?.code === 'SCHEMA_OR_SERVICE_UNAVAILABLE' || err?.code === 'BOOKING_SERVICE_UNAVAILABLE') {
+        setBookingError(
+          'The booking verification service is temporarily unavailable while database upgrades are pending. Your pending booking is safely preserved. Please try checking again in a few moments.'
+        );
+      } else if (isAmbiguousNetworkError(err)) {
+        setBookingError(
+          'Network is still unresponsive. We are keeping your pending booking record safe. Please check your connection and retry.'
+        );
+      } else {
+        setBookingError(
+          formatCustomerError(err, 'Unable to check booking status. Please check your connection and try again.')
+        );
+      }
+    } finally {
+      setIsResolvingPending(false);
+    }
+  };
+
+  const handleCompleteUncommittedBooking = async () => {
+    if (!currentUser || !pendingRecovery) return;
+
+    setIsResolvingPending(true);
+    setBookingError(null);
+
+    try {
+      const order = await LaundryService.createOrder({
+        customer_id: currentUser.id,
+        ...pendingRecovery.payload,
+        client_submission_id: pendingRecovery.clientSubmissionId
+      });
+
+      clearPendingBooking(currentUser.id);
+      setPendingRecovery(null);
+      setStatusCheckOutcome(null);
+
+      setSubmissionId(
+        typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
+      );
+
+      setBookingSuccessOrder(order);
+      try {
+        sessionStorage.setItem(
+          CONFIRMED_ORDER_KEY,
+          JSON.stringify({
+            ...order,
+            timestamp: Date.now()
+          })
+        );
+      } catch {}
+
+      setOrders((prev) => {
+        const exists = prev.some((o) => o.id === order.id);
+        return exists ? prev : [order, ...prev];
+      });
+      handleTabChange('current');
+      setSearchParams(
+        (prev) => {
+          const p = new URLSearchParams(prev);
+          p.set('tab', 'current');
+          p.set('confirmed', order.order_number);
+          return p;
+        },
+        { replace: true }
+      );
+    } catch (err: any) {
+      if (isAmbiguousNetworkError(err)) {
+        setBookingError(
+          'Network is still unresponsive. We are keeping your pending booking record safe. Please check your connection and retry.'
+        );
+      } else if (err?.code === 'BOOKING_SERVICE_UNAVAILABLE' || err?.code === 'SCHEMA_OR_SERVICE_UNAVAILABLE') {
+        setBookingError(
+          'The booking service is temporarily unavailable while database upgrades are pending. Your pending booking is safely preserved. Please try again in a few moments.'
+        );
+      } else {
+        clearPendingBooking(currentUser.id);
+        setPendingRecovery(null);
+        setStatusCheckOutcome(null);
+        setBookingError(
+          formatCustomerError(err, 'Unable to confirm pending booking. Please adjust your details and try again.')
+        );
+      }
+    } finally {
+      setIsResolvingPending(false);
+    }
+  };
+
+  const handleDiscardPendingBooking = (force = false) => {
+    if (!force && statusCheckOutcome !== 'not_found') {
+      const confirmed = window.confirm(
+        'Warning: Your previous booking attempt may have already been recorded on the server. If an order was created, discarding this notice will not cancel the pickup. Are you sure you want to discard this check and start a new booking?'
+      );
+      if (!confirmed) return;
+    }
+    clearPendingBooking(currentUser?.id);
+    setPendingRecovery(null);
+    setStatusCheckOutcome(null);
+    setSubmissionId(
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
+    );
+  };
+
+  const currentActiveOrder =
+    (bookingSuccessOrder ? orders.find((o) => o.id === bookingSuccessOrder.id || o.order_number === bookingSuccessOrder.order_number) : null) ||
+    orders.find((o) => o.order_status !== 'delivered' && o.order_status !== 'cancelled') ||
+    orders[0] ||
+    bookingSuccessOrder;
   const selectedService = services.find((s) => s.id === selectedServiceId) || services[0];
   const pricePerKg = settings ? (settings.price_per_kg_paise / 100).toFixed(0) : '80';
   const minWeight = settings ? settings.min_weight_kg.toFixed(0) : '3';
@@ -395,8 +850,13 @@ export const CustomerHome: React.FC = () => {
       {/* Top Customer Brand Bar */}
       <div className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-brand-600 to-cyan-500 flex items-center justify-center text-white shadow-sm">
+          <Link
+            to="/customer"
+            onClick={() => handleTabChange('book')}
+            className="flex items-center gap-2.5 group hover:opacity-90 transition"
+            title="SuperWash Customer Laundry Hub"
+          >
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-brand-600 to-cyan-500 flex items-center justify-center text-white shadow-sm group-hover:scale-105 transition-transform">
               <Sparkles className="w-5 h-5" />
             </div>
             <div>
@@ -405,7 +865,7 @@ export const CustomerHome: React.FC = () => {
                 Customer Laundry Hub • Bengaluru
               </p>
             </div>
-          </div>
+          </Link>
 
           <div className="flex items-center gap-3">
             {currentUser ? (
@@ -439,13 +899,13 @@ export const CustomerHome: React.FC = () => {
                 </button>
               </>
             ) : (
-              <a
-                href="/login"
+              <Link
+                to="/login?redirect=/customer"
                 className="py-2 px-3.5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-sm transition flex items-center gap-1.5"
               >
                 <User className="w-4 h-4" />
-                <span>Sign In with Google</span>
-              </a>
+                <span>Sign In</span>
+              </Link>
             )}
           </div>
         </div>
@@ -455,7 +915,7 @@ export const CustomerHome: React.FC = () => {
       <div className="bg-white border-b border-slate-200 sticky top-[65px] z-20">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-2 overflow-x-auto flex gap-2 scrollbar-none">
           <button
-            onClick={() => setActiveTab('book')}
+            onClick={() => handleTabChange('book')}
             className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition flex items-center gap-2 ${
               activeTab === 'book'
                 ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25'
@@ -466,7 +926,7 @@ export const CustomerHome: React.FC = () => {
           </button>
 
           <button
-            onClick={() => setActiveTab('current')}
+            onClick={() => handleTabChange('current')}
             className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition flex items-center gap-2 ${
               activeTab === 'current'
                 ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25'
@@ -480,7 +940,7 @@ export const CustomerHome: React.FC = () => {
           </button>
 
           <button
-            onClick={() => setActiveTab('history')}
+            onClick={() => handleTabChange('history')}
             className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${
               activeTab === 'history'
                 ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25'
@@ -491,7 +951,7 @@ export const CustomerHome: React.FC = () => {
           </button>
 
           <button
-            onClick={() => setActiveTab('addresses')}
+            onClick={() => handleTabChange('addresses')}
             className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${
               activeTab === 'addresses'
                 ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25'
@@ -502,7 +962,7 @@ export const CustomerHome: React.FC = () => {
           </button>
 
           <button
-            onClick={() => setActiveTab('contact')}
+            onClick={() => handleTabChange('contact')}
             className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${
               activeTab === 'contact'
                 ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25'
@@ -515,27 +975,69 @@ export const CustomerHome: React.FC = () => {
       </div>
 
       {/* Main Responsive Body */}
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full flex-1">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full flex-1 space-y-6">
+        {/* Global Confirmation Banner (Visible across tabs when a booking is confirmed) */}
+        {bookingSuccessOrder && (
+          <div className="p-4 sm:p-5 bg-emerald-50 border-2 border-emerald-300 rounded-3xl text-emerald-950 shadow-sm animate-fade-in relative">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm mt-0.5">
+                  <CheckCircle2 className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-black text-base sm:text-lg text-emerald-950">
+                      Pickup Booked Successfully!
+                    </h3>
+                    <span className="px-2.5 py-0.5 rounded-full text-xs font-mono font-black bg-emerald-200 text-emerald-900 border border-emerald-300">
+                      #{bookingSuccessOrder.order_number}
+                    </span>
+                  </div>
+                  <p className="text-xs sm:text-sm text-emerald-800 mt-1">
+                    Your pickup order has been confirmed for <span className="font-bold">{bookingSuccessOrder.pickup_date}</span> during <span className="font-bold">{bookingSuccessOrder.pickup_slot}</span>. Our delivery agent will arrive at your doorstep.
+                  </p>
+                  <div className="flex items-center gap-3 mt-3">
+                    <button
+                      type="button"
+                      onClick={() => handleTabChange('current')}
+                      className="py-1.5 px-3.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 transition shadow-sm cursor-pointer"
+                    >
+                      <Clock className="w-3.5 h-3.5" />
+                      <span>Track Live Progress</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleDismissConfirmation}
+                className="text-emerald-500 hover:text-emerald-800 p-1.5 rounded-xl hover:bg-emerald-100 transition"
+                title="Dismiss confirmation"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* ================= 1. BOOK A PICKUP TAB ================= */}
         {activeTab === 'book' && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
             {/* Left Column: Form (7 cols on desktop) */}
             <div className="lg:col-span-7 space-y-4">
-              {bookingSuccessOrder && (
-                <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-800 space-y-2 animate-fade-in">
-                  <div className="flex items-center gap-2 font-bold text-sm">
-                    <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-                    <span>Pickup Booked Successfully!</span>
+              {!currentUser && (
+                <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl text-amber-800 text-xs flex items-center justify-between gap-3 shadow-sm">
+                  <div className="flex items-center gap-2">
+                    <Lock className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>Sign-in is required to confirm and live-track your laundry pickup booking.</span>
                   </div>
-                  <p className="text-xs">
-                    Your order <span className="font-mono font-bold">#{bookingSuccessOrder.order_number}</span> has been confirmed. Our delivery agent will arrive during your selected slot.
-                  </p>
-                  <button
-                    onClick={() => setActiveTab('current')}
-                    className="text-xs font-bold text-emerald-700 underline flex items-center gap-1"
+                  <Link
+                    to="/login?redirect=/customer"
+                    className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs whitespace-nowrap transition"
                   >
-                    Track Live Progress <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
+                    Sign In
+                  </Link>
                 </div>
               )}
 
@@ -543,6 +1045,67 @@ export const CustomerHome: React.FC = () => {
                 <div className="p-3.5 bg-red-50 border border-red-200 rounded-2xl text-red-700 text-xs flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 shrink-0" />
                   <span>{bookingError}</span>
+                </div>
+              )}
+
+              {/* Recovery Banner for Ambiguous / Timeout Pending Bookings */}
+              {pendingRecovery && (
+                <div className="p-4 bg-amber-50 border-2 border-amber-300 rounded-2xl text-amber-950 shadow-sm animate-fade-in space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-sm mt-0.5">
+                        <AlertTriangle className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h3 className="font-black text-sm text-amber-950">
+                          Unconfirmed Booking Attempt Detected
+                        </h3>
+                        <p className="text-xs text-amber-800 mt-1">
+                          {statusCheckOutcome === 'not_found'
+                            ? 'Status check verified: No order was created for this previous attempt. You can now complete the booking or start fresh.'
+                            : `A network timeout interrupted your previous booking request for ${pendingRecovery.payload.pickup_date} during ${pendingRecovery.payload.pickup_slot}. Verify whether the order was recorded to prevent duplicate scheduling.`}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleDiscardPendingBooking(false)}
+                      className="text-amber-600 hover:text-amber-900 p-1.5 rounded-xl hover:bg-amber-100 transition"
+                      title="Discard notice"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-3 pt-1">
+                    {statusCheckOutcome === 'not_found' ? (
+                      <button
+                        type="button"
+                        disabled={isResolvingPending}
+                        onClick={handleCompleteUncommittedBooking}
+                        className="py-2 px-3.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 transition shadow-sm cursor-pointer disabled:opacity-50"
+                      >
+                        {isResolvingPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                        <span>Complete Booking</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={isResolvingPending}
+                        onClick={handleResolvePendingBooking}
+                        className="py-2 px-3.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 transition shadow-sm cursor-pointer disabled:opacity-50"
+                      >
+                        {isResolvingPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                        <span>Verify & Complete Booking</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleDiscardPendingBooking(false)}
+                      className="py-1.5 px-2 text-amber-800 hover:text-amber-950 font-bold text-xs underline cursor-pointer"
+                    >
+                      Discard & Start Fresh
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -815,8 +1378,22 @@ export const CustomerHome: React.FC = () => {
                     disabled={isBookingSubmitting}
                     className="w-full py-3.5 bg-brand-600 hover:bg-brand-700 text-white font-black text-sm rounded-2xl shadow-lg transition flex items-center justify-center gap-2 disabled:opacity-50"
                   >
-                    <CheckCircle2 className="w-5 h-5" />
-                    <span>Confirm Pickup Booking</span>
+                    {pendingRecovery?.status === 'uncertain_timeout' ? (
+                      <>
+                        <RefreshCw className="w-5 h-5" />
+                        <span>Verify Unconfirmed Booking First</span>
+                      </>
+                    ) : currentUser ? (
+                      <>
+                        <CheckCircle2 className="w-5 h-5" />
+                        <span>Confirm Pickup Booking</span>
+                      </>
+                    ) : (
+                      <>
+                        <Lock className="w-5 h-5" />
+                        <span>Sign In to Book Pickup</span>
+                      </>
+                    )}
                   </button>
                 </div>
               </form>
@@ -864,8 +1441,22 @@ export const CustomerHome: React.FC = () => {
                     disabled={isBookingSubmitting}
                     className="w-full py-3.5 bg-white hover:bg-slate-100 active:scale-[0.99] text-brand-700 font-black text-sm rounded-2xl shadow-lg transition flex items-center justify-center gap-2 disabled:opacity-50"
                   >
-                    <CheckCircle2 className="w-5 h-5" />
-                    <span>Confirm Pickup Booking</span>
+                    {pendingRecovery?.status === 'uncertain_timeout' ? (
+                      <>
+                        <RefreshCw className="w-5 h-5" />
+                        <span>Verify Unconfirmed Booking First</span>
+                      </>
+                    ) : currentUser ? (
+                      <>
+                        <CheckCircle2 className="w-5 h-5" />
+                        <span>Confirm Pickup Booking</span>
+                      </>
+                    ) : (
+                      <>
+                        <Lock className="w-5 h-5" />
+                        <span>Sign In to Book Pickup</span>
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
@@ -1226,7 +1817,7 @@ export const CustomerHome: React.FC = () => {
                   You don't have any ongoing laundry orders right now. Book a pickup to get started!
                 </p>
                 <button
-                  onClick={() => setActiveTab('book')}
+                  onClick={() => handleTabChange('book')}
                   className="py-2.5 px-5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition"
                 >
                   Book a Pickup
@@ -1306,7 +1897,7 @@ export const CustomerHome: React.FC = () => {
                           <button
                             onClick={() => {
                               setBookingSuccessOrder(ord);
-                              setActiveTab('current');
+                              handleTabChange('current');
                             }}
                             className="text-brand-600 font-bold hover:underline text-[11px]"
                           >
@@ -1352,7 +1943,7 @@ export const CustomerHome: React.FC = () => {
             <button
               onClick={() => {
                 setIsEnteringNewAddress(true);
-                setActiveTab('book');
+                handleTabChange('book');
               }}
               className="py-3 px-5 bg-white border border-brand-300 text-brand-700 hover:bg-brand-50 rounded-2xl font-bold text-xs transition flex items-center justify-center gap-1.5"
             >

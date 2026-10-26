@@ -7,7 +7,11 @@ import {
 import { supabase, isSupabaseConfigured } from './supabase';
 import { WhatsAppService } from './whatsappService';
 
-export const isLiveMode = isSupabaseConfigured && import.meta.env.VITE_DEMO_MODE !== 'true';
+export let isLiveMode = isSupabaseConfigured && import.meta.env.VITE_DEMO_MODE !== 'true';
+
+export const setLiveModeForTesting = (val: boolean): void => {
+  isLiveMode = val;
+};
 
 const generateUUID = (): string => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -439,12 +443,66 @@ export class LaundryService {
     return all.find(o => o.id === id) || null;
   }
 
+  static async getOrderBySubmissionId(
+    submissionId: string,
+    customerId?: string
+  ): Promise<Order | null> {
+    if (!submissionId) return null;
+
+    if (isLiveMode) {
+      try {
+        let query = supabase
+          .from('orders')
+          .select('*')
+          .eq('client_submission_id', submissionId);
+
+        if (customerId) {
+          query = query.eq('customer_id', customerId);
+        }
+
+        const { data, error } = await query.maybeSingle();
+        if (error) {
+          throw error;
+        }
+        return (data as Order) || null;
+      } catch (err: any) {
+        // If column or schema cache does not exist yet (migration pending), do NOT return null.
+        // Returning null would falsely signal "no order created" and cause duplicate orders.
+        if (
+          err?.code === '42703' ||
+          err?.code === 'PGRST204' ||
+          err?.message?.includes('column') ||
+          err?.message?.includes('does not exist') ||
+          err?.message?.includes('client_submission_id')
+        ) {
+          const schemaUnavailableErr: any = new Error(
+            'The idempotency verification service is temporarily unavailable while database upgrades are pending.'
+          );
+          schemaUnavailableErr.code = 'SCHEMA_OR_SERVICE_UNAVAILABLE';
+          throw schemaUnavailableErr;
+        }
+        throw err;
+      }
+    }
+
+    const all = await this.getOrders();
+    return (
+      all.find(
+        (o) =>
+          o.client_submission_id === submissionId &&
+          (!customerId || o.customer_id === customerId)
+      ) || null
+    );
+  }
+
   private static inFlightBookings = new Map<string, Promise<Order>>();
+  private static submissionRegistry = new Map<string, { order: Order; timestamp: number }>();
   private static localSequenceCounter: number = 0;
 
   static resetOrderSequence(): void {
     this.localSequenceCounter = 0;
     this.inFlightBookings.clear();
+    this.submissionRegistry.clear();
   }
 
   static clearUserOperationalCache(): void {
@@ -462,6 +520,10 @@ export class LaundryService {
           localStorage.removeItem(key);
         }
       });
+
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.removeItem('superwash_pending_booking');
+      }
 
       this.resetOrderSequence();
     } catch (e) {
@@ -531,9 +593,26 @@ export class LaundryService {
     pickup_longitude?: number | null;
     service_id?: string;
     notes?: string;
+    client_submission_id?: string;
   }): Promise<Order> {
+    // 0. Ensure request has a submission identity
+    if (!data.client_submission_id) {
+      data.client_submission_id =
+        typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    }
+
+    // Idempotency: Return completed order for retries of the same client submission ID
+    if (this.submissionRegistry.has(data.client_submission_id)) {
+      const cached = this.submissionRegistry.get(data.client_submission_id)!;
+      if (Date.now() - cached.timestamp < 1800000) {
+        return cached.order;
+      }
+    }
+
     const dedupePhone = (data.customer_phone || '').replace(/[^0-9]/g, '');
-    const inFlightKey = `${dedupePhone}_${data.pickup_date}_${data.pickup_slot}`;
+    const inFlightKey = `sub_${data.client_submission_id}`;
 
     // Concurrency protection: Return active in-flight request to prevent race duplicate creation
     if (this.inFlightBookings.has(inFlightKey)) {
@@ -544,7 +623,12 @@ export class LaundryService {
     this.inFlightBookings.set(inFlightKey, bookingPromise);
 
     try {
-      return await bookingPromise;
+      const order = await bookingPromise;
+      this.submissionRegistry.set(data.client_submission_id, {
+        order,
+        timestamp: Date.now()
+      });
+      return order;
     } finally {
       this.inFlightBookings.delete(inFlightKey);
     }
@@ -564,6 +648,7 @@ export class LaundryService {
       pickup_longitude?: number | null;
       service_id?: string;
       notes?: string;
+      client_submission_id?: string;
     },
     dedupePhone: string
   ): Promise<Order> {
@@ -607,20 +692,18 @@ export class LaundryService {
     const unitPricePaise = chosenService ? (chosenService.unit_price_paise || chosenService.price_paise || 8000) : settings.price_per_kg_paise;
     const minWeightKg = chosenService && chosenService.pricing_unit === 'per_kg' ? (chosenService.min_weight_kg ?? 3.0) : 0;
 
-    // 4. Anti-duplicate protection: check if identical booking created in last 15 seconds
-    const now = Date.now();
-    const duplicate = existingOrders.find(o => 
-      o.customer_phone.replace(/[^0-9]/g, '') === dedupePhone &&
-      o.pickup_date === data.pickup_date &&
-      o.pickup_slot === data.pickup_slot &&
-      (now - new Date(o.created_at).getTime()) < 15000
-    );
-    if (duplicate) {
-      return duplicate;
-    }
-
     // Authoritative, collision-safe candidate generation
     const orderNumber = this.generateSafeOrderNumber(existingOrders);
+
+    // Check existing orders in local storage by client_submission_id (for local/mock mode and fast recovery)
+    if (data.client_submission_id) {
+      const existingBySubId = existingOrders.find(
+        (o) => o.client_submission_id === data.client_submission_id
+      );
+      if (existingBySubId) {
+        return existingBySubId;
+      }
+    }
 
     const newOrder: Order = {
       id: generateUUID(),
@@ -635,6 +718,7 @@ export class LaundryService {
       pickup_slot: data.pickup_slot,
       pickup_latitude: data.pickup_latitude || null,
       pickup_longitude: data.pickup_longitude || null,
+      client_submission_id: data.client_submission_id,
       
       // Extensible Service & Pricing Snapshots (immutable once booked)
       service_id: serviceId,
@@ -659,91 +743,60 @@ export class LaundryService {
     };
 
     if (isLiveMode) {
-      if (!newOrder.customer_id) {
-        try {
-          const { data: sessionData } = await supabase.auth.getSession();
-          if (sessionData?.session?.user?.id) {
-            newOrder.customer_id = sessionData.session.user.id;
-          }
-        } catch {}
-      }
+      // In live mode, all bookings must go through the atomic, idempotent RPC.
+      // Under no circumstances do we fall back to a direct insert if the RPC is unavailable.
+      const submissionId = data.client_submission_id || generateUUID();
 
-      // Live mode recent duplicate check in Supabase
+      let rpcOrder: Order | null = null;
+      let rpcError: any = null;
+
       try {
-        const { data: recentOrders } = await supabase
-          .from('orders')
-          .select('*')
-          .eq('customer_phone', dedupePhone)
-          .eq('pickup_date', data.pickup_date)
-          .eq('pickup_slot', data.pickup_slot)
-          .order('created_at', { ascending: false })
-          .limit(1);
-
-        if (recentOrders && recentOrders.length > 0) {
-          const recent = recentOrders[0];
-          const ageMs = Date.now() - new Date(recent.created_at).getTime();
-          if (ageMs < 15000) {
-            return recent;
+        const { data: resOrder, error: err } = await supabase.rpc(
+          'create_booking_idempotent',
+          {
+            p_client_submission_id: submissionId,
+            p_customer_name: data.customer_name,
+            p_customer_phone: data.customer_phone,
+            p_pickup_address: data.pickup_address,
+            p_pickup_landmark: data.pickup_landmark || null,
+            p_pickup_pincode: data.pickup_pincode,
+            p_pickup_date: data.pickup_date,
+            p_pickup_slot: data.pickup_slot,
+            p_service_id: data.service_id || null,
+            p_pickup_latitude: data.pickup_latitude || null,
+            p_pickup_longitude: data.pickup_longitude || null,
+            p_notes: data.notes || null
           }
-        }
-      } catch {}
-
-      // Concurrency-safe insertion: strictly omit order_number so Supabase's atomic sequence & trigger generate it
-      let insertedOrder: Order | null = null;
-      let lastError: any = null;
-      let requireClientFallback = false;
-      const maxRetries = 3;
-
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        const payload: any = { ...newOrder };
-
-        if (!requireClientFallback) {
-          // Strictly omit order_number: database sequence & trigger is authoritative generator
-          delete payload.order_number;
-        } else {
-          // Fallback only if database trigger is uninstalled and rejects NULL
-          payload.order_number = this.generateSafeOrderNumber(existingOrders);
-        }
-
-        const { data: inserted, error } = await supabase
-          .from('orders')
-          .insert(payload)
-          .select()
-          .single();
-
-        if (!error && inserted) {
-          insertedOrder = inserted;
-          break;
-        }
-
-        lastError = error;
-
-        const isCollision =
-          error?.message?.includes('orders_order_number_key') ||
-          error?.code === '23505' ||
-          error?.details?.includes('order_number');
-        const isNotNull = error?.message?.includes('null value in column "order_number"');
-
-        if (isNotNull) {
-          requireClientFallback = true;
-          continue;
-        }
-
-        if (isCollision) {
-          // Sequence collision retry: backoff and retry omitting order_number to advance sequence
-          await new Promise((resolve) => setTimeout(resolve, 50 * attempt));
-          continue;
-        }
-
-        // Other errors (e.g. auth / RLS) terminate immediately
-        break;
+        );
+        rpcOrder = resOrder as Order | null;
+        rpcError = err;
+      } catch (callErr: any) {
+        rpcError = callErr;
       }
 
-      if (!insertedOrder) {
-        throw new Error(`Failed to save booking to database: ${lastError?.message || 'Order number collision'}`);
+      if (rpcError) {
+        const isRpcMissing =
+          rpcError.code === 'PGRST202' ||
+          rpcError.message?.includes('could not find the function') ||
+          (rpcError.message?.includes('function') && rpcError.message?.includes('does not exist')) ||
+          rpcError.message?.includes('function public.create_booking_idempotent');
+
+        if (isRpcMissing) {
+          const serviceUnavailableError: any = new Error(
+            'The booking service is temporarily unavailable while database upgrades are pending. Your booking details have been safely preserved. Please try again in a few moments.'
+          );
+          serviceUnavailableError.code = 'BOOKING_SERVICE_UNAVAILABLE';
+          throw serviceUnavailableError;
+        }
+
+        throw rpcError;
       }
 
-      const orderToReturn = insertedOrder;
+      if (!rpcOrder) {
+        throw new Error('No order was returned from the booking service.');
+      }
+
+      const orderToReturn = rpcOrder;
       const existing = JSON.parse(localStorage.getItem(STORAGE_KEYS.ORDERS) || '[]');
       localStorage.setItem(
         STORAGE_KEYS.ORDERS,
@@ -766,7 +819,8 @@ export class LaundryService {
       return orderToReturn;
     }
 
-    const updatedList = [newOrder, ...existingOrders];
+    const freshStored = JSON.parse(localStorage.getItem(STORAGE_KEYS.ORDERS) || '[]');
+    const updatedList = [newOrder, ...freshStored.filter((o: Order) => o.id !== newOrder.id)];
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(updatedList));
 
     // Send optional WhatsApp notification
@@ -1811,6 +1865,7 @@ export class LaundryService {
     pickup_longitude?: number | null;
     service_id?: string;
     notes?: string;
+    client_submission_id?: string;
   }): Promise<Order> {
     return this.createBooking(data);
   }

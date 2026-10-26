@@ -547,6 +547,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const profile = DEMO_PROFILES.find(p => p.role === role);
     if (profile) {
       LaundryService.clearUserOperationalCache();
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.removeItem('superwash_last_confirmed_order');
+        sessionStorage.removeItem('superwash_pending_booking');
+      }
       setCurrentUser(profile);
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profile));
     }
@@ -568,6 +572,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     // Clear local authentication and sensitive user operational caches
     localStorage.removeItem(AUTH_STORAGE_KEY);
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem('superwash_last_confirmed_order');
+      sessionStorage.removeItem('superwash_pending_booking');
+    }
     LaundryService.clearUserOperationalCache();
     setCurrentUser(null);
     return { success: !signoutError, error: signoutError };

@@ -203,6 +203,7 @@ export interface Order {
   collected_at?: string;
   weighed_at?: string;
   delivered_at?: string;
+  client_submission_id?: string;
   created_at: string;
   updated_at: string;
 }
