@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { DEMO_PROFILES } from '../../services/laundryService';
 import { UserRole } from '../../types';
@@ -152,14 +152,20 @@ export const LoginPage: React.FC<LoginPageProps> = ({ isStaffPortal }) => {
     <div className="min-h-screen bg-slate-50 flex flex-col justify-center px-4 py-12">
       <div className="max-w-md w-full mx-auto space-y-6">
         {/* Brand Header */}
-        <div className="text-center space-y-2">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-brand-600 to-cyan-500 flex items-center justify-center text-white mx-auto shadow-md">
-            <Sparkles className="w-7 h-7" />
-          </div>
-          <h1 className="text-2xl font-black text-slate-900 tracking-tight">SuperWash Exprez</h1>
-          <p className="text-xs text-slate-500">
-            {isStaffMode ? 'Operations & Staff Portal • Bengaluru' : 'Premium Laundry Pickup & Delivery • Bengaluru'}
-          </p>
+        <div className="text-center">
+          <Link
+            to="/"
+            className="inline-block space-y-2 group hover:opacity-90 transition cursor-pointer"
+            title="SuperWash Exprez Home"
+          >
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-brand-600 to-cyan-500 flex items-center justify-center text-white mx-auto shadow-md group-hover:scale-105 transition-transform">
+              <Sparkles className="w-7 h-7" />
+            </div>
+            <h1 className="text-2xl font-black text-slate-900 tracking-tight">SuperWash Exprez</h1>
+            <p className="text-xs text-slate-500">
+              {isStaffMode ? 'Operations & Staff Portal • Bengaluru' : 'Premium Laundry Pickup & Delivery • Bengaluru'}
+            </p>
+          </Link>
         </div>
 
         {/* Demo Quick Persona Selector (Development / Demo Mode Only) */}

@@ -8,6 +8,7 @@ import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
 import { PaymentModal } from '../../components/PaymentModal';
 import { FeedbackModal } from '../../components/FeedbackModal';
 import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
+import { MapLocationPicker } from '../../components/MapLocationPicker';
 import { formatCustomerError } from '../../utils/errorHandling';
 import {
   getPendingBooking,
@@ -24,7 +25,7 @@ import {
   CheckCircle2, AlertCircle, Sparkles,
   QrCode, ArrowRight, User, Star, MessageSquareHeart,
   ShieldCheck, RefreshCw, LogOut, X, Truck, Scale, Package, Lock,
-  AlertTriangle, Loader2
+  AlertTriangle, Loader2, Edit2, Trash2, Navigation
 } from 'lucide-react';
 
 const CONFIRMED_ORDER_KEY = 'superwash_last_confirmed_order';
@@ -46,6 +47,61 @@ export const CustomerHome: React.FC = () => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [feedbackMap, setFeedbackMap] = useState<Record<string, OrderFeedback>>({});
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [dataLoadError, setDataLoadError] = useState<string | null>(null);
+
+  // Address Refinement during Booking State
+  const [isRefiningAddress, setIsRefiningAddress] = useState<boolean>(false);
+  const [refinedAddressLine, setRefinedAddressLine] = useState<string>('');
+  const [refinedLandmark, setRefinedLandmark] = useState<string>('');
+  const [refinedPincode, setRefinedPincode] = useState<string>('560103');
+  const [refinedLatitude, setRefinedLatitude] = useState<number | null>(null);
+  const [refinedLongitude, setRefinedLongitude] = useState<number | null>(null);
+  const [updateSavedAddressBook, setUpdateSavedAddressBook] = useState<boolean>(true);
+
+  // Address Book CRUD State (My Addresses Tab)
+  const [addressModalOpen, setAddressModalOpen] = useState<boolean>(false);
+  const [editingAddressId, setEditingAddressId] = useState<string | null>(null);
+  const [addrLabel, setAddrLabel] = useState<string>('Home');
+  const [addrLine, setAddrLine] = useState<string>('');
+  const [addrLandmark, setAddrLandmark] = useState<string>('');
+  const [addrPincode, setAddrPincode] = useState<string>('560103');
+  const [addrLat, setAddrLat] = useState<number | null>(null);
+  const [addrLng, setAddrLng] = useState<number | null>(null);
+  const [addrIsDefault, setAddrIsDefault] = useState<boolean>(false);
+  const [isSavingAddress, setIsSavingAddress] = useState<boolean>(false);
+  const [addressActionError, setAddressActionError] = useState<string | null>(null);
+  const [addressActionSuccess, setAddressActionSuccess] = useState<string | null>(null);
+
+  const [addressToDelete, setAddressToDelete] = useState<CustomerAddress | null>(null);
+  const [isDeletingAddress, setIsDeletingAddress] = useState<boolean>(false);
+
+  // Post-Booking Order Pickup Location Correction State (Track Order Tab)
+  const [editingOrderLocation, setEditingOrderLocation] = useState<Order | null>(null);
+  const [orderEditAddress, setOrderEditAddress] = useState<string>('');
+  const [orderEditLandmark, setOrderEditLandmark] = useState<string>('');
+  const [orderEditPincode, setOrderEditPincode] = useState<string>('');
+  const [orderEditLat, setOrderEditLat] = useState<number | null>(null);
+  const [orderEditLng, setOrderEditLng] = useState<number | null>(null);
+  const [isSavingOrderLocation, setIsSavingOrderLocation] = useState<boolean>(false);
+  const [orderLocationError, setOrderLocationError] = useState<string | null>(null);
+  const [orderLocationSuccess, setOrderLocationSuccess] = useState<string | null>(null);
+
+  // Interactive Map Location Picker State
+  const [mapPickerState, setMapPickerState] = useState<{
+    isOpen: boolean;
+    target: 'booking_new' | 'booking_refine' | 'address_modal' | 'order_edit' | null;
+    initialLat: number | null;
+    initialLng: number | null;
+    addressContext: string;
+    title: string;
+  }>({
+    isOpen: false,
+    target: null,
+    initialLat: null,
+    initialLng: null,
+    addressContext: '',
+    title: 'Adjust Pickup Location Pin'
+  });
 
   // Booking Form State
   const [selectedAddressId, setSelectedAddressId] = useState<string>('');
@@ -451,8 +507,223 @@ export const CustomerHome: React.FC = () => {
     setLocationFeedback(null);
   };
 
+  // Map Pin Confirmation Handler
+  const handleMapPinConfirmed = (coords: { latitude: number; longitude: number }) => {
+    if (mapPickerState.target === 'booking_new') {
+      setNewLatitude(coords.latitude);
+      setNewLongitude(coords.longitude);
+      setLocationFeedback({
+        type: 'success',
+        message: `Doorstep pin confirmed on map (${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)})`
+      });
+    } else if (mapPickerState.target === 'booking_refine') {
+      setRefinedLatitude(coords.latitude);
+      setRefinedLongitude(coords.longitude);
+    } else if (mapPickerState.target === 'address_modal') {
+      setAddrLat(coords.latitude);
+      setAddrLng(coords.longitude);
+    } else if (mapPickerState.target === 'order_edit') {
+      setOrderEditLat(coords.latitude);
+      setOrderEditLng(coords.longitude);
+    }
+    setMapPickerState((prev) => ({ ...prev, isOpen: false, target: null }));
+  };
+
+  // Address Selection & Pre-population for Refinement
+  const handleSelectSavedAddress = (addr: CustomerAddress) => {
+    setSelectedAddressId(addr.id);
+    setRefinedAddressLine(addr.address_line);
+    setRefinedLandmark(addr.landmark || '');
+    setRefinedPincode(addr.pincode);
+    setRefinedLatitude(addr.latitude ?? null);
+    setRefinedLongitude(addr.longitude ?? null);
+    setIsRefiningAddress(false);
+  };
+
+  // Address CRUD Handlers (My Addresses Tab)
+  const handleOpenAddAddress = () => {
+    setEditingAddressId(null);
+    setAddrLabel('Home');
+    setAddrLine('');
+    setAddrLandmark('');
+    setAddrPincode('560103');
+    setAddrLat(null);
+    setAddrLng(null);
+    setAddrIsDefault(addresses.length === 0);
+    setAddressActionError(null);
+    setAddressActionSuccess(null);
+    setAddressModalOpen(true);
+  };
+
+  const handleOpenEditAddress = (addr: CustomerAddress) => {
+    setEditingAddressId(addr.id);
+    setAddrLabel(addr.label);
+    setAddrLine(addr.address_line);
+    setAddrLandmark(addr.landmark || '');
+    setAddrPincode(addr.pincode);
+    setAddrLat(addr.latitude ?? null);
+    setAddrLng(addr.longitude ?? null);
+    setAddrIsDefault(addr.is_default);
+    setAddressActionError(null);
+    setAddressActionSuccess(null);
+    setAddressModalOpen(true);
+  };
+
+  const handleSaveAddress = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser) return;
+    setAddressActionError(null);
+
+    const trimmedLine = addrLine.trim();
+    const trimmedPin = addrPincode.trim();
+    if (!trimmedLine) {
+      setAddressActionError('Please enter a valid address line.');
+      return;
+    }
+    if (!trimmedPin) {
+      setAddressActionError('Please enter a valid PIN code.');
+      return;
+    }
+
+    setIsSavingAddress(true);
+    try {
+      if (editingAddressId) {
+        const updated = await LaundryService.updateCustomerAddress(editingAddressId, {
+          label: addrLabel,
+          address_line: trimmedLine,
+          landmark: addrLandmark.trim() || undefined,
+          pincode: trimmedPin,
+          latitude: addrLat,
+          longitude: addrLng,
+          is_default: addrIsDefault,
+          user_id: currentUser.id
+        });
+        setAddresses((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+        if (selectedAddressId === updated.id) {
+          setRefinedAddressLine(updated.address_line);
+          setRefinedLandmark(updated.landmark || '');
+          setRefinedPincode(updated.pincode);
+          setRefinedLatitude(updated.latitude ?? null);
+          setRefinedLongitude(updated.longitude ?? null);
+        }
+        setAddressActionSuccess('Address updated successfully.');
+      } else {
+        const saved = await LaundryService.saveCustomerAddress({
+          user_id: currentUser.id,
+          label: addrLabel,
+          address_line: trimmedLine,
+          landmark: addrLandmark.trim() || undefined,
+          pincode: trimmedPin,
+          latitude: addrLat,
+          longitude: addrLng,
+          is_default: addrIsDefault
+        });
+        setAddresses((prev) => {
+          const exists = prev.some((a) => a.id === saved.id);
+          return exists ? prev.map((a) => (a.id === saved.id ? saved : a)) : [...prev, saved];
+        });
+        setSelectedAddressId(saved.id);
+        setRefinedAddressLine(saved.address_line);
+        setRefinedLandmark(saved.landmark || '');
+        setRefinedPincode(saved.pincode);
+        setRefinedLatitude(saved.latitude ?? null);
+        setRefinedLongitude(saved.longitude ?? null);
+        setAddressActionSuccess('Address saved successfully.');
+      }
+      setTimeout(() => {
+        setAddressModalOpen(false);
+        setAddressActionSuccess(null);
+      }, 700);
+    } catch (err: any) {
+      setAddressActionError(formatCustomerError(err) || 'Failed to save address.');
+    } finally {
+      setIsSavingAddress(false);
+    }
+  };
+
+  const handleConfirmDeleteAddress = async () => {
+    if (!addressToDelete || !currentUser) return;
+    setIsDeletingAddress(true);
+    try {
+      await LaundryService.deleteCustomerAddress(addressToDelete.id, currentUser.id);
+      setAddresses((prev) => {
+        const remaining = prev.filter((a) => a.id !== addressToDelete.id);
+        if (selectedAddressId === addressToDelete.id) {
+          if (remaining.length > 0) {
+            setSelectedAddressId(remaining[0].id);
+            setRefinedAddressLine(remaining[0].address_line);
+            setRefinedLandmark(remaining[0].landmark || '');
+            setRefinedPincode(remaining[0].pincode);
+            setRefinedLatitude(remaining[0].latitude ?? null);
+            setRefinedLongitude(remaining[0].longitude ?? null);
+          } else {
+            setSelectedAddressId('');
+            setIsEnteringNewAddress(true);
+          }
+        }
+        return remaining;
+      });
+      setAddressToDelete(null);
+    } catch (err: any) {
+      alert(formatCustomerError(err) || 'Failed to delete address.');
+    } finally {
+      setIsDeletingAddress(false);
+    }
+  };
+
+  // Order Pickup Location Correction Handlers
+  const handleOpenOrderLocationEdit = (order: Order) => {
+    setEditingOrderLocation(order);
+    setOrderEditAddress(order.pickup_address || '');
+    setOrderEditLandmark(order.pickup_landmark || '');
+    setOrderEditPincode(order.pickup_pincode || '560038');
+    setOrderEditLat(order.pickup_latitude ?? null);
+    setOrderEditLng(order.pickup_longitude ?? null);
+    setOrderLocationError(null);
+    setOrderLocationSuccess(null);
+  };
+
+  const handleSaveOrderLocation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingOrderLocation) return;
+    setOrderLocationError(null);
+
+    const trimmedAddress = orderEditAddress.trim();
+    const trimmedPin = orderEditPincode.trim();
+    if (!trimmedAddress) {
+      setOrderLocationError('Please enter a valid pickup address.');
+      return;
+    }
+    if (!trimmedPin) {
+      setOrderLocationError('Please enter a valid PIN code.');
+      return;
+    }
+
+    setIsSavingOrderLocation(true);
+    try {
+      const updatedOrder = await LaundryService.updateOrderPickupLocation(editingOrderLocation.id, {
+        pickup_address: trimmedAddress,
+        pickup_landmark: orderEditLandmark.trim() || undefined,
+        pickup_pincode: trimmedPin,
+        pickup_latitude: orderEditLat,
+        pickup_longitude: orderEditLng
+      });
+      setOrders((prev) => prev.map((o) => (o.id === updatedOrder.id ? updatedOrder : o)));
+      setOrderLocationSuccess('Pickup location updated successfully.');
+      setTimeout(() => {
+        setEditingOrderLocation(null);
+        setOrderLocationSuccess(null);
+      }, 700);
+    } catch (err: any) {
+      setOrderLocationError(formatCustomerError(err) || 'Could not update pickup location.');
+    } finally {
+      setIsSavingOrderLocation(false);
+    }
+  };
+
   const loadData = async () => {
     setIsLoading(true);
+    setDataLoadError(null);
     try {
       const [s, sl, ords, srv] = await Promise.all([
         LaundryService.getSettings(),
@@ -483,6 +754,11 @@ export const CustomerHome: React.FC = () => {
         if (addrs.length > 0) {
           const def = addrs.find((a) => a.is_default) || addrs[0];
           setSelectedAddressId(def.id);
+          setRefinedAddressLine(def.address_line);
+          setRefinedLandmark(def.landmark || '');
+          setRefinedPincode(def.pincode);
+          setRefinedLatitude(def.latitude ?? null);
+          setRefinedLongitude(def.longitude ?? null);
         } else {
           setIsEnteringNewAddress(true);
         }
@@ -491,8 +767,9 @@ export const CustomerHome: React.FC = () => {
         userFeedbacks.forEach(f => { map[f.order_id] = f; });
         setFeedbackMap(map);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error loading customer data:', err);
+      setDataLoadError(formatCustomerError(err) || 'Unable to load your laundry details. Please check your network and try again.');
     } finally {
       setIsLoading(false);
     }
@@ -546,7 +823,10 @@ export const CustomerHome: React.FC = () => {
             longitude,
             is_default: addresses.length === 0
           });
-          setAddresses((prev) => [...prev, savedAddr]);
+          setAddresses((prev) => {
+            const exists = prev.some((a) => a.id === savedAddr.id);
+            return exists ? prev.map((a) => (a.id === savedAddr.id ? savedAddr : a)) : [...prev, savedAddr];
+          });
           setSelectedAddressId(savedAddr.id);
           setIsEnteringNewAddress(false);
         } catch (e) {
@@ -559,11 +839,40 @@ export const CustomerHome: React.FC = () => {
         setBookingError('Please select a pickup address');
         return;
       }
-      addressLine = chosen.address_line;
-      landmark = chosen.landmark || '';
-      pincode = chosen.pincode;
-      latitude = chosen.latitude || null;
-      longitude = chosen.longitude || null;
+
+      if (isRefiningAddress) {
+        if (!refinedAddressLine.trim()) {
+          setBookingError('Please enter the refined pickup address');
+          return;
+        }
+        addressLine = refinedAddressLine.trim();
+        landmark = refinedLandmark.trim();
+        pincode = refinedPincode.trim() || chosen.pincode;
+        latitude = refinedLatitude ?? chosen.latitude ?? null;
+        longitude = refinedLongitude ?? chosen.longitude ?? null;
+
+        if (updateSavedAddressBook && currentUser) {
+          try {
+            const updatedAddr = await LaundryService.updateCustomerAddress(chosen.id, {
+              address_line: addressLine,
+              landmark,
+              pincode,
+              latitude,
+              longitude,
+              user_id: currentUser.id
+            });
+            setAddresses((prev) => prev.map((a) => (a.id === updatedAddr.id ? updatedAddr : a)));
+          } catch (e) {
+            console.warn('Could not update saved address book:', e);
+          }
+        }
+      } else {
+        addressLine = chosen.address_line;
+        landmark = chosen.landmark || '';
+        pincode = chosen.pincode;
+        latitude = chosen.latitude || null;
+        longitude = chosen.longitude || null;
+      }
     }
 
     if (!selectedSlotName) {
@@ -851,10 +1160,9 @@ export const CustomerHome: React.FC = () => {
       <div className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex items-center justify-between">
           <Link
-            to="/customer"
-            onClick={() => handleTabChange('book')}
-            className="flex items-center gap-2.5 group hover:opacity-90 transition"
-            title="SuperWash Customer Laundry Hub"
+            to="/"
+            className="flex items-center gap-2.5 group hover:opacity-90 transition cursor-pointer"
+            title="SuperWash Exprez Home"
           >
             <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-brand-600 to-cyan-500 flex items-center justify-center text-white shadow-sm group-hover:scale-105 transition-transform">
               <Sparkles className="w-5 h-5" />
@@ -976,6 +1284,35 @@ export const CustomerHome: React.FC = () => {
 
       {/* Main Responsive Body */}
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full flex-1 space-y-6">
+        {/* Customer Error Banner on Data Load Failure */}
+        {dataLoadError && (
+          <div
+            className="p-4 sm:p-5 bg-red-50 border-2 border-red-300 rounded-3xl text-red-950 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
+            data-testid="data-load-error-banner"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-red-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-black text-sm sm:text-base text-red-950">
+                  Unable to load service information
+                </h3>
+                <p className="text-xs text-red-800 mt-0.5">
+                  {dataLoadError}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={loadData}
+              className="py-2 px-4 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl shadow-sm transition flex items-center gap-1.5 shrink-0 cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Retry</span>
+            </button>
+          </div>
+        )}
         {/* Global Confirmation Banner (Visible across tabs when a booking is confirmed) */}
         {bookingSuccessOrder && (
           <div className="p-4 sm:p-5 bg-emerald-50 border-2 border-emerald-300 rounded-3xl text-emerald-950 shadow-sm animate-fade-in relative">
@@ -1181,33 +1518,144 @@ export const CustomerHome: React.FC = () => {
 
                   {!isEnteringNewAddress && addresses.length > 0 ? (
                     <div className="space-y-2">
-                      {addresses.map((addr) => (
-                        <label
-                          key={addr.id}
-                          className={`flex items-start gap-3 p-3.5 rounded-2xl border cursor-pointer transition ${
-                            selectedAddressId === addr.id
-                              ? 'border-brand-600 bg-brand-50 text-slate-900 ring-2 ring-brand-500/20'
-                              : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="selectedAddress"
-                            value={addr.id}
-                            checked={selectedAddressId === addr.id}
-                            onChange={() => setSelectedAddressId(addr.id)}
-                            className="mt-1 text-brand-600 focus:ring-brand-500"
-                          />
-                          <div className="text-xs">
-                            <span className="font-bold text-slate-900 block">{addr.label}</span>
-                            <span className="text-slate-600 block mt-0.5">{addr.address_line}</span>
-                            {addr.landmark && (
-                              <span className="text-slate-500 text-[11px] block">Landmark: {addr.landmark}</span>
+                      {addresses.map((addr) => {
+                        const isSelected = selectedAddressId === addr.id;
+                        return (
+                          <div
+                            key={addr.id}
+                            className={`p-3.5 rounded-2xl border transition ${
+                              isSelected
+                                ? 'border-brand-600 bg-brand-50/70 text-slate-900 ring-2 ring-brand-500/20'
+                                : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+                            }`}
+                          >
+                            <label className="flex items-start gap-3 cursor-pointer">
+                              <input
+                                type="radio"
+                                name="selectedAddress"
+                                value={addr.id}
+                                checked={isSelected}
+                                onChange={() => handleSelectSavedAddress(addr)}
+                                className="mt-1 text-brand-600 focus:ring-brand-500"
+                              />
+                              <div className="text-xs flex-1">
+                                <div className="flex items-center justify-between">
+                                  <span className="font-bold text-slate-900">{addr.label}</span>
+                                  {isSelected && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        setIsRefiningAddress(!isRefiningAddress);
+                                      }}
+                                      className="text-[11px] font-bold text-brand-700 bg-white hover:bg-brand-100 border border-brand-300 px-2.5 py-1 rounded-lg transition flex items-center gap-1 cursor-pointer"
+                                      data-testid={`refine-address-${addr.id}`}
+                                    >
+                                      <Edit2 className="w-3 h-3" />
+                                      <span>{isRefiningAddress ? 'Hide Refinement' : 'Refine / Edit Address'}</span>
+                                    </button>
+                                  )}
+                                </div>
+                                <span className="text-slate-600 block mt-0.5">{addr.address_line}</span>
+                                {addr.landmark && (
+                                  <span className="text-slate-500 text-[11px] block">Landmark: {addr.landmark}</span>
+                                )}
+                                <div className="flex items-center gap-3 mt-1 text-[11px] font-mono text-slate-400">
+                                  <span>PIN: {addr.pincode}</span>
+                                  {addr.latitude && addr.longitude && (
+                                    <span className="text-emerald-700 font-sans font-semibold">📍 GPS Pin Attached</span>
+                                  )}
+                                </div>
+                              </div>
+                            </label>
+
+                            {/* Refinement Sub-form for Selected Address */}
+                            {isSelected && isRefiningAddress && (
+                              <div className="mt-3 pt-3 border-t border-brand-200/80 space-y-2.5 text-xs animate-fade-in" data-testid="address-refinement-panel">
+                                <span className="font-bold text-brand-900 block text-[11px] uppercase tracking-wider">
+                                  Refine Address for this Pickup
+                                </span>
+                                <div>
+                                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                                    Door / Flat No., Building, Street
+                                  </label>
+                                  <input
+                                    type="text"
+                                    placeholder="e.g. Flat 301, Tower B, 12th Main Rd"
+                                    value={refinedAddressLine}
+                                    onChange={(e) => setRefinedAddressLine(e.target.value)}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 bg-white"
+                                  />
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div>
+                                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                                      Landmark
+                                    </label>
+                                    <input
+                                      type="text"
+                                      placeholder="e.g. Opposite Park"
+                                      value={refinedLandmark}
+                                      onChange={(e) => setRefinedLandmark(e.target.value)}
+                                      className="w-full px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 bg-white"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                                      PIN Code
+                                    </label>
+                                    <input
+                                      type="text"
+                                      placeholder="e.g. 560038"
+                                      value={refinedPincode}
+                                      onChange={(e) => setRefinedPincode(e.target.value)}
+                                      className="w-full px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono bg-white"
+                                    />
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center justify-between pt-1">
+                                  <div className="text-[11px] text-slate-600 font-mono">
+                                    {refinedLatitude && refinedLongitude ? (
+                                      <span className="text-emerald-700 font-semibold">
+                                        📍 Pin: {refinedLatitude.toFixed(4)}, {refinedLongitude.toFixed(4)}
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-400">No map pin set</span>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setMapPickerState({
+                                      isOpen: true,
+                                      target: 'booking_refine',
+                                      initialLat: refinedLatitude,
+                                      initialLng: refinedLongitude,
+                                      addressContext: refinedAddressLine || addr.address_line,
+                                      title: 'Adjust Pickup Pin for Refined Address'
+                                    })}
+                                    className="py-1.5 px-3 bg-white hover:bg-slate-50 text-brand-700 font-bold rounded-lg border border-brand-300 text-[11px] flex items-center gap-1.5 cursor-pointer shadow-sm"
+                                  >
+                                    <Navigation className="w-3.5 h-3.5 text-brand-600" />
+                                    <span>Adjust on Map</span>
+                                  </button>
+                                </div>
+
+                                <label className="flex items-center gap-2 pt-1 text-xs font-semibold text-slate-700 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={updateSavedAddressBook}
+                                    onChange={(e) => setUpdateSavedAddressBook(e.target.checked)}
+                                    className="rounded text-brand-600 focus:ring-brand-500"
+                                  />
+                                  <span>Update my saved address book with these details</span>
+                                </label>
+                              </div>
                             )}
-                            <span className="text-[11px] font-mono text-slate-400">PIN: {addr.pincode}</span>
                           </div>
-                        </label>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <div className="space-y-2 text-xs">
@@ -1220,16 +1668,33 @@ export const CustomerHome: React.FC = () => {
                         required
                       />
                       <div className="space-y-1.5 pt-0.5">
-                        <div className="flex items-center justify-between">
-                          <button
-                            type="button"
-                            onClick={handleGetCurrentLocation}
-                            disabled={isLocating}
-                            className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 disabled:opacity-50 px-3 py-1.5 rounded-lg border border-brand-200 transition cursor-pointer"
-                          >
-                            <MapPin className="w-3.5 h-3.5 text-brand-600" />
-                            <span>{isLocating ? 'Acquiring GPS...' : '📍 Use current location'}</span>
-                          </button>
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={handleGetCurrentLocation}
+                              disabled={isLocating}
+                              className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 disabled:opacity-50 px-3 py-1.5 rounded-lg border border-brand-200 transition cursor-pointer"
+                            >
+                              <MapPin className="w-3.5 h-3.5 text-brand-600" />
+                              <span>{isLocating ? 'Acquiring GPS...' : '📍 Use current location'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setMapPickerState({
+                                isOpen: true,
+                                target: 'booking_new',
+                                initialLat: newLatitude,
+                                initialLng: newLongitude,
+                                addressContext: newAddressLine || 'New Address',
+                                title: 'Pin Exact Doorstep on Map'
+                              })}
+                              className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 px-3 py-1.5 rounded-lg border border-brand-200 transition cursor-pointer"
+                            >
+                              <Navigation className="w-3.5 h-3.5 text-brand-600" />
+                              <span>Adjust Pin on Map</span>
+                            </button>
+                          </div>
                           {newLatitude && newLongitude && (
                             <div className="flex items-center gap-2">
                               <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
@@ -1748,12 +2213,36 @@ export const CustomerHome: React.FC = () => {
                     </span>
 
                     <div className="text-slate-700 space-y-1">
-                      <span className="font-bold block text-slate-900">Address:</span>
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold block text-slate-900">Address:</span>
+                        {currentActiveOrder.order_status === 'booked' ? (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenOrderLocationEdit(currentActiveOrder)}
+                            className="py-1 px-2.5 bg-white hover:bg-brand-50 text-brand-700 border border-brand-300 rounded-lg font-bold text-[11px] flex items-center gap-1 transition shadow-sm cursor-pointer"
+                            data-testid="edit-order-pickup-location-button"
+                          >
+                            <Edit2 className="w-3 h-3" />
+                            <span>Edit Pickup Location & Pin</span>
+                          </button>
+                        ) : (
+                          <span className="text-[10px] text-slate-400 italic">
+                            Address locked (In progress)
+                          </span>
+                        )}
+                      </div>
                       <p>{currentActiveOrder.pickup_address}</p>
                       {currentActiveOrder.pickup_landmark && (
                         <p className="text-slate-500">Landmark: {currentActiveOrder.pickup_landmark}</p>
                       )}
-                      <p className="text-slate-400 font-mono">PIN: {currentActiveOrder.pickup_pincode}</p>
+                      <div className="flex items-center justify-between text-slate-400 font-mono text-[11px]">
+                        <span>PIN: {currentActiveOrder.pickup_pincode}</span>
+                        {currentActiveOrder.pickup_latitude && currentActiveOrder.pickup_longitude && (
+                          <span className="text-emerald-700 font-sans font-semibold">
+                            📍 GPS Pin Attached
+                          </span>
+                        )}
+                      </div>
                     </div>
 
                     {/* Pickup Logistics */}
@@ -1916,39 +2405,96 @@ export const CustomerHome: React.FC = () => {
         {/* ================= 4. MY ADDRESSES TAB ================= */}
         {activeTab === 'addresses' && (
           <div className="space-y-4 max-w-2xl">
-            <h2 className="font-black text-slate-900 text-base">Saved Delivery Addresses</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {addresses.map((addr) => (
-                <div
-                  key={addr.id}
-                  className="bg-white rounded-2xl border border-slate-200 p-4 space-y-1 text-xs shadow-sm"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-slate-900 text-sm">{addr.label}</span>
-                    {addr.is_default && (
-                      <span className="text-[10px] bg-brand-50 text-brand-700 font-bold px-2 py-0.5 rounded-full border border-brand-200">
-                        Default
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-slate-600">{addr.address_line}</p>
-                  {addr.landmark && (
-                    <p className="text-slate-500 text-[11px]">Landmark: {addr.landmark}</p>
-                  )}
-                  <p className="text-slate-400 font-mono text-[11px]">PIN: {addr.pincode}</p>
-                </div>
-              ))}
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="font-black text-slate-900 text-base">Saved Delivery Addresses</h2>
+                <p className="text-slate-500 text-xs">
+                  Manage your pickup and delivery locations
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleOpenAddAddress}
+                className="py-2 px-3.5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-sm transition flex items-center gap-1.5 cursor-pointer"
+                data-testid="add-address-button"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Add Address</span>
+              </button>
             </div>
 
-            <button
-              onClick={() => {
-                setIsEnteringNewAddress(true);
-                handleTabChange('book');
-              }}
-              className="py-3 px-5 bg-white border border-brand-300 text-brand-700 hover:bg-brand-50 rounded-2xl font-bold text-xs transition flex items-center justify-center gap-1.5"
-            >
-              <Plus className="w-4 h-4" /> Add New Address
-            </button>
+            {addresses.length === 0 ? (
+              <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center space-y-3">
+                <div className="w-12 h-12 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
+                  <MapPin className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-800 text-sm">No Saved Addresses</h3>
+                  <p className="text-slate-500 text-xs mt-0.5">
+                    Save your home or office address for fast, 1-click laundry pickup bookings.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleOpenAddAddress}
+                  className="py-2 px-4 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl transition inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" /> Add Your First Address
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {addresses.map((addr) => (
+                  <div
+                    key={addr.id}
+                    className="bg-white rounded-2xl border border-slate-200 p-4 space-y-2 text-xs shadow-sm flex flex-col justify-between"
+                    data-testid={`address-card-${addr.id}`}
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-slate-900 text-sm">{addr.label}</span>
+                        {addr.is_default && (
+                          <span className="text-[10px] bg-brand-50 text-brand-700 font-bold px-2 py-0.5 rounded-full border border-brand-200">
+                            Default
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-slate-600 leading-snug">{addr.address_line}</p>
+                      {addr.landmark && (
+                        <p className="text-slate-500 text-[11px]">Landmark: {addr.landmark}</p>
+                      )}
+                      <div className="flex items-center justify-between text-slate-400 font-mono text-[11px] pt-0.5">
+                        <span>PIN: {addr.pincode}</span>
+                        {addr.latitude && addr.longitude && (
+                          <span className="text-emerald-700 font-sans font-semibold">📍 Pinned</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 pt-2 border-t border-slate-100 justify-end">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEditAddress(addr)}
+                        className="py-1 px-2.5 text-slate-600 hover:text-brand-700 hover:bg-brand-50 border border-slate-200 hover:border-brand-300 rounded-lg font-bold text-[11px] flex items-center gap-1 transition cursor-pointer"
+                        data-testid={`edit-address-button-${addr.id}`}
+                      >
+                        <Edit2 className="w-3 h-3" />
+                        <span>Edit</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAddressToDelete(addr)}
+                        className="py-1 px-2.5 text-red-600 hover:text-red-800 hover:bg-red-50 border border-slate-200 hover:border-red-300 rounded-lg font-bold text-[11px] flex items-center gap-1 transition cursor-pointer"
+                        data-testid={`delete-address-button-${addr.id}`}
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>Delete</span>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -2004,6 +2550,358 @@ export const CustomerHome: React.FC = () => {
             setSelectedFeedbackOrder(null);
           }}
         />
+      )}
+
+      {/* Interactive Leaflet Map Location Picker Modal */}
+      <MapLocationPicker
+        isOpen={mapPickerState.isOpen}
+        onClose={() => setMapPickerState((prev) => ({ ...prev, isOpen: false, target: null }))}
+        onConfirm={handleMapPinConfirmed}
+        initialLatitude={mapPickerState.initialLat}
+        initialLongitude={mapPickerState.initialLng}
+        addressContext={mapPickerState.addressContext}
+        title={mapPickerState.title}
+      />
+
+      {/* Saved Address Add / Edit Modal */}
+      {addressModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
+          data-testid="address-form-modal"
+        >
+          <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl border border-slate-200 p-6 space-y-4 text-xs">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center">
+                  <MapPin className="w-4 h-4" />
+                </div>
+                <h3 className="font-black text-sm text-slate-900">
+                  {editingAddressId ? 'Edit Saved Address' : 'Add New Delivery Address'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAddressModalOpen(false)}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {addressActionError && (
+              <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+                <span>{addressActionError}</span>
+              </div>
+            )}
+
+            {addressActionSuccess && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-xl flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+                <span>{addressActionSuccess}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveAddress} className="space-y-3.5">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Address Label</label>
+                <div className="flex gap-2">
+                  {['Home', 'Work', 'Other'].map((lbl) => (
+                    <button
+                      type="button"
+                      key={lbl}
+                      onClick={() => setAddrLabel(lbl)}
+                      className={`py-1.5 px-3 rounded-xl border text-xs font-bold transition cursor-pointer ${
+                        addrLabel === lbl
+                          ? 'border-brand-600 bg-brand-50 text-brand-700 ring-2 ring-brand-500/20'
+                          : 'border-slate-200 hover:bg-slate-50 text-slate-600'
+                      }`}
+                    >
+                      {lbl}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  Door / Flat No., Building, Street <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Flat 402, Green Glen Layout, Bellandur"
+                  value={addrLine}
+                  onChange={(e) => setAddrLine(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-medium"
+                  required
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Landmark (Optional)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Near Central Mall"
+                    value={addrLandmark}
+                    onChange={(e) => setAddrLandmark(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    PIN Code <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 560103"
+                    value={addrPincode}
+                    onChange={(e) => setAddrPincode(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl border border-slate-200">
+                <div className="space-y-0.5">
+                  <span className="block font-bold text-slate-700">Map Location Pin</span>
+                  <span className="block text-[11px] text-slate-500 font-mono">
+                    {addrLat && addrLng
+                      ? `${addrLat.toFixed(4)}, ${addrLng.toFixed(4)}`
+                      : 'Not pinned yet'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMapPickerState({
+                    isOpen: true,
+                    target: 'address_modal',
+                    initialLat: addrLat,
+                    initialLng: addrLng,
+                    addressContext: addrLine,
+                    title: 'Pin Address on Map'
+                  })}
+                  className="py-1.5 px-3 bg-white hover:bg-slate-100 text-brand-700 border border-brand-300 rounded-xl font-bold text-xs flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+                >
+                  <Navigation className="w-3.5 h-3.5 text-brand-600" />
+                  <span>{addrLat && addrLng ? 'Change Pin' : 'Set Pin on Map'}</span>
+                </button>
+              </div>
+
+              <label className="flex items-center gap-2 pt-1 text-xs font-semibold text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={addrIsDefault}
+                  onChange={(e) => setAddrIsDefault(e.target.checked)}
+                  className="rounded text-brand-600 focus:ring-brand-500"
+                />
+                <span>Set as my default pickup address</span>
+              </label>
+
+              <div className="flex items-center gap-2 pt-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setAddressModalOpen(false)}
+                  className="py-2.5 px-4 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingAddress}
+                  className="py-2.5 px-5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  data-testid="save-address-button"
+                >
+                  {isSavingAddress ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                  <span>{isSavingAddress ? 'Saving...' : 'Save Address'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Address Confirmation Modal */}
+      {addressToDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
+          data-testid="delete-address-modal"
+        >
+          <div className="bg-white rounded-3xl w-full max-w-sm shadow-2xl border border-slate-200 p-6 space-y-4 text-xs">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-red-50 text-red-600 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-black text-sm text-slate-900">Delete Saved Address</h3>
+                <p className="text-[11px] text-slate-500">This action cannot be undone.</p>
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-slate-700 space-y-0.5">
+              <span className="font-bold text-slate-900 block">{addressToDelete.label}</span>
+              <p className="text-slate-600">{addressToDelete.address_line}</p>
+              <span className="text-[11px] text-slate-400 font-mono">PIN: {addressToDelete.pincode}</span>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2 justify-end">
+              <button
+                type="button"
+                onClick={() => setAddressToDelete(null)}
+                className="py-2.5 px-4 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteAddress}
+                disabled={isDeletingAddress}
+                className="py-2.5 px-4 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                data-testid="confirm-delete-address-button"
+              >
+                {isDeletingAddress ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                <span>{isDeletingAddress ? 'Deleting...' : 'Delete Address'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Order Pickup Location Correction Modal (Phase 3) */}
+      {editingOrderLocation && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
+          data-testid="edit-order-location-modal"
+        >
+          <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl border border-slate-200 p-6 space-y-4 text-xs">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center">
+                  <MapPin className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-black text-sm text-slate-900">
+                    Correct Pickup Location
+                  </h3>
+                  <p className="text-[11px] text-slate-500">Order #{editingOrderLocation.order_number}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingOrderLocation(null)}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3 bg-blue-50 border border-blue-200 text-blue-900 rounded-xl text-[11px] leading-relaxed">
+              <strong>Order in Booked Status:</strong> You may adjust your pickup address, landmark, PIN code, or GPS pin before our pickup associate is dispatched.
+            </div>
+
+            {orderLocationError && (
+              <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+                <span>{orderLocationError}</span>
+              </div>
+            )}
+
+            {orderLocationSuccess && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-xl flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+                <span>{orderLocationSuccess}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveOrderLocation} className="space-y-3.5">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  Pickup Address (Flat, Building, Street) <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Flat 402, Green Glen Layout, Bellandur"
+                  value={orderEditAddress}
+                  onChange={(e) => setOrderEditAddress(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-medium"
+                  required
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Landmark (Optional)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Near Central Mall"
+                    value={orderEditLandmark}
+                    onChange={(e) => setOrderEditLandmark(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    PIN Code <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 560103"
+                    value={orderEditPincode}
+                    onChange={(e) => setOrderEditPincode(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl border border-slate-200">
+                <div className="space-y-0.5">
+                  <span className="block font-bold text-slate-700">Doorstep Map Pin</span>
+                  <span className="block text-[11px] text-slate-500 font-mono">
+                    {orderEditLat && orderEditLng
+                      ? `${orderEditLat.toFixed(4)}, ${orderEditLng.toFixed(4)}`
+                      : 'No GPS pin attached'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMapPickerState({
+                    isOpen: true,
+                    target: 'order_edit',
+                    initialLat: orderEditLat,
+                    initialLng: orderEditLng,
+                    addressContext: orderEditAddress,
+                    title: 'Correct Order Pickup Pin'
+                  })}
+                  className="py-1.5 px-3 bg-white hover:bg-slate-100 text-brand-700 border border-brand-300 rounded-xl font-bold text-xs flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+                >
+                  <Navigation className="w-3.5 h-3.5 text-brand-600" />
+                  <span>{orderEditLat && orderEditLng ? 'Adjust Pin' : 'Set Pin on Map'}</span>
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2 pt-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setEditingOrderLocation(null)}
+                  className="py-2.5 px-4 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingOrderLocation}
+                  className="py-2.5 px-5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  data-testid="save-order-location-button"
+                >
+                  {isSavingOrderLocation ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                  <span>{isSavingOrderLocation ? 'Updating...' : 'Save Changes'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
       {/* Post-Google-Login Customer Onboarding Modal (Phone & Default Address) */}

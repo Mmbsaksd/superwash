@@ -10,6 +10,8 @@ import { OwnerDashboard } from '../pages/admin/OwnerDashboard';
 import { ManagerDashboard } from '../pages/manager/ManagerDashboard';
 import { DeliveryDashboard } from '../pages/delivery/DeliveryDashboard';
 import { LandingPage } from '../pages/public/LandingPage';
+import { LoginPage } from '../pages/public/LoginPage';
+import { MapLocationPicker } from '../components/MapLocationPicker';
 import { AuthProvider, useAuth } from '../context/AuthContext';
 import { Profile } from '../types';
 import {
@@ -539,11 +541,10 @@ describe('Phase 1: Portal Logo Navigation & Link Accessibility', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByTitle('SuperWash Customer Laundry Hub')).toBeInTheDocument();
+      const logoLink = screen.queryByTitle('SuperWash Exprez Home') || screen.queryByTitle('SuperWash Customer Laundry Hub');
+      expect(logoLink).toBeInTheDocument();
+      expect(['/', '/customer']).toContain(logoLink?.getAttribute('href'));
     });
-
-    const logoLink = screen.getByTitle('SuperWash Customer Laundry Hub');
-    expect(logoLink.getAttribute('href')).toBe('/customer');
   });
 
   it('makes owner dashboard header logo clickable to /admin', async () => {
@@ -1461,5 +1462,614 @@ describe('Phase 1: Real Live-Mode Mocked Idempotency & Failure Resilience', () =
     expect(preserved).not.toBeNull();
     expect(preserved?.clientSubmissionId).toBe(subId);
     expect(preserved?.status).toBe('uncertain_timeout');
+  });
+});
+
+describe('Phase 1: Customer Saved Address Management, Deduplication & Pre-Booking Refinement', () => {
+  const testUserId = 'test-customer-addr-uuid-1';
+
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+    setLiveModeForTesting(false);
+  });
+
+  it('deduplicates saved addresses when identical address line and pincode are saved', async () => {
+    const addr1 = await LaundryService.saveCustomerAddress({
+      user_id: testUserId,
+      label: 'Home',
+      address_line: 'Flat 402, Green Glen Layout, Bellandur',
+      pincode: '560103',
+      landmark: 'Near Central Mall',
+      is_default: true
+    });
+    expect(addr1.id).toBeDefined();
+
+    // Re-saving the same address line & pincode
+    const addr2 = await LaundryService.saveCustomerAddress({
+      user_id: testUserId,
+      label: 'Home',
+      address_line: 'Flat 402,   green glen layout, bellandur  ',
+      pincode: '560103',
+      is_default: false
+    });
+
+    // Should return existing record, not create duplicate
+    expect(addr2.id).toBe(addr1.id);
+
+    const allAddrs = await LaundryService.getCustomerAddresses(testUserId);
+    const matching = allAddrs.filter((a) => a.pincode === '560103');
+    expect(matching.length).toBe(1);
+  });
+
+  it('preserves custom label (e.g. Work) when re-saving address with default Home label', async () => {
+    const customAddr = await LaundryService.saveCustomerAddress({
+      user_id: testUserId,
+      label: 'Work',
+      address_line: 'Tower C, Bagmane Tech Park, CV Raman Nagar',
+      pincode: '560093',
+      landmark: 'Near Back Gate',
+      is_default: false
+    });
+    expect(customAddr.label).toBe('Work');
+
+    // Attempting to re-save the exact same address with generic default 'Home' label
+    const resaved = await LaundryService.saveCustomerAddress({
+      user_id: testUserId,
+      label: 'Home',
+      address_line: 'Tower C, Bagmane Tech Park, CV Raman Nagar',
+      pincode: '560093',
+      landmark: 'Near Main Gate', // Updated landmark
+      is_default: false
+    });
+
+    expect(resaved.id).toBe(customAddr.id);
+    expect(resaved.label).toBe('Work'); // Label preserved as Work, NOT overwritten with Home!
+    expect(resaved.landmark).toBe('Near Main Gate'); // Landmark updated
+
+    const freshList = await LaundryService.getCustomerAddresses(testUserId);
+    const persisted = freshList.find((a) => a.id === customAddr.id);
+    expect(persisted?.label).toBe('Work');
+  });
+
+  it('deduplicates concurrent in-flight saveAddress calls to avoid duplicate records', async () => {
+    const addressPayload = {
+      user_id: testUserId,
+      label: 'Home',
+      address_line: '42 MG Road, Brigade Junction',
+      pincode: '560001',
+      is_default: false
+    };
+
+    // Fire 3 simultaneous saves for the identical address
+    const [res1, res2, res3] = await Promise.all([
+      LaundryService.saveCustomerAddress(addressPayload),
+      LaundryService.saveCustomerAddress(addressPayload),
+      LaundryService.saveCustomerAddress(addressPayload)
+    ]);
+
+    expect(res1.id).toBe(res2.id);
+    expect(res2.id).toBe(res3.id);
+
+    const allAddrs = await LaundryService.getCustomerAddresses(testUserId);
+    const matches = allAddrs.filter((a) => a.pincode === '560001');
+    expect(matches.length).toBe(1);
+  });
+
+  it('updates saved address details via updateCustomerAddress', async () => {
+    const saved = await LaundryService.saveCustomerAddress({
+      user_id: testUserId,
+      label: 'Office',
+      address_line: 'Old Tower 1, EGL Tech Park',
+      pincode: '560071',
+      is_default: false
+    });
+
+    const updated = await LaundryService.updateCustomerAddress(saved.id, {
+      user_id: testUserId,
+      address_line: 'New Tower 4, Suite 300, EGL Tech Park',
+      landmark: 'Next to Domlur Flyover',
+      latitude: 12.9602,
+      longitude: 77.6485
+    });
+
+    expect(updated.id).toBe(saved.id);
+    expect(updated.address_line).toBe('New Tower 4, Suite 300, EGL Tech Park');
+    expect(updated.landmark).toBe('Next to Domlur Flyover');
+    expect(updated.latitude).toBe(12.9602);
+  });
+
+  it('deletes saved address via deleteCustomerAddress', async () => {
+    const saved = await LaundryService.saveCustomerAddress({
+      user_id: testUserId,
+      label: 'Temporary Flat',
+      address_line: 'Room 12, Indiranagar',
+      pincode: '560038',
+      is_default: false
+    });
+
+    const deleted = await LaundryService.deleteCustomerAddress(saved.id, testUserId);
+    expect(deleted).toBe(true);
+
+    const remaining = await LaundryService.getCustomerAddresses(testUserId);
+    expect(remaining.some((a) => a.id === saved.id)).toBe(false);
+  });
+
+  it('renders Edit and Delete actions in My Addresses tab and opens delete confirmation', async () => {
+    const customerProfile: Profile = {
+      id: testUserId,
+      full_name: 'Anita Roy',
+      phone: '9876543210',
+      email: 'anita@example.com',
+      role: 'customer',
+      is_active: true,
+      created_at: new Date().toISOString()
+    };
+    localStorage.setItem('superwash_auth_profile', JSON.stringify(customerProfile));
+
+    const initialAddr = {
+      id: 'addr-anita-1',
+      user_id: testUserId,
+      label: 'Home',
+      address_line: 'Flat 101, Palm Meadows, Whitefield',
+      pincode: '560066',
+      is_default: true,
+      created_at: new Date().toISOString()
+    };
+    localStorage.setItem(`superwash_addresses_${testUserId}`, JSON.stringify([initialAddr]));
+
+    render(
+      <MemoryRouter initialEntries={['/customer?tab=addresses']}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/customer" element={<CustomerHome />} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Saved Delivery Addresses')).toBeInTheDocument();
+      expect(screen.getByText('Flat 101, Palm Meadows, Whitefield')).toBeInTheDocument();
+    });
+
+    // Check Edit and Delete buttons exist
+    const editBtn = screen.getByTestId('edit-address-button-addr-anita-1');
+    const deleteBtn = screen.getByTestId('delete-address-button-addr-anita-1');
+    expect(editBtn).toBeInTheDocument();
+    expect(deleteBtn).toBeInTheDocument();
+
+    // Click Delete button to trigger confirmation modal
+    fireEvent.click(deleteBtn);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('delete-address-modal')).toBeInTheDocument();
+      expect(screen.getByText(/This action cannot be undone/i)).toBeInTheDocument();
+    });
+
+    // Confirm deletion
+    const confirmDeleteBtn = screen.getByTestId('confirm-delete-address-button');
+    fireEvent.click(confirmDeleteBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('delete-address-modal')).toBeNull();
+      expect(screen.queryByText('Flat 101, Palm Meadows, Whitefield')).toBeNull();
+    });
+  });
+
+  it('allows customer to refine a saved address during booking and toggle saving to address book', async () => {
+    const customerProfile: Profile = {
+      id: testUserId,
+      full_name: 'Ravi Kumar',
+      phone: '9876543211',
+      email: 'ravi@example.com',
+      role: 'customer',
+      is_active: true,
+      created_at: new Date().toISOString()
+    };
+    localStorage.setItem('superwash_auth_profile', JSON.stringify(customerProfile));
+
+    const initialAddr = {
+      id: 'addr-ravi-1',
+      user_id: testUserId,
+      label: 'Home',
+      address_line: 'Indiranagar 12th Main',
+      pincode: '560038',
+      is_default: true,
+      created_at: new Date().toISOString()
+    };
+    localStorage.setItem(`superwash_addresses_${testUserId}`, JSON.stringify([initialAddr]));
+
+    render(
+      <MemoryRouter initialEntries={['/customer?tab=book']}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/customer" element={<CustomerHome />} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Schedule Home Pickup')).toBeInTheDocument();
+      expect(screen.getByText('Indiranagar 12th Main')).toBeInTheDocument();
+    });
+
+    // Click Refine / Edit Address button
+    const refineBtn = screen.getByTestId('refine-address-addr-ravi-1');
+    expect(refineBtn).toBeInTheDocument();
+    fireEvent.click(refineBtn);
+
+    // Refinement sub-panel should appear
+    await waitFor(() => {
+      expect(screen.getByTestId('address-refinement-panel')).toBeInTheDocument();
+      expect(screen.getByText(/Refine Address for this Pickup/i)).toBeInTheDocument();
+      expect(screen.getByText(/Update my saved address book with these details/i)).toBeInTheDocument();
+    });
+  });
+});
+
+describe('Phase 2: Interactive Map Location Picker Component', () => {
+  it('renders MapLocationPicker with address context and selected pin readout', () => {
+    const onConfirmMock = vi.fn();
+    const onCloseMock = vi.fn();
+
+    render(
+      <MapLocationPicker
+        isOpen={true}
+        onClose={onCloseMock}
+        onConfirm={onConfirmMock}
+        initialLatitude={12.9716}
+        initialLongitude={77.5946}
+        addressContext="100 Feet Rd, Indiranagar"
+        title="Doorstep Pickup Pin"
+      />
+    );
+
+    expect(screen.getByTestId('map-location-picker-modal')).toBeInTheDocument();
+    expect(screen.getByText('Doorstep Pickup Pin')).toBeInTheDocument();
+    expect(screen.getByText(/100 Feet Rd, Indiranagar/i)).toBeInTheDocument();
+    expect(screen.getByText(/12.971600, 77.594600/i)).toBeInTheDocument();
+
+    const confirmBtn = screen.getByRole('button', { name: /Confirm Location Pin/i });
+    fireEvent.click(confirmBtn);
+
+    expect(onConfirmMock).toHaveBeenCalledWith({
+      latitude: 12.9716,
+      longitude: 77.5946
+    });
+    expect(onCloseMock).toHaveBeenCalled();
+  });
+
+  it('disables Confirm button and displays unpinned notice when opened without coordinates', () => {
+    const onConfirmMock = vi.fn();
+    const onCloseMock = vi.fn();
+
+    render(
+      <MapLocationPicker
+        isOpen={true}
+        onClose={onCloseMock}
+        onConfirm={onConfirmMock}
+        initialLatitude={null}
+        initialLongitude={null}
+        addressContext="100 Feet Rd, Indiranagar"
+      />
+    );
+
+    expect(screen.getByText(/Pin not placed yet/i)).toBeInTheDocument();
+    const confirmBtn = screen.getByRole('button', { name: /Confirm Location Pin/i });
+    expect(confirmBtn).toBeDisabled();
+
+    fireEvent.click(confirmBtn);
+    expect(onConfirmMock).not.toHaveBeenCalled();
+    expect(onCloseMock).not.toHaveBeenCalled();
+  });
+
+  it('enables Confirm button after user clicks Use My GPS successfully', async () => {
+    const onConfirmMock = vi.fn();
+    const onCloseMock = vi.fn();
+
+    const mockGeolocation = {
+      getCurrentPosition: vi.fn().mockImplementation((success) => {
+        success({
+          coords: {
+            latitude: 12.9352,
+            longitude: 77.6245
+          }
+        });
+      })
+    };
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      geolocation: mockGeolocation
+    });
+
+    render(
+      <MapLocationPicker
+        isOpen={true}
+        onClose={onCloseMock}
+        onConfirm={onConfirmMock}
+        initialLatitude={null}
+        initialLongitude={null}
+      />
+    );
+
+    const confirmBtn = screen.getByRole('button', { name: /Confirm Location Pin/i });
+    expect(confirmBtn).toBeDisabled();
+
+    const gpsBtn = screen.getByRole('button', { name: /Use My GPS/i });
+    fireEvent.click(gpsBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/12.935200, 77.624500/i)).toBeInTheDocument();
+      expect(confirmBtn).not.toBeDisabled();
+    });
+
+    fireEvent.click(confirmBtn);
+    expect(onConfirmMock).toHaveBeenCalledWith({
+      latitude: 12.9352,
+      longitude: 77.6245
+    });
+    expect(onCloseMock).toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('Phase 3: Post-Booking Pickup Location Correction', () => {
+  const customerId = 'cust-pickup-correction-1';
+
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+    setLiveModeForTesting(false);
+  });
+
+  it('updates pickup address and GPS coordinates for an order in booked status', async () => {
+    const initialOrder = await LaundryService.createOrder({
+      customer_id: customerId,
+      customer_name: 'Correction Tester',
+      customer_phone: '9876543200',
+      pickup_address: 'Initial Road, Indiranagar',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-28',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    expect(initialOrder.order_status).toBe('booked');
+
+    const updated = await LaundryService.updateOrderPickupLocation(initialOrder.id, {
+      pickup_address: 'Flat 5B, Skyline Apts, 100ft Rd, Indiranagar',
+      pickup_landmark: 'Opposite Metro Station',
+      pickup_pincode: '560038',
+      pickup_latitude: 12.9784,
+      pickup_longitude: 77.6408
+    });
+
+    expect(updated.id).toBe(initialOrder.id);
+    expect(updated.pickup_address).toBe('Flat 5B, Skyline Apts, 100ft Rd, Indiranagar');
+    expect(updated.pickup_landmark).toBe('Opposite Metro Station');
+    expect(updated.pickup_latitude).toBe(12.9784);
+    expect(updated.pickup_longitude).toBe(77.6408);
+  });
+
+  it('strictly rejects pickup location updates once order has progressed beyond booked', async () => {
+    const order = await LaundryService.createOrder({
+      customer_id: customerId,
+      customer_name: 'Progressed Order Tester',
+      customer_phone: '9876543201',
+      pickup_address: 'Stage 1 St',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-28',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    // Simulate order advancement to collected
+    await LaundryService.updateOrderStatus(order.id, 'collected', 'manager');
+
+    await expect(
+      LaundryService.updateOrderPickupLocation(order.id, {
+        pickup_address: 'New St',
+        pickup_pincode: '560038'
+      })
+    ).rejects.toThrow(/Pickup location can only be updated while the order is in "booked" status/i);
+  });
+
+  it('rejects invalid PIN code format in updateOrderPickupLocation', async () => {
+    const order = await LaundryService.createOrder({
+      customer_id: customerId,
+      customer_name: 'Pin Tester',
+      customer_phone: '9876543209',
+      pickup_address: 'Stage 1 St',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-28',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    await expect(
+      LaundryService.updateOrderPickupLocation(order.id, {
+        pickup_address: 'Updated St',
+        pickup_pincode: '056001' // Invalid: starts with 0
+      })
+    ).rejects.toThrow(/Invalid PIN code format/i);
+
+    await expect(
+      LaundryService.updateOrderPickupLocation(order.id, {
+        pickup_address: 'Updated St',
+        pickup_pincode: '5600' // Invalid: less than 6 digits
+      })
+    ).rejects.toThrow(/Invalid PIN code format/i);
+  });
+
+  it('rejects unmatched coordinate pair in updateOrderPickupLocation', async () => {
+    const order = await LaundryService.createOrder({
+      customer_id: customerId,
+      customer_name: 'Pair Tester',
+      customer_phone: '9876543210',
+      pickup_address: 'Stage 1 St',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-28',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    await expect(
+      LaundryService.updateOrderPickupLocation(order.id, {
+        pickup_address: 'Updated St',
+        pickup_pincode: '560038',
+        pickup_latitude: 12.9716,
+        pickup_longitude: null
+      })
+    ).rejects.toThrow(/coordinate pair/i);
+
+    await expect(
+      LaundryService.updateOrderPickupLocation(order.id, {
+        pickup_address: 'Updated St',
+        pickup_pincode: '560038',
+        pickup_latitude: null,
+        pickup_longitude: 77.5946
+      })
+    ).rejects.toThrow(/coordinate pair/i);
+  });
+
+  it('rejects out-of-range coordinates in updateOrderPickupLocation', async () => {
+    const order = await LaundryService.createOrder({
+      customer_id: customerId,
+      customer_name: 'Bounds Tester',
+      customer_phone: '9876543211',
+      pickup_address: 'Stage 1 St',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-28',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    await expect(
+      LaundryService.updateOrderPickupLocation(order.id, {
+        pickup_address: 'Updated St',
+        pickup_pincode: '560038',
+        pickup_latitude: 95.0, // Invalid: > 90
+        pickup_longitude: 77.5946
+      })
+    ).rejects.toThrow(/outside the valid geographic range/i);
+
+    await expect(
+      LaundryService.updateOrderPickupLocation(order.id, {
+        pickup_address: 'Updated St',
+        pickup_pincode: '560038',
+        pickup_latitude: 12.9716,
+        pickup_longitude: 195.0 // Invalid: > 180
+      })
+    ).rejects.toThrow(/outside the valid geographic range/i);
+  });
+
+  it('renders Edit Pickup Location button in CustomerHome for booked orders and opens modal', async () => {
+    const customerProfile: Profile = {
+      id: customerId,
+      full_name: 'Varun S',
+      phone: '9876543202',
+      email: 'varun@example.com',
+      role: 'customer',
+      is_active: true,
+      created_at: new Date().toISOString()
+    };
+    localStorage.setItem('superwash_auth_profile', JSON.stringify(customerProfile));
+
+    const activeOrder = await LaundryService.createOrder({
+      customer_id: customerId,
+      customer_name: 'Varun S',
+      customer_phone: '9876543202',
+      pickup_address: 'Plot 12, Indiranagar 12th Main',
+      pickup_pincode: '560038',
+      pickup_date: '2026-10-28',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/customer?tab=current']}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/customer" element={<CustomerHome />} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(`Order #${activeOrder.order_number}`)).toBeInTheDocument();
+    });
+
+    const editPickupBtn = screen.getByTestId('edit-order-pickup-location-button');
+    expect(editPickupBtn).toBeInTheDocument();
+
+    fireEvent.click(editPickupBtn);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('edit-order-location-modal')).toBeInTheDocument();
+      expect(screen.getByText(/Correct Pickup Location/i)).toBeInTheDocument();
+    });
+  });
+});
+
+describe('Phase 4: Brand Logo Navigation across Portals', () => {
+  it('navigates to landing page "/" when SuperWash Exprez logo is clicked in LoginPage', async () => {
+    render(
+      <MemoryRouter initialEntries={['/login']}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/" element={<div data-testid="landing-page-root">Landing Page</div>} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      const logoLink = screen.getByTitle('SuperWash Exprez Home');
+      expect(logoLink).toBeInTheDocument();
+      expect(logoLink.getAttribute('href')).toBe('/');
+    });
+  });
+
+  it('navigates to landing page "/" when SuperWash Exprez logo is clicked in CustomerHome', async () => {
+    render(
+      <MemoryRouter initialEntries={['/customer']}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/customer" element={<CustomerHome />} />
+            <Route path="/" element={<div data-testid="landing-page-root">Landing Page</div>} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      const homeLink = screen.getByTitle('SuperWash Exprez Home');
+      expect(homeLink).toBeInTheDocument();
+      expect(homeLink.getAttribute('href')).toBe('/');
+    });
+  });
+});
+
+describe('Phase 5: Customer Error Handling & Retry Banner', () => {
+  it('displays user-friendly dataLoadError banner with Retry button on data load failure', async () => {
+    // Force getSettings to throw
+    vi.spyOn(LaundryService, 'getSettings').mockRejectedValueOnce(
+      new Error('fetch failed: connection refused to Supabase database')
+    );
+
+    render(
+      <MemoryRouter initialEntries={['/customer']}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/customer" element={<CustomerHome />} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('data-load-error-banner')).toBeInTheDocument();
+      expect(screen.getByText(/Unable to load service information/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Retry/i })).toBeInTheDocument();
+    });
   });
 });

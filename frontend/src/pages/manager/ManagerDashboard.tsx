@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { Order, BusinessSettings } from '../../types';
 import { LaundryService } from '../../services/laundryService';
@@ -178,8 +178,13 @@ export const ManagerDashboard: React.FC = () => {
       {/* Header */}
       <div className="bg-purple-900 text-white shadow-md sticky top-0 z-30">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-white/10 flex items-center justify-center text-purple-200">
+          <Link
+            to="/manager"
+            onClick={() => setActiveTab('collected')}
+            className="flex items-center gap-3 group hover:opacity-90 transition"
+            title="SuperWash Store Manager Portal"
+          >
+            <div className="w-10 h-10 rounded-2xl bg-white/10 flex items-center justify-center text-purple-200 group-hover:scale-105 transition-transform">
               <Scale className="w-6 h-6" />
             </div>
             <div>
@@ -188,7 +193,7 @@ export const ManagerDashboard: React.FC = () => {
                 Scale Intake, Washing & Delivery Staging • {currentUser?.full_name || 'Manager'}
               </p>
             </div>
-          </div>
+          </Link>
 
           <div className="flex items-center gap-2">
             <PwaInstallPrompt

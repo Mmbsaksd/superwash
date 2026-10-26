@@ -232,6 +232,8 @@ const INITIAL_SAMPLE_ORDERS: Order[] = [
 ];
 
 export class LaundryService {
+  private static inFlightAddressSaves = new Map<string, Promise<CustomerAddress>>();
+
   // ----------------------------------------------------
   // Helpers & Financial Calculations
   // ----------------------------------------------------
@@ -380,24 +382,181 @@ export class LaundryService {
   }
 
   static async saveAddress(address: Omit<CustomerAddress, 'id'>): Promise<CustomerAddress> {
-    const newAddress: CustomerAddress = {
-      ...address,
-      id: generateUUID(),
-      created_at: new Date().toISOString()
-    };
+    const normalizedNew = address.address_line.trim().toLowerCase().replace(/\s+/g, ' ');
+    const normalizedPin = (address.pincode || '').trim();
+    const saveKey = `${address.user_id}:${normalizedNew}:${normalizedPin}`;
 
-    if (isLiveMode) {
-      const { data, error } = await supabase.from('customer_addresses').insert(newAddress).select().single();
-      if (error) {
-        throw new Error(`Failed to save address: ${error.message}`);
-      }
-      return data || newAddress;
+    const existingInFlight = this.inFlightAddressSaves.get(saveKey);
+    if (existingInFlight) {
+      return existingInFlight;
     }
 
-    const list = await this.getAddresses(address.user_id);
-    const updated = [newAddress, ...list];
-    localStorage.setItem(`${STORAGE_KEYS.ADDRESSES}_${address.user_id}`, JSON.stringify(updated));
-    return newAddress;
+    const savePromise = (async () => {
+      // Deduplication check: verify if an address with identical normalized address_line and pincode already exists
+      const existingList = await this.getAddresses(address.user_id);
+
+      const existingMatch = existingList.find((a) => {
+        const matchLine = a.address_line.trim().toLowerCase().replace(/\s+/g, ' ');
+        const matchPin = (a.pincode || '').trim();
+        return matchLine === normalizedNew && matchPin === normalizedPin;
+      });
+
+      if (existingMatch) {
+        // Determine label: Never let a default 'Home' label overwrite an existing customized label (e.g. 'Work', 'Office', 'Other')
+        const shouldPreserveExistingLabel = Boolean(existingMatch.label && existingMatch.label !== 'Home' && address.label === 'Home');
+        const targetLabel = shouldPreserveExistingLabel ? existingMatch.label : (address.label || existingMatch.label || 'Home');
+
+        const hasNewLat = address.latitude !== undefined && address.latitude !== existingMatch.latitude;
+        const hasNewLng = address.longitude !== undefined && address.longitude !== existingMatch.longitude;
+        const hasNewLandmark = Boolean(address.landmark && address.landmark !== existingMatch.landmark);
+        const hasNewLabel = Boolean(targetLabel !== existingMatch.label);
+
+        if (hasNewLat || hasNewLng || hasNewLandmark || hasNewLabel) {
+          return this.updateAddress(existingMatch.id, {
+            latitude: address.latitude ?? existingMatch.latitude,
+            longitude: address.longitude ?? existingMatch.longitude,
+            landmark: address.landmark || existingMatch.landmark,
+            label: targetLabel,
+            user_id: address.user_id
+          });
+        }
+        return existingMatch;
+      }
+
+      const newAddress: CustomerAddress = {
+        ...address,
+        id: generateUUID(),
+        created_at: new Date().toISOString()
+      };
+
+      if (isLiveMode) {
+        const { data, error } = await supabase.from('customer_addresses').insert(newAddress).select().single();
+        if (error) {
+          throw new Error(`Failed to save address: ${error.message}`);
+        }
+        return data || newAddress;
+      }
+
+      const updated = [newAddress, ...existingList];
+      localStorage.setItem(`${STORAGE_KEYS.ADDRESSES}_${address.user_id}`, JSON.stringify(updated));
+      return newAddress;
+    })();
+
+    this.inFlightAddressSaves.set(saveKey, savePromise);
+    try {
+      return await savePromise;
+    } finally {
+      this.inFlightAddressSaves.delete(saveKey);
+    }
+  }
+
+  static async updateAddress(addressId: string, updates: Partial<CustomerAddress>): Promise<CustomerAddress> {
+    if (isLiveMode) {
+      const updatePayload: Record<string, any> = {};
+      if (updates.label !== undefined) updatePayload.label = updates.label;
+      if (updates.address_line !== undefined) updatePayload.address_line = updates.address_line;
+      if (updates.landmark !== undefined) updatePayload.landmark = updates.landmark;
+      if (updates.pincode !== undefined) updatePayload.pincode = updates.pincode;
+      if (updates.latitude !== undefined) updatePayload.latitude = updates.latitude;
+      if (updates.longitude !== undefined) updatePayload.longitude = updates.longitude;
+      if (updates.is_default !== undefined) updatePayload.is_default = updates.is_default;
+
+      const { data, error } = await supabase
+        .from('customer_addresses')
+        .update(updatePayload)
+        .eq('id', addressId)
+        .select()
+        .single();
+
+      if (error) {
+        throw new Error(`Failed to update address: ${error.message}`);
+      }
+      return data;
+    }
+
+    // Mock / LocalStorage mode
+    const userId = updates.user_id;
+    let list: CustomerAddress[] = [];
+    let targetKey = '';
+
+    if (userId) {
+      targetKey = `${STORAGE_KEYS.ADDRESSES}_${userId}`;
+      const saved = localStorage.getItem(targetKey);
+      if (saved) {
+        try { list = JSON.parse(saved); } catch {}
+      }
+    } else {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(STORAGE_KEYS.ADDRESSES)) {
+          try {
+            const parsed = JSON.parse(localStorage.getItem(key) || '[]');
+            if (Array.isArray(parsed) && parsed.some((a) => a.id === addressId)) {
+              list = parsed;
+              targetKey = key;
+              break;
+            }
+          } catch {}
+        }
+      }
+    }
+
+    const idx = list.findIndex((a) => a.id === addressId);
+    if (idx === -1) {
+      const updatedAddr = { id: addressId, ...updates } as CustomerAddress;
+      return updatedAddr;
+    }
+
+    const updatedAddr: CustomerAddress = {
+      ...list[idx],
+      ...updates
+    };
+    list[idx] = updatedAddr;
+    if (targetKey) {
+      localStorage.setItem(targetKey, JSON.stringify(list));
+    }
+    return updatedAddr;
+  }
+
+  static async deleteAddress(addressId: string, userId?: string): Promise<boolean> {
+    if (isLiveMode) {
+      const { error } = await supabase
+        .from('customer_addresses')
+        .delete()
+        .eq('id', addressId);
+
+      if (error) {
+        throw new Error(`Failed to delete address: ${error.message}`);
+      }
+      return true;
+    }
+
+    // Mock / LocalStorage mode
+    const keysToCheck: string[] = [];
+    if (userId) {
+      keysToCheck.push(`${STORAGE_KEYS.ADDRESSES}_${userId}`);
+    } else {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(STORAGE_KEYS.ADDRESSES)) {
+          keysToCheck.push(key);
+        }
+      }
+    }
+
+    for (const key of keysToCheck) {
+      try {
+        const list = JSON.parse(localStorage.getItem(key) || '[]');
+        if (Array.isArray(list)) {
+          const filtered = list.filter((a) => a.id !== addressId);
+          if (filtered.length !== list.length) {
+            localStorage.setItem(key, JSON.stringify(filtered));
+            return true;
+          }
+        }
+      } catch {}
+    }
+    return true;
   }
 
   // ----------------------------------------------------
@@ -1880,6 +2039,90 @@ export class LaundryService {
 
   static async saveCustomerAddress(address: Omit<CustomerAddress, 'id'>): Promise<CustomerAddress> {
     return this.saveAddress(address);
+  }
+
+  static async updateCustomerAddress(addressId: string, updates: Partial<CustomerAddress>): Promise<CustomerAddress> {
+    return this.updateAddress(addressId, updates);
+  }
+
+  static async deleteCustomerAddress(addressId: string, userId?: string): Promise<boolean> {
+    return this.deleteAddress(addressId, userId);
+  }
+
+  static async updateOrderPickupLocation(
+    orderId: string,
+    details: {
+      pickup_address: string;
+      pickup_landmark?: string | null;
+      pickup_pincode: string;
+      pickup_latitude?: number | null;
+      pickup_longitude?: number | null;
+    }
+  ): Promise<Order> {
+    const trimmedAddress = details.pickup_address.trim();
+    const trimmedPincode = details.pickup_pincode.trim();
+    if (!trimmedAddress) {
+      throw new Error('Pickup address is required.');
+    }
+    if (!trimmedPincode) {
+      throw new Error('Pickup PIN code is required.');
+    }
+    if (!/^[1-9][0-9]{5}$/.test(trimmedPincode)) {
+      throw new Error('Invalid PIN code format. Must be a 6-digit Indian PIN code.');
+    }
+
+    const hasLat = details.pickup_latitude !== undefined && details.pickup_latitude !== null;
+    const hasLng = details.pickup_longitude !== undefined && details.pickup_longitude !== null;
+    if ((hasLat && !hasLng) || (!hasLat && hasLng)) {
+      throw new Error('Latitude and longitude must be provided as a coordinate pair.');
+    }
+    if (hasLat && hasLng) {
+      const latVal = details.pickup_latitude as number;
+      const lngVal = details.pickup_longitude as number;
+      if (latVal < -90 || latVal > 90 || lngVal < -180 || lngVal > 180) {
+        throw new Error('Coordinates are outside the valid geographic range.');
+      }
+    }
+
+    if (isLiveMode) {
+      const { data, error } = await supabase.rpc('update_order_pickup_location', {
+        p_order_id: orderId,
+        p_pickup_address: trimmedAddress,
+        p_pickup_landmark: details.pickup_landmark ? details.pickup_landmark.trim() : null,
+        p_pickup_pincode: trimmedPincode,
+        p_pickup_latitude: details.pickup_latitude ?? null,
+        p_pickup_longitude: details.pickup_longitude ?? null
+      });
+
+      if (error) {
+        throw new Error(error.message);
+      }
+      return data;
+    }
+
+    // Mock / LocalStorage mode
+    const orders = await this.getOrders();
+    const orderIndex = orders.findIndex((o) => o.id === orderId);
+    if (orderIndex === -1) {
+      throw new Error('Order not found.');
+    }
+    const order = orders[orderIndex];
+    if (order.order_status !== 'booked') {
+      throw new Error(`Pickup location can only be updated while the order is in "booked" status. Current status is "${order.order_status}".`);
+    }
+
+    const updatedOrder: Order = {
+      ...order,
+      pickup_address: trimmedAddress,
+      pickup_landmark: details.pickup_landmark ? details.pickup_landmark.trim() : undefined,
+      pickup_pincode: trimmedPincode,
+      pickup_latitude: details.pickup_latitude ?? undefined,
+      pickup_longitude: details.pickup_longitude ?? undefined,
+      updated_at: new Date().toISOString()
+    };
+    orders[orderIndex] = updatedOrder;
+    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
+    return updatedOrder;
   }
 
   static async getCustomerOrders(userId?: string, phone?: string | null): Promise<Order[]> {

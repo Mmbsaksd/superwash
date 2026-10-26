@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import {
   Order, BusinessSettings, Profile, PickupSlot,
@@ -748,15 +748,20 @@ export const OwnerDashboard: React.FC = () => {
       {/* Header */}
       <div className="bg-slate-900 text-white shadow-md sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-amber-400/20 text-amber-400 flex items-center justify-center">
+          <Link
+            to="/admin"
+            onClick={() => setActiveTab('overview')}
+            className="flex items-center gap-3 group hover:opacity-90 transition"
+            title="SuperWash Business Owner Portal"
+          >
+            <div className="w-10 h-10 rounded-2xl bg-amber-400/20 text-amber-400 flex items-center justify-center group-hover:scale-105 transition-transform">
               <Shield className="w-6 h-6" />
             </div>
             <div>
               <h1 className="font-black text-lg leading-tight">SuperWash Exprez • Business Owner</h1>
               <p className="text-xs text-slate-400">Operations, Settings & Quality Portal</p>
             </div>
-          </div>
+          </Link>
 
           <div className="flex items-center gap-2">
             <PwaInstallPrompt
