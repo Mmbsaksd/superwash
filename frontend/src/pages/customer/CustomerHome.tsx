@@ -42,7 +42,19 @@ export const CustomerHome: React.FC = () => {
   );
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [services, setServices] = useState<LaundryServiceItem[]>([]);
-  const [selectedServiceId, setSelectedServiceId] = useState<string>('');
+  const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
+  const selectedServiceId = selectedServiceIds[0] || '';
+  const setSelectedServiceId = (id: string) => setSelectedServiceIds([id]);
+  const handleToggleService = (serviceId: string) => {
+    setSelectedServiceIds((prev) => {
+      if (prev.includes(serviceId)) {
+        if (prev.length <= 1) return prev; // Keep at least one service selected
+        return prev.filter((id) => id !== serviceId);
+      } else {
+        return [...prev, serviceId];
+      }
+    });
+  };
   const [slots, setSlots] = useState<PickupSlot[]>([]);
   const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -750,7 +762,7 @@ export const CustomerHome: React.FC = () => {
       setSettings(s);
       setServices(srv || []);
       if (srv && srv.length > 0) {
-        setSelectedServiceId((prev) => prev || srv[0].id);
+        setSelectedServiceIds((prev) => (prev.length > 0 ? prev : [srv[0].id]));
       }
       const activeSlots = sl && sl.length > 0 ? sl.filter((x) => x.is_active) : [];
       setSlots(activeSlots);
@@ -896,7 +908,12 @@ export const CustomerHome: React.FC = () => {
       return;
     }
 
-    const payloadData: PendingBookingPayload = {
+    const activeSelected = services.filter((s) => selectedServiceIds.includes(s.id));
+    const finalSelectedServices = activeSelected.length > 0 ? activeSelected : (services.length > 0 ? [services[0]] : []);
+    const isMultiService = finalSelectedServices.length > 1;
+    const batchId = `BATCH-${Date.now().toString(36).toUpperCase()}`;
+
+    const basePayloadData = {
       customer_name: customerName,
       customer_phone: customerPhone || currentUser?.phone || '9876543212',
       pickup_address: addressLine,
@@ -905,28 +922,46 @@ export const CustomerHome: React.FC = () => {
       pickup_date: pickupDate,
       pickup_slot: selectedSlotName,
       pickup_latitude: latitude,
-      pickup_longitude: longitude,
-      service_id: selectedServiceId || undefined,
-      notes: undefined,
-      coupon_code: appliedCoupon ? appliedCoupon.code : undefined,
-      discount_paise: appliedCoupon ? appliedCoupon.discount_paise : 0
+      pickup_longitude: longitude
     };
 
     // 1. Persist pending record in sessionStorage with status 'in_flight' BEFORE sending network request
     if (currentUser?.id) {
-      savePendingBooking(currentUser.id, submissionId, payloadData, 'in_flight');
+      savePendingBooking(currentUser.id, submissionId, {
+        ...basePayloadData,
+        service_id: finalSelectedServices[0]?.id,
+        notes: isMultiService ? `[Linked Batch ${batchId}: Multi-Service Booking (${finalSelectedServices.length} items)]` : undefined,
+        coupon_code: appliedCoupon ? appliedCoupon.code : undefined,
+        discount_paise: appliedCoupon ? appliedCoupon.discount_paise : 0
+      }, 'in_flight');
     }
 
     setIsBookingSubmitting(true);
 
     try {
-      const order = await LaundryService.createOrder({
-        customer_id: currentUser?.id,
-        ...payloadData,
-        coupon_code: appliedCoupon?.code,
-        discount_paise: appliedCoupon?.discount_paise,
-        client_submission_id: submissionId
-      });
+      const createdOrders: Order[] = [];
+      for (let i = 0; i < finalSelectedServices.length; i++) {
+        const srv = finalSelectedServices[i];
+        const isFirst = i === 0;
+        const currentSubId = isFirst ? submissionId : `${submissionId}_${i}`;
+        const batchNote = isMultiService
+          ? `[Linked Batch ${batchId}: ${srv.name} (${i + 1}/${finalSelectedServices.length})]`
+          : undefined;
+
+        // Apply coupon to first service order in linked batch
+        const couponToApply = isFirst && appliedCoupon;
+
+        const order = await LaundryService.createOrder({
+          customer_id: currentUser?.id,
+          ...basePayloadData,
+          service_id: srv.id,
+          notes: batchNote,
+          coupon_code: couponToApply ? appliedCoupon?.code : undefined,
+          discount_paise: couponToApply ? appliedCoupon?.discount_paise : 0,
+          client_submission_id: currentSubId
+        });
+        createdOrders.push(order);
+      }
 
       // Request succeeded: clear pending record immediately
       if (currentUser?.id) {
@@ -941,17 +976,19 @@ export const CustomerHome: React.FC = () => {
           : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
       );
 
-      setBookingSuccessOrder(order);
+      const primaryOrder = createdOrders[0];
+      setBookingSuccessOrder(primaryOrder);
       try {
         sessionStorage.setItem(CONFIRMED_ORDER_KEY, JSON.stringify({
-          ...order,
+          ...primaryOrder,
           timestamp: Date.now()
         }));
       } catch {}
 
       setOrders((prev) => {
-        const exists = prev.some((o) => o.id === order.id);
-        return exists ? prev : [order, ...prev];
+        const newIds = new Set(createdOrders.map((o) => o.id));
+        const filtered = prev.filter((o) => !newIds.has(o.id));
+        return [...createdOrders, ...filtered];
       });
       setBookingError(null);
       handleTabChange('current');
@@ -959,7 +996,7 @@ export const CustomerHome: React.FC = () => {
         (prev) => {
           const p = new URLSearchParams(prev);
           p.set('tab', 'current');
-          p.set('confirmed', order.order_number);
+          p.set('confirmed', primaryOrder.order_number);
           return p;
         },
         { replace: true }
@@ -1164,7 +1201,10 @@ export const CustomerHome: React.FC = () => {
     orders.find((o) => o.order_status !== 'delivered' && o.order_status !== 'cancelled') ||
     orders[0] ||
     bookingSuccessOrder;
-  const selectedService = services.find((s) => s.id === selectedServiceId) || services[0];
+  const activeSelectedServices = services.filter((s) => selectedServiceIds.includes(s.id));
+  const selectedService = activeSelectedServices[0] || services[0];
+  const isMultiService = activeSelectedServices.length > 1;
+
   const effectiveUnitPricePaise = selectedService
     ? (selectedService.unit_price_paise || selectedService.price_paise || (settings?.price_per_kg_paise ?? 7900))
     : (settings?.price_per_kg_paise ?? 7900);
@@ -1175,7 +1215,16 @@ export const CustomerHome: React.FC = () => {
   const effectiveMinWeight = selectedService && selectedService.pricing_unit === 'per_kg'
     ? (selectedService.min_weight_kg ?? (settings?.min_weight_kg ?? 1.0))
     : 0;
-  const minBill = ((effectiveUnitPricePaise * (effectiveMinWeight > 0 ? effectiveMinWeight : 1)) / 100).toFixed(0);
+
+  // Combined estimated subtotal across all selected services
+  const combinedEstimatedSubtotalPaise = (activeSelectedServices.length > 0 ? activeSelectedServices : [selectedService]).reduce((acc, s) => {
+    if (!s) return acc;
+    const price = s.unit_price_paise || s.price_paise || (settings?.price_per_kg_paise ?? 7900);
+    const minQty = s.pricing_unit === 'per_kg' ? (s.min_weight_kg ?? (settings?.min_weight_kg ?? 1.0)) : 1;
+    return acc + Math.round(price * (minQty > 0 ? minQty : 1));
+  }, 0);
+
+  const minBill = ((combinedEstimatedSubtotalPaise) / 100).toFixed(0);
   const pricePerKg = serviceRateStr;
   const minWeight = effectiveMinWeight.toString();
 
@@ -1191,12 +1240,11 @@ export const CustomerHome: React.FC = () => {
     setCouponSuccessMessage(null);
 
     try {
-      const estimatedSubtotalPaise = effectiveUnitPricePaise * (effectiveMinWeight > 0 ? effectiveMinWeight : 1);
       const valResult = await LaundryService.validateCoupon(
         code,
         customerPhone || currentUser?.phone || '',
-        estimatedSubtotalPaise,
-        selectedService?.id
+        combinedEstimatedSubtotalPaise,
+        activeSelectedServices.length === 1 ? selectedService?.id : undefined
       );
 
       if (!valResult.valid) {
@@ -1531,34 +1579,44 @@ export const CustomerHome: React.FC = () => {
                 {/* 0. Service Selection */}
                 {services.length > 0 && (
                   <div className="space-y-2">
-                    <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                      <Sparkles className="w-4 h-4 text-brand-600" /> Select Laundry Service
-                    </label>
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                        <Sparkles className="w-4 h-4 text-brand-600" /> Select Laundry Service(s)
+                      </label>
+                      {activeSelectedServices.length > 1 && (
+                        <span className="text-[11px] font-bold text-brand-700 bg-brand-50 px-2.5 py-0.5 rounded-full border border-brand-200">
+                          {activeSelectedServices.length} Services Selected (Linked Pickup)
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      Select one or more services for this pickup. Distinct services are weighed and processed in separate batches.
+                    </p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                       {services.map((srv) => {
-                        const isSelected = selectedServiceId === srv.id;
+                        const isSelected = selectedServiceIds.includes(srv.id);
                         return (
                           <label
                             key={srv.id}
-                            className={`flex items-start gap-2.5 p-3 rounded-2xl border cursor-pointer transition ${
+                            className={`flex items-start gap-2.5 p-3 rounded-2xl border cursor-pointer transition select-none ${
                               isSelected
-                                ? 'border-brand-600 bg-brand-50/70 text-slate-900 ring-2 ring-brand-500/20'
+                                ? 'border-brand-600 bg-brand-50/70 text-slate-900 ring-2 ring-brand-500/20 shadow-sm'
                                 : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
                             }`}
                           >
                             <input
-                              type="radio"
+                              type="checkbox"
                               name="selectedService"
                               value={srv.id}
                               checked={isSelected}
-                              onChange={() => setSelectedServiceId(srv.id)}
-                              className="mt-1 text-brand-600 focus:ring-brand-500"
+                              onChange={() => handleToggleService(srv.id)}
+                              className="mt-1 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer"
                             />
                             <div className="text-xs flex-1">
                               <div className="flex items-center justify-between">
                                 <span className="font-bold text-slate-900">{srv.name}</span>
                                 <span className="font-black text-brand-700">
-                                  ₹{(((srv.unit_price_paise || srv.price_paise || 8000) / 100)).toFixed(0)}
+                                  ₹{(((srv.unit_price_paise || srv.price_paise || 7900) / 100)).toFixed(0)}
                                   <span className="text-[10px] text-slate-400 font-normal">/{srv.pricing_unit === 'per_kg' ? 'kg' : srv.pricing_unit.replace('per_', '')}</span>
                                 </span>
                               </div>
@@ -2028,16 +2086,40 @@ export const CustomerHome: React.FC = () => {
                 </div>
 
                 <div>
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-4xl font-black">₹{serviceRateStr}</span>
-                    <span className="text-base font-semibold text-brand-100">/ {serviceUnitLabel}</span>
-                  </div>
-                  <p className="text-xs text-brand-100 mt-1">
-                    {selectedService ? selectedService.name : 'Normal clothes washing'}
-                    {selectedService?.pricing_unit === 'per_kg' && selectedService.min_weight_kg > 0
-                      ? ` • Min. weight ${selectedService.min_weight_kg} kg (₹${((selectedService.unit_price_paise * selectedService.min_weight_kg) / 100).toFixed(0)}).`
-                      : '.'}
-                  </p>
+                  {isMultiService ? (
+                    <div>
+                      <div className="flex items-baseline gap-1">
+                        <span className="text-3xl font-black">₹{minBill}</span>
+                        <span className="text-sm font-semibold text-brand-100">est. min total</span>
+                      </div>
+                      <p className="text-xs text-brand-100 mt-1 font-semibold">
+                        {activeSelectedServices.length} Services Selected (Linked Pickup):
+                      </p>
+                      <div className="mt-2 space-y-1.5 bg-white/10 rounded-2xl p-2.5">
+                        {activeSelectedServices.map((s) => (
+                          <div key={s.id} className="flex justify-between items-center text-xs">
+                            <span className="font-medium text-white">{s.name}</span>
+                            <span className="text-cyan-200 font-mono font-bold">
+                              ₹{(((s.unit_price_paise || s.price_paise || 7900) / 100)).toFixed(0)}/{s.pricing_unit === 'per_kg' ? 'kg' : s.pricing_unit.replace('per_', '')}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="flex items-baseline gap-1">
+                        <span className="text-4xl font-black">₹{serviceRateStr}</span>
+                        <span className="text-base font-semibold text-brand-100">/ {serviceUnitLabel}</span>
+                      </div>
+                      <p className="text-xs text-brand-100 mt-1">
+                        {selectedService ? selectedService.name : 'Normal clothes washing'}
+                        {selectedService?.pricing_unit === 'per_kg' && selectedService.min_weight_kg > 0
+                          ? ` • Min. weight ${selectedService.min_weight_kg} kg (₹${((selectedService.unit_price_paise * selectedService.min_weight_kg) / 100).toFixed(0)}).`
+                          : '.'}
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 {appliedCoupon && (
@@ -2062,9 +2144,9 @@ export const CustomerHome: React.FC = () => {
                 <div className="p-3.5 bg-white/10 rounded-2xl text-xs space-y-1.5 text-brand-50">
                   <span className="font-bold block text-white">How billing works:</span>
                   <p className="text-[11px] leading-relaxed">
-                    1. We collect your laundry bag at your doorstep. <br />
-                    2. Service rate verified from official catalogue: <code className="bg-black/20 px-1 rounded">₹{serviceRateStr} / {serviceUnitLabel}</code>. <br />
-                    3. Exact bill generated upon store intake & scale verification. <br />
+                    1. We collect your laundry bag{isMultiService ? 's' : ''} at your doorstep. <br />
+                    2. Service rate verified from official catalogue{isMultiService ? ' for each selected service.' : `: ₹${serviceRateStr} / ${serviceUnitLabel}.`} <br />
+                    3. Exact bill generated upon store intake & digital scale verification. <br />
                     4. Delivered clean & crisp. Pay via Cash or UPI.
                   </p>
                 </div>

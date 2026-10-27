@@ -35,7 +35,7 @@ export const DEFAULT_SETTINGS: BusinessSettings = {
   business_name: 'SuperWash Exprez',
   business_phone: '+91 98765 43210',
   business_address: 'Shop #14, Metro Pillar 78, Indiranagar, Bengaluru 560038',
-  price_per_kg_paise: 8000, // ₹80.00 / kg
+  price_per_kg_paise: 7900, // ₹79.00 / kg
   min_weight_kg: 3.00,      // 3.00 kg minimum
   delivery_charge_paise: 0, // Free pickup & delivery
   upi_id: 'superwash@upi',
@@ -67,7 +67,7 @@ export const DEFAULT_SERVICES: LaundryServiceItem[] = [
     name: 'Wash & Fold (Normal)',
     description: 'Everyday clothes washed with premium gentle detergent, tumble-dried, and neatly steam-iron folded',
     pricing_unit: 'per_kg',
-    unit_price_paise: 8000,
+    unit_price_paise: 7900,
     min_weight_kg: 3.0,
     is_active: true,
     display_order: 1
@@ -988,8 +988,12 @@ export class LaundryService {
     const serviceId = chosenService?.id;
     const serviceName = chosenService ? chosenService.name : 'Wash & Fold (Normal)';
     const pricingUnit = chosenService ? chosenService.pricing_unit : 'per_kg';
-    const unitPricePaise = chosenService ? (chosenService.unit_price_paise || chosenService.price_paise || 8000) : settings.price_per_kg_paise;
-    const minWeightKg = chosenService && chosenService.pricing_unit === 'per_kg' ? (chosenService.min_weight_kg ?? 3.0) : 0;
+    const unitPricePaise = data.service_id && chosenService
+      ? (chosenService.unit_price_paise || chosenService.price_paise || settings.price_per_kg_paise)
+      : settings.price_per_kg_paise;
+    const minWeightKg = data.service_id && chosenService
+      ? (chosenService.pricing_unit === 'per_kg' ? (chosenService.min_weight_kg ?? settings.min_weight_kg ?? 1.0) : 0)
+      : (settings.min_weight_kg ?? 1.0);
 
     // Authoritative, collision-safe candidate generation
     const orderNumber = this.generateSafeOrderNumber(existingOrders);
