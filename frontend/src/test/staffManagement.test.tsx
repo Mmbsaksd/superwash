@@ -728,5 +728,62 @@ describe('Staff Management Enhancements (Edit, Toggle Status, Search & Filter)',
       });
       expect(screen.queryByText('Temp Delete Candidate')).not.toBeInTheDocument();
     });
+
+    it('displays clear deactivation notice and updates employee status when staff has historical orders', async () => {
+      // Seed a staff member with an assigned historical order
+      const assignedStaff: Profile = {
+        id: 'staff-with-orders-1',
+        full_name: 'Assigned Courier Staff',
+        email: 'assigned.courier@superwash.in',
+        phone: '9876543099',
+        role: 'delivery',
+        is_active: true,
+        created_at: new Date().toISOString()
+      };
+      const testOrder = {
+        id: 'ord-hist-assigned-1',
+        order_number: 'SW-8801',
+        customer_phone: '9876543210',
+        customer_name: 'Test Customer',
+        assigned_delivery_id: 'staff-with-orders-1',
+        order_status: 'delivered',
+        created_at: new Date().toISOString()
+      };
+      const existing = await LaundryService.getStaffProfiles(true);
+      localStorage.setItem('superwash_profiles', JSON.stringify([...existing, assignedStaff]));
+      localStorage.setItem('superwash_orders', JSON.stringify([testOrder]));
+
+      render(
+        <MemoryRouter initialEntries={['/admin']}>
+          <AuthProvider>
+            <OwnerDashboard />
+          </AuthProvider>
+        </MemoryRouter>
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: /staff accounts/i }));
+      await screen.findByText('Assigned Courier Staff');
+
+      // Click Delete on Assigned Staff
+      const card = screen.getByText('Assigned Courier Staff').closest('.bg-white') as HTMLElement;
+      const deleteBtn = within(card).getByRole('button', { name: /delete/i });
+      fireEvent.click(deleteBtn);
+
+      // Confirm modal opens
+      expect(await screen.findByText(/Delete Employee Account\?/i)).toBeInTheDocument();
+      const confirmDeleteBtn = screen.getByRole('button', { name: /confirm delete/i });
+      fireEvent.click(confirmDeleteBtn);
+
+      // Modal closes, deactivation notice shown, staff remains in directory as Inactive
+      await waitFor(() => {
+        expect(screen.getByText(/safely deactivated instead of deleted/i)).toBeInTheDocument();
+      });
+      expect(screen.getByText('Assigned Courier Staff')).toBeInTheDocument();
+
+      // Check status badge is Inactive
+      const updatedProfiles = await LaundryService.getStaffProfiles(true);
+      const target = updatedProfiles.find(p => p.id === 'staff-with-orders-1');
+      expect(target?.is_active).toBe(false);
+    });
   });
 });

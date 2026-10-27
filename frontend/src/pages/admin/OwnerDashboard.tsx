@@ -544,7 +544,11 @@ export const OwnerDashboard: React.FC = () => {
       setStaffList(freshStaff);
       setDeletingStaff(null);
       setStaffActionMsg(res.message);
-      setTimeout(() => setStaffActionMsg(null), 5000);
+      setStaffActionType(res.deactivatedInstead ? 'warning' : 'success');
+      setTimeout(() => {
+        setStaffActionMsg(null);
+        setStaffActionType(null);
+      }, 6000);
     } catch (err: any) {
       setDeleteStaffError(err.message || 'Failed to delete staff member.');
     } finally {
@@ -553,6 +557,7 @@ export const OwnerDashboard: React.FC = () => {
   };
 
   const [staffActionMsg, setStaffActionMsg] = useState<string | null>(null);
+  const [staffActionType, setStaffActionType] = useState<'success' | 'warning' | null>(null);
 
   const handleRequestToggleStatus = (staff: Profile) => {
     if (staff.email?.toLowerCase() === 'superwashexprez@gmail.com') {
@@ -1403,9 +1408,19 @@ export const OwnerDashboard: React.FC = () => {
             </div>
 
             {staffActionMsg && (
-              <div className="p-3.5 bg-purple-50 border border-purple-200 text-purple-900 rounded-2xl text-xs flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-purple-600 shrink-0" />
-                <span>{staffActionMsg}</span>
+              <div
+                className={`p-3.5 rounded-2xl text-xs flex items-center gap-2 ${
+                  staffActionType === 'warning'
+                    ? 'bg-amber-50 border border-amber-300 text-amber-900'
+                    : 'bg-purple-50 border border-purple-200 text-purple-900'
+                }`}
+              >
+                {staffActionType === 'warning' ? (
+                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                ) : (
+                  <CheckCircle2 className="w-4 h-4 text-purple-600 shrink-0" />
+                )}
+                <span className="font-medium">{staffActionMsg}</span>
               </div>
             )}
 

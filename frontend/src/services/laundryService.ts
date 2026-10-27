@@ -2640,7 +2640,7 @@ export class LaundryService {
         const { data: assignedOrders, error: checkErr } = await supabase
           .from('orders')
           .select('id')
-          .or(`assigned_pickup_id.eq.${staffId},assigned_delivery_id.eq.${staffId}`)
+          .or(`assigned_pickup_id.eq.${staffId},assigned_delivery_id.eq.${staffId},pickup_weighed_by.eq.${staffId}`)
           .limit(1);
 
         if (!checkErr && assignedOrders && assignedOrders.length > 0) {
@@ -2658,7 +2658,7 @@ export class LaundryService {
 
     // 6. If referenced by orders, deactivate instead to preserve audit history & referential integrity
     if (hasOrderAssignments) {
-      await this.toggleStaffStatus(staffId, false, callerId);
+      await this.toggleStaffStatus(staffId, false, callerId, callerRole);
       return {
         success: true,
         deactivatedInstead: true,
@@ -2666,27 +2666,40 @@ export class LaundryService {
       };
     }
 
-    // 7. Permanent deletion when safe
+    // 7. Atomic secure deletion via SECURITY DEFINER database RPC (Direct table DELETE is intentionally disabled)
     if (isLiveMode) {
-      const { error: delError } = await supabase
-        .from('profiles')
-        .delete()
-        .eq('id', staffId);
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('delete_staff_profile', {
+        p_staff_id: staffId
+      });
 
-      if (delError) {
-        if (delError.code === '23503' || delError.message.toLowerCase().includes('foreign key')) {
-          await this.toggleStaffStatus(staffId, false, callerId);
-          return {
-            success: true,
-            deactivatedInstead: true,
-            message: `Staff member ${staff.full_name} is referenced by system records. The account has been safely deactivated instead.`
-          };
+      if (rpcErr) {
+        if (rpcErr.code === '42883' || rpcErr.message?.includes('does not exist')) {
+          throw new Error("Database RPC 'delete_staff_profile' is not configured or migration 20261027130000 has not been applied. Direct profile deletion is disabled for security.");
         }
-        throw new Error(delError.message || 'Database error occurred while deleting staff account.');
+        throw new Error(rpcErr.message || 'Database error occurred while deleting staff account.');
+      }
+
+      if (!rpcData?.success) {
+        throw new Error(rpcData?.message || 'Failed to delete staff account.');
+      }
+
+      if (rpcData.deactivated_instead) {
+        // Synchronize local cache to show deactivated status
+        const cached = profiles.find(p => p.id === staffId);
+        if (cached) cached.is_active = false;
+        localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(profiles));
+        const demoProfile = DEMO_PROFILES.find(p => p.id === staffId);
+        if (demoProfile) demoProfile.is_active = false;
+
+        return {
+          success: true,
+          deactivatedInstead: true,
+          message: rpcData.message || `Staff member ${staff.full_name} has historical records and was safely deactivated instead of deleted.`
+        };
       }
     }
 
-    // Update local cache and demo directory
+    // Update local cache and demo directory for permanent deletion
     const updatedProfiles = profiles.filter(p => p.id !== staffId);
     localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(updatedProfiles));
     const demoIndex = DEMO_PROFILES.findIndex(p => p.id === staffId);
