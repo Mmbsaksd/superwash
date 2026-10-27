@@ -383,6 +383,20 @@ export const OwnerDashboard: React.FC = () => {
       setBusinessAddressInput(updated.business_address);
       setSettingsSavedMsg('Settings updated successfully! Business contact details and operational rates have been saved.');
       setTimeout(() => setSettingsSavedMsg(null), 4000);
+
+      // Keep primary per-kg service in catalogue synchronized
+      const primaryPerKg = servicesList.find((s) => s.pricing_unit === 'per_kg');
+      if (primaryPerKg) {
+        try {
+          const updatedSrv = await LaundryService.updateService(primaryPerKg.id, {
+            unit_price_paise: Math.round(parseFloat(pricePerKgInput) * 100),
+            min_weight_kg: parseFloat(minWeightInput)
+          }, currentUser?.role);
+          setServicesList((prev) => prev.map((s) => s.id === updatedSrv.id ? updatedSrv : s));
+        } catch (syncErr) {
+          console.warn('Could not auto-sync primary service rate from settings:', syncErr);
+        }
+      }
     } catch (err: any) {
       setSettingsError(err?.message || 'Error updating settings');
     } finally {
@@ -753,6 +767,21 @@ export const OwnerDashboard: React.FC = () => {
         setServicesList((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
         setServiceActionSuccess(`Service '${updated.name}' updated successfully.`);
         setEditingService(null);
+
+        // Keep business_settings in sync if updating a per-kg service
+        if (servicePricingUnit === 'per_kg' && settings) {
+          try {
+            const updatedSettings = await LaundryService.updateSettings({
+              price_per_kg_paise: Math.round(priceNum * 100),
+              min_weight_kg: minWeightNum
+            });
+            setSettings(updatedSettings);
+            setPricePerKgInput((updatedSettings.price_per_kg_paise / 100).toString());
+            setMinWeightInput(updatedSettings.min_weight_kg.toString());
+          } catch (syncErr) {
+            console.warn('Could not auto-sync business settings with per-kg service price:', syncErr);
+          }
+        }
       } else {
         const created = await LaundryService.addService({
           name: serviceName.trim(),

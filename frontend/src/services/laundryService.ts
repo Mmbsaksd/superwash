@@ -368,32 +368,46 @@ export class LaundryService {
   // Customer Addresses
   // ----------------------------------------------------
   static async getAddresses(userId: string): Promise<CustomerAddress[]> {
+    let addresses: CustomerAddress[] = [];
     if (isLiveMode) {
-      const { data, error } = await supabase.from('customer_addresses').select('*').eq('user_id', userId);
+      const { data, error } = await supabase.from('customer_addresses').select('*').eq('user_id', userId).order('created_at', { ascending: false });
       if (error) {
         throw new Error(`Failed to load saved addresses: ${error.message}`);
       }
-      return data || [];
+      addresses = data || [];
+    } else {
+      const saved = localStorage.getItem(`${STORAGE_KEYS.ADDRESSES}_${userId}`);
+      if (saved) {
+        try { addresses = JSON.parse(saved); } catch {}
+      } else {
+        addresses = [
+          {
+            id: 'addr-default-1',
+            user_id: userId,
+            label: 'Home',
+            address_line: 'Flat 402, Green Glen Layout, Bellandur',
+            landmark: 'Near Central Mall',
+            pincode: '560103',
+            latitude: 12.9260,
+            longitude: 77.6762,
+            is_default: true,
+            created_at: new Date().toISOString()
+          }
+        ];
+      }
     }
 
-    const saved = localStorage.getItem(`${STORAGE_KEYS.ADDRESSES}_${userId}`);
-    if (saved) {
-      try { return JSON.parse(saved); } catch {}
-    }
-    return [
-      {
-        id: 'addr-default-1',
-        user_id: userId,
-        label: 'Home',
-        address_line: 'Flat 402, Green Glen Layout, Bellandur',
-        landmark: 'Near Central Mall',
-        pincode: '560103',
-        latitude: 12.9260,
-        longitude: 77.6762,
-        is_default: true,
-        created_at: new Date().toISOString()
+    // Deduplicate by normalized address_line and pincode to guarantee no duplicate address cards in UI
+    const seen = new Set<string>();
+    const deduplicated: CustomerAddress[] = [];
+    for (const addr of addresses) {
+      const key = `${addr.address_line.trim().toLowerCase().replace(/\s+/g, ' ')}:${(addr.pincode || '').trim()}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduplicated.push(addr);
       }
-    ];
+    }
+    return deduplicated;
   }
 
   static async saveAddress(address: Omit<CustomerAddress, 'id'>): Promise<CustomerAddress> {

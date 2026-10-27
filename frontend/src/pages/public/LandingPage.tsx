@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { BusinessSettings } from '../../types';
+import { BusinessSettings, LaundryServiceItem } from '../../types';
 import { LaundryService, DEFAULT_SETTINGS } from '../../services/laundryService';
 import { useAuth } from '../../context/AuthContext';
 import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
@@ -14,6 +14,7 @@ export const LandingPage: React.FC = () => {
   const { currentUser } = useAuth();
   const navigate = useNavigate();
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
+  const [services, setServices] = useState<LaundryServiceItem[]>([]);
   const [pincodeInput, setPincodeInput] = useState<string>('');
   const [pincodeResult, setPincodeResult] = useState<{ checked: boolean; serviceable: boolean; message: string } | null>(null);
   const [activeFaq, setActiveFaq] = useState<number | null>(null);
@@ -21,7 +22,13 @@ export const LandingPage: React.FC = () => {
   const [isTermsOpen, setIsTermsOpen] = useState<boolean>(false);
 
   useEffect(() => {
-    LaundryService.getSettings().then(setSettings);
+    Promise.all([
+      LaundryService.getSettings(),
+      LaundryService.getServices(false)
+    ]).then(([s, srvList]) => {
+      setSettings(s);
+      setServices(srvList || []);
+    });
   }, []);
 
   const handleCheckPincode = async (e: React.FormEvent) => {
@@ -44,9 +51,15 @@ export const LandingPage: React.FC = () => {
     }
   };
 
-  const pricePerKg = settings ? (settings.price_per_kg_paise / 100).toFixed(0) : '80';
-  const minWeight = settings ? settings.min_weight_kg.toFixed(0) : '3';
-  const minBill = settings ? ((settings.price_per_kg_paise * settings.min_weight_kg) / 100).toFixed(0) : '240';
+  // Authoritative price derivation: read primary per-kg service from catalogue, fallback to settings
+  const primaryPerKgService = services.find((s) => s.pricing_unit === 'per_kg' && s.is_active) || services[0];
+  const pricePerKg = primaryPerKgService
+    ? (((primaryPerKgService.unit_price_paise || primaryPerKgService.price_paise || 8000) / 100)).toFixed(0)
+    : (settings ? (settings.price_per_kg_paise / 100).toFixed(0) : '80');
+  const minWeight = primaryPerKgService && primaryPerKgService.min_weight_kg > 0
+    ? primaryPerKgService.min_weight_kg.toFixed(0)
+    : (settings ? settings.min_weight_kg.toFixed(0) : '3');
+  const minBill = ((parseFloat(pricePerKg) * parseFloat(minWeight))).toFixed(0);
   const phone = settings?.business_phone || DEFAULT_SETTINGS.business_phone;
   const address = settings?.business_address || DEFAULT_SETTINGS.business_address;
 
