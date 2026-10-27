@@ -203,9 +203,43 @@ export interface Order {
   collected_at?: string;
   weighed_at?: string;
   delivered_at?: string;
+  coupon_code?: string | null;
+  discount_paise?: number; // Coupon discount in paise
   client_submission_id?: string;
   created_at: string;
   updated_at: string;
+}
+
+export type CouponDiscountType = 'percentage' | 'fixed';
+
+export interface Coupon {
+  id: string;
+  code: string;
+  description?: string;
+  discount_type: CouponDiscountType;
+  discount_value: number; // e.g. 15 for 15%, or 5000 for ₹50
+  min_order_paise: number;
+  max_discount_paise?: number | null;
+  max_redemptions?: number | null;
+  total_redemptions: number;
+  per_customer_limit: number;
+  applicable_service_ids?: string[] | null;
+  first_time_only: boolean;
+  is_active: boolean;
+  valid_until?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CouponValidationResult {
+  valid: boolean;
+  code: string;
+  reason?: string;
+  discount_type?: CouponDiscountType;
+  discount_value?: number;
+  discount_paise: number;
+  coupon_id?: string;
+  min_order_paise?: number;
 }
 
 export interface OrderStatusHistory {

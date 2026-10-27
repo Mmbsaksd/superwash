@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import {
   Order, BusinessSettings, Profile, PickupSlot,
-  Payment, OrderFeedback, FeedbackStatus, FeedbackSummaryMetrics, UserRole
+  Payment, OrderFeedback, FeedbackStatus, FeedbackSummaryMetrics, UserRole,
+  ServiceArea, LaundryServiceItem, PeriodFilter, DashboardPeriodAnalytics, Coupon
 } from '../../types';
 import { LaundryService, DEFAULT_SETTINGS } from '../../services/laundryService';
 import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
@@ -16,15 +17,12 @@ import {
   Users, Settings, Plus, RefreshCw,
   Search, Shield, Star, MessageSquareHeart,
   AlertCircle, X, Download, TrendingUp, TrendingDown, LogOut, Loader2,
-  Edit2, Trash2
+  Edit2, Trash2, TicketPercent
 } from 'lucide-react';
-import {
-  ServiceArea, LaundryServiceItem, PeriodFilter, DashboardPeriodAnalytics
-} from '../../types';
 
 export const OwnerDashboard: React.FC = () => {
   const { currentUser, logout, sendPasswordResetEmail } = useAuth();
-  const [activeTab, setActiveTab] = useState<'overview' | 'orders' | 'staff' | 'payments' | 'feedback' | 'settings'>('staff');
+  const [activeTab, setActiveTab] = useState<'overview' | 'orders' | 'staff' | 'payments' | 'feedback' | 'settings' | 'coupons'>('staff');
   const [orders, setOrders] = useState<Order[]>([]);
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [staffList, setStaffList] = useState<Profile[]>([]);
@@ -67,6 +65,24 @@ export const OwnerDashboard: React.FC = () => {
   const [settingsSavedMsg, setSettingsSavedMsg] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState<boolean>(false);
+
+  // Coupon Management State
+  const [couponsList, setCouponsList] = useState<Coupon[]>([]);
+  const [isCreatingCoupon, setIsCreatingCoupon] = useState<boolean>(false);
+  const [couponCodeInput, setCouponCodeInput] = useState<string>('');
+  const [couponDescInput, setCouponDescInput] = useState<string>('');
+  const [couponTypeInput, setCouponTypeInput] = useState<'percentage' | 'fixed'>('percentage');
+  const [couponValueInput, setCouponValueInput] = useState<string>('10');
+  const [couponMinOrderInput, setCouponMinOrderInput] = useState<string>('0');
+  const [couponMaxDiscountInput, setCouponMaxDiscountInput] = useState<string>('');
+  const [couponMaxRedemptionsInput, setCouponMaxRedemptionsInput] = useState<string>('');
+  const [couponPerCustomerInput, setCouponPerCustomerInput] = useState<string>('1');
+  const [couponFirstTimeOnly, setCouponFirstTimeOnly] = useState<boolean>(false);
+  const [couponExpiryInput, setCouponExpiryInput] = useState<string>('');
+  const [couponSelectedServiceId, setCouponSelectedServiceId] = useState<string>('');
+  const [couponFormError, setCouponFormError] = useState<string | null>(null);
+  const [couponActionSuccess, setCouponActionSuccess] = useState<string | null>(null);
+  const [isSubmittingCoupon, setIsSubmittingCoupon] = useState<boolean>(false);
 
   // Service Area Creation State
   const [isAddingArea, setIsAddingArea] = useState<boolean>(false);
@@ -164,7 +180,7 @@ export const OwnerDashboard: React.FC = () => {
   const loadAllData = async () => {
     setIsLoading(true);
     try {
-      const [allOrds, s, st, sl, p, fb, fm, sa, srv, pa] = await Promise.all([
+      const [allOrds, s, st, sl, p, fb, fm, sa, srv, pa, cps] = await Promise.all([
         LaundryService.getAllOrders(),
         LaundryService.getSettings(),
         LaundryService.getStaffProfiles(true),
@@ -174,7 +190,8 @@ export const OwnerDashboard: React.FC = () => {
         LaundryService.getFeedbackMetrics(),
         LaundryService.getServiceAreas(),
         LaundryService.getServices(),
-        LaundryService.getPeriodAnalytics(selectedPeriod)
+        LaundryService.getPeriodAnalytics(selectedPeriod),
+        LaundryService.getCoupons(true)
       ]);
       setOrders(allOrds);
       setSettings(s);
@@ -186,11 +203,18 @@ export const OwnerDashboard: React.FC = () => {
       setServiceAreasList(sa);
       setServicesList(srv);
       setPeriodAnalytics(pa);
+      setCouponsList(cps);
 
       setBusinessPhoneInput(s.business_phone || DEFAULT_SETTINGS.business_phone);
       setBusinessAddressInput(s.business_address || DEFAULT_SETTINGS.business_address);
-      setPricePerKgInput((s.price_per_kg_paise / 100).toString());
-      setMinWeightInput(s.min_weight_kg.toString());
+
+      // Single source of truth: service catalogue is authoritative for service rates
+      const primaryPerKg = srv.find((sItem) => sItem.pricing_unit === 'per_kg' && sItem.is_active) || srv.find((sItem) => sItem.pricing_unit === 'per_kg');
+      const authoritativePricePaise = primaryPerKg ? (primaryPerKg.unit_price_paise || primaryPerKg.price_paise || s.price_per_kg_paise) : s.price_per_kg_paise;
+      const authoritativeMinWeight = primaryPerKg && primaryPerKg.min_weight_kg > 0 ? primaryPerKg.min_weight_kg : s.min_weight_kg;
+
+      setPricePerKgInput((authoritativePricePaise / 100).toString());
+      setMinWeightInput(authoritativeMinWeight.toString());
       setDeliveryChargeInput((s.delivery_charge_paise / 100).toString());
       setUpiIdInput(s.upi_id || 'superwash@upi');
       setAllowDeliveryPay(s.allow_delivery_payment_recording);
@@ -367,12 +391,32 @@ export const OwnerDashboard: React.FC = () => {
     setSettingsSavedMsg(null);
 
     try {
+      const targetPricePaise = Math.round(parseFloat(pricePerKgInput) * 100);
+      const targetMinWeight = parseFloat(minWeightInput);
+
+      // 1. Authoritative Catalogue Synchronization: Sync primary per-kg service in catalogue
+      const primaryPerKg = servicesList.find((s) => s.pricing_unit === 'per_kg');
+      let catalogueSyncWarning: string | null = null;
+      if (primaryPerKg) {
+        try {
+          const updatedSrv = await LaundryService.updateService(primaryPerKg.id, {
+            unit_price_paise: targetPricePaise,
+            min_weight_kg: targetMinWeight
+          }, currentUser?.role || 'owner');
+          setServicesList((prev) => prev.map((s) => s.id === updatedSrv.id ? updatedSrv : s));
+        } catch (syncErr: any) {
+          catalogueSyncWarning = `Business settings saved, but could not update service catalogue: ${syncErr.message || syncErr}.`;
+          console.error('Could not auto-sync primary service rate from settings:', syncErr);
+        }
+      }
+
+      // 2. Persist business operational settings
       const pins = pincodesInput.split(',').map((p) => p.trim()).filter((p) => p.length >= 6);
       const updated = await LaundryService.updateSettings({
         business_phone: cleanPhone,
         business_address: cleanAddress,
-        price_per_kg_paise: Math.round(parseFloat(pricePerKgInput) * 100),
-        min_weight_kg: parseFloat(minWeightInput),
+        price_per_kg_paise: targetPricePaise,
+        min_weight_kg: targetMinWeight,
         delivery_charge_paise: Math.round(parseFloat(deliveryChargeInput) * 100),
         upi_id: upiIdInput.trim(),
         allow_delivery_payment_recording: allowDeliveryPay,
@@ -381,21 +425,12 @@ export const OwnerDashboard: React.FC = () => {
       setSettings(updated);
       setBusinessPhoneInput(updated.business_phone);
       setBusinessAddressInput(updated.business_address);
-      setSettingsSavedMsg('Settings updated successfully! Business contact details and operational rates have been saved.');
-      setTimeout(() => setSettingsSavedMsg(null), 4000);
 
-      // Keep primary per-kg service in catalogue synchronized
-      const primaryPerKg = servicesList.find((s) => s.pricing_unit === 'per_kg');
-      if (primaryPerKg) {
-        try {
-          const updatedSrv = await LaundryService.updateService(primaryPerKg.id, {
-            unit_price_paise: Math.round(parseFloat(pricePerKgInput) * 100),
-            min_weight_kg: parseFloat(minWeightInput)
-          }, currentUser?.role);
-          setServicesList((prev) => prev.map((s) => s.id === updatedSrv.id ? updatedSrv : s));
-        } catch (syncErr) {
-          console.warn('Could not auto-sync primary service rate from settings:', syncErr);
-        }
+      if (catalogueSyncWarning) {
+        setSettingsError(catalogueSyncWarning);
+      } else {
+        setSettingsSavedMsg('Settings updated successfully! Business contact details and operational rates have been saved and synchronized across the platform.');
+        setTimeout(() => setSettingsSavedMsg(null), 4000);
       }
     } catch (err: any) {
       setSettingsError(err?.message || 'Error updating settings');
@@ -847,6 +882,87 @@ export const OwnerDashboard: React.FC = () => {
     }
   };
 
+  // Coupon Management Handlers
+  const handleCreateCoupon = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCouponFormError(null);
+    setCouponActionSuccess(null);
+
+    const val = parseFloat(couponValueInput);
+    if (isNaN(val) || val <= 0) {
+      setCouponFormError('Please enter a valid discount value greater than 0.');
+      return;
+    }
+    if (couponTypeInput === 'percentage' && (val <= 0 || val > 100)) {
+      setCouponFormError('Percentage discount must be between 1% and 100%.');
+      return;
+    }
+
+    const minOrd = parseFloat(couponMinOrderInput) || 0;
+    const maxDisc = couponMaxDiscountInput ? parseFloat(couponMaxDiscountInput) : null;
+    const maxRedemp = couponMaxRedemptionsInput ? parseInt(couponMaxRedemptionsInput) : null;
+    const perCust = parseInt(couponPerCustomerInput) || 1;
+
+    setIsSubmittingCoupon(true);
+    try {
+      const created = await LaundryService.createCoupon({
+        code: couponCodeInput.trim().toUpperCase(),
+        description: couponDescInput.trim() || undefined,
+        discount_type: couponTypeInput,
+        discount_value: couponTypeInput === 'percentage' ? Math.round(val) : Math.round(val * 100),
+        min_order_paise: Math.round(minOrd * 100),
+        max_discount_paise: maxDisc ? Math.round(maxDisc * 100) : null,
+        max_redemptions: maxRedemp,
+        per_customer_limit: perCust,
+        applicable_service_ids: couponSelectedServiceId ? [couponSelectedServiceId] : null,
+        first_time_only: couponFirstTimeOnly,
+        valid_until: couponExpiryInput ? new Date(couponExpiryInput).toISOString() : null
+      }, currentUser?.role || 'owner');
+
+      setCouponsList((prev) => [created, ...prev.filter(c => c.id !== created.id)]);
+      setCouponActionSuccess(`Coupon "${created.code}" created successfully!`);
+      setIsCreatingCoupon(false);
+      setCouponCodeInput('');
+      setCouponDescInput('');
+      setCouponValueInput('10');
+      setCouponMinOrderInput('0');
+      setCouponMaxDiscountInput('');
+      setCouponMaxRedemptionsInput('');
+      setCouponPerCustomerInput('1');
+      setCouponFirstTimeOnly(false);
+      setCouponExpiryInput('');
+      setCouponSelectedServiceId('');
+      setTimeout(() => setCouponActionSuccess(null), 4000);
+    } catch (err: any) {
+      setCouponFormError(err.message || 'Failed to create coupon.');
+    } finally {
+      setIsSubmittingCoupon(false);
+    }
+  };
+
+  const handleToggleCouponStatus = async (coupon: Coupon) => {
+    try {
+      const updated = await LaundryService.updateCoupon(coupon.id, { is_active: !coupon.is_active }, currentUser?.role || 'owner');
+      setCouponsList((prev) => prev.map(c => c.id === updated.id ? updated : c));
+      setCouponActionSuccess(`Coupon "${coupon.code}" ${updated.is_active ? 'activated' : 'disabled'}.`);
+      setTimeout(() => setCouponActionSuccess(null), 3000);
+    } catch (err: any) {
+      setCouponFormError(err.message || 'Failed to update coupon status.');
+    }
+  };
+
+  const handleDeleteCoupon = async (coupon: Coupon) => {
+    if (!window.confirm(`Are you sure you want to delete coupon "${coupon.code}"?`)) return;
+    try {
+      await LaundryService.deleteCoupon(coupon.id, currentUser?.role || 'owner');
+      setCouponsList((prev) => prev.filter(c => c.id !== coupon.id));
+      setCouponActionSuccess(`Coupon "${coupon.code}" deleted.`);
+      setTimeout(() => setCouponActionSuccess(null), 3000);
+    } catch (err: any) {
+      setCouponFormError(err.message || 'Failed to delete coupon.');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-24">
       {/* Header */}
@@ -905,6 +1021,7 @@ export const OwnerDashboard: React.FC = () => {
           {[
             { key: 'staff', label: `Staff Accounts (${staffList.length})` },
             { key: 'settings', label: 'Pricing & Coverage' },
+            { key: 'coupons', label: `Coupons (${couponsList.length})` },
             { key: 'overview', label: 'Executive Dashboard' },
             { key: 'orders', label: `Orders (${orders.length})` },
             { key: 'feedback', label: `Private Feedback (${feedbacks.length})` },
@@ -2633,6 +2750,329 @@ export const OwnerDashboard: React.FC = () => {
                   ))
                 )}
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ================= TAB: COUPONS MANAGEMENT ================= */}
+        {activeTab === 'coupons' && (
+          <div className="space-y-6 max-w-5xl">
+            {/* Header & Create Action */}
+            <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="font-black text-slate-900 text-lg flex items-center gap-2">
+                  <TicketPercent className="w-5 h-5 text-brand-600" />
+                  Coupons & Promotional Discounts
+                </h2>
+                <p className="text-slate-500 text-xs mt-0.5">
+                  Create and manage discount codes, percentage cuts, usage limits, and order eligibility.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCreatingCoupon(!isCreatingCoupon);
+                  setCouponFormError(null);
+                }}
+                className="py-2.5 px-4 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-xl text-xs shadow-sm transition flex items-center gap-1.5"
+              >
+                <Plus className="w-4 h-4" />
+                <span>{isCreatingCoupon ? 'Close Form' : 'Create New Coupon'}</span>
+              </button>
+            </div>
+
+            {couponActionSuccess && (
+              <div className="p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl font-semibold text-xs flex items-center gap-2 animate-fade-in">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>{couponActionSuccess}</span>
+              </div>
+            )}
+
+            {couponFormError && (
+              <div className="p-4 bg-red-50 border border-red-200 text-red-700 rounded-2xl font-semibold text-xs flex items-center gap-2 animate-fade-in">
+                <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                <span>{couponFormError}</span>
+              </div>
+            )}
+
+            {/* Creation Form */}
+            {isCreatingCoupon && (
+              <form onSubmit={handleCreateCoupon} className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-4 text-xs animate-fade-in">
+                <div className="border-b border-slate-100 pb-3 flex justify-between items-center">
+                  <h3 className="font-black text-sm text-slate-900">New Coupon Configuration</h3>
+                  <span className="text-[11px] text-slate-400">All codes are stored uppercase</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">Coupon Code *</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. FESTIVE20"
+                      value={couponCodeInput}
+                      onChange={(e) => setCouponCodeInput(e.target.value.toUpperCase())}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono font-bold uppercase"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">Discount Type *</label>
+                    <select
+                      value={couponTypeInput}
+                      onChange={(e) => setCouponTypeInput(e.target.value as any)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 font-bold bg-white"
+                    >
+                      <option value="percentage">Percentage Discount (%)</option>
+                      <option value="fixed">Fixed Amount (₹)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      Discount Value {couponTypeInput === 'percentage' ? '(%)' : '(₹)'} *
+                    </label>
+                    <input
+                      type="number"
+                      step={couponTypeInput === 'percentage' ? '1' : '5'}
+                      min="1"
+                      max={couponTypeInput === 'percentage' ? '100' : '50000'}
+                      value={couponValueInput}
+                      onChange={(e) => setCouponValueInput(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 font-bold"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">Minimum Order Amount (₹)</label>
+                    <input
+                      type="number"
+                      step="10"
+                      min="0"
+                      placeholder="0 for no minimum"
+                      value={couponMinOrderInput}
+                      onChange={(e) => setCouponMinOrderInput(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300"
+                    />
+                  </div>
+
+                  {couponTypeInput === 'percentage' && (
+                    <div>
+                      <label className="block font-bold text-slate-700 mb-1">Max Discount Cap (₹)</label>
+                      <input
+                        type="number"
+                        step="10"
+                        min="1"
+                        placeholder="Leave blank for no cap"
+                        value={couponMaxDiscountInput}
+                        onChange={(e) => setCouponMaxDiscountInput(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl border border-slate-300"
+                      />
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">Total Usage Limit</label>
+                    <input
+                      type="number"
+                      min="1"
+                      placeholder="Leave blank for unlimited"
+                      value={couponMaxRedemptionsInput}
+                      onChange={(e) => setCouponMaxRedemptionsInput(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">Per-Customer Limit *</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={couponPerCustomerInput}
+                      onChange={(e) => setCouponPerCustomerInput(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">Expiry Date (Optional)</label>
+                    <input
+                      type="date"
+                      value={couponExpiryInput}
+                      onChange={(e) => setCouponExpiryInput(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">Service Restriction</label>
+                    <select
+                      value={couponSelectedServiceId}
+                      onChange={(e) => setCouponSelectedServiceId(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white"
+                    >
+                      <option value="">All Services (No restriction)</option>
+                      {servicesList.filter(s => s.is_active).map(s => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Description / Campaign Note</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 15% OFF up to ₹150 for Diwali weekend"
+                    value={couponDescInput}
+                    onChange={(e) => setCouponDescInput(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <input
+                    type="checkbox"
+                    id="firstTimeOnlyCheck"
+                    checked={couponFirstTimeOnly}
+                    onChange={(e) => setCouponFirstTimeOnly(e.target.checked)}
+                    className="rounded text-brand-600 focus:ring-brand-500 w-4 h-4"
+                  />
+                  <label htmlFor="firstTimeOnlyCheck" className="font-semibold text-slate-700 select-none">
+                    Restrict to first-time customer bookings only
+                  </label>
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setIsCreatingCoupon(false)}
+                    className="py-2 px-4 rounded-xl border border-slate-200 font-bold text-slate-600 hover:bg-slate-50 transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingCoupon}
+                    className="py-2 px-5 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-xl shadow-sm transition disabled:opacity-50"
+                  >
+                    {isSubmittingCoupon ? 'Saving...' : 'Create Coupon'}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* Coupons List */}
+            <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden text-xs">
+              <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between">
+                <h3 className="font-black text-slate-900 text-sm">Active & Historical Coupons ({couponsList.length})</h3>
+              </div>
+
+              {couponsList.length === 0 ? (
+                <div className="p-8 text-center text-slate-400">
+                  No coupons configured yet. Click "Create New Coupon" to set up promotional discounts.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="bg-slate-50 text-[11px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200">
+                        <th className="py-3 px-4">Coupon Code</th>
+                        <th className="py-3 px-4">Discount</th>
+                        <th className="py-3 px-4">Min Order</th>
+                        <th className="py-3 px-4">Usage / Limit</th>
+                        <th className="py-3 px-4">Valid Until</th>
+                        <th className="py-3 px-4">Status</th>
+                        <th className="py-3 px-4 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {couponsList.map((c) => {
+                        const isExpired = c.valid_until && new Date(c.valid_until) < new Date();
+                        return (
+                          <tr key={c.id} className="hover:bg-slate-50 transition">
+                            <td className="py-3.5 px-4">
+                              <div className="font-mono font-black text-slate-900 text-sm">{c.code}</div>
+                              {c.description && <div className="text-[11px] text-slate-400">{c.description}</div>}
+                              {c.first_time_only && (
+                                <span className="inline-block mt-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-50 text-cyan-700 border border-cyan-200">
+                                  First-time only
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3.5 px-4 font-bold text-brand-700">
+                              {c.discount_type === 'percentage' ? `${c.discount_value}% OFF` : `₹${c.discount_value / 100} OFF`}
+                              {c.max_discount_paise && (
+                                <span className="block text-[10px] text-slate-400 font-normal">
+                                  (Cap: ₹{c.max_discount_paise / 100})
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3.5 px-4 text-slate-600 font-medium">
+                              {c.min_order_paise > 0 ? `₹${c.min_order_paise / 100}` : 'None (₹0)'}
+                            </td>
+                            <td className="py-3.5 px-4 font-mono text-slate-700">
+                              {c.total_redemptions} / {c.max_redemptions ? c.max_redemptions : '∞'}
+                              <span className="block text-[10px] text-slate-400 font-sans">
+                                (Max {c.per_customer_limit}/cust)
+                              </span>
+                            </td>
+                            <td className="py-3.5 px-4 text-slate-500">
+                              {c.valid_until ? (
+                                <span className={isExpired ? 'text-red-500 font-semibold' : ''}>
+                                  {new Date(c.valid_until).toLocaleDateString('en-IN')}
+                                  {isExpired && ' (Expired)'}
+                                </span>
+                              ) : (
+                                <span className="text-slate-400">No expiry</span>
+                              )}
+                            </td>
+                            <td className="py-3.5 px-4">
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                                  !c.is_active
+                                    ? 'bg-slate-100 text-slate-500'
+                                    : isExpired
+                                    ? 'bg-red-50 text-red-700 border border-red-200'
+                                    : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                }`}
+                              >
+                                {!c.is_active ? 'Disabled' : isExpired ? 'Expired' : 'Active'}
+                              </span>
+                            </td>
+                            <td className="py-3.5 px-4 text-right">
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleCouponStatus(c)}
+                                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition ${
+                                    c.is_active
+                                      ? 'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                                      : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                                  }`}
+                                >
+                                  {c.is_active ? 'Disable' : 'Enable'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteCoupon(c)}
+                                  className="p-1 text-slate-400 hover:text-red-600 rounded-lg hover:bg-red-50 transition"
+                                  title="Delete Coupon"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         )}

@@ -18,6 +18,8 @@ export interface PendingBookingPayload {
   pickup_longitude?: number | null;
   service_id?: string;
   notes?: string;
+  coupon_code?: string;
+  discount_paise?: number;
 }
 
 export interface PendingBookingRecord {
@@ -41,7 +43,8 @@ export function calculateBookingFingerprint(payload: Partial<PendingBookingPaylo
   const date = (payload.pickup_date || '').trim();
   const slot = (payload.pickup_slot || '').trim().toLowerCase();
   const service = (payload.service_id || '').trim();
-  return `${phone}|${pincode}|${date}|${slot}|${service}|${address}`;
+  const coupon = (payload.coupon_code || '').trim().toUpperCase();
+  return `${phone}|${pincode}|${date}|${slot}|${service}|${address}|${coupon}`;
 }
 
 /**

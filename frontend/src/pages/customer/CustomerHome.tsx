@@ -25,7 +25,8 @@ import {
   CheckCircle2, AlertCircle, Sparkles,
   QrCode, ArrowRight, User, Star, MessageSquareHeart,
   ShieldCheck, RefreshCw, LogOut, X, Truck, Scale, Package, Lock,
-  AlertTriangle, Loader2, Edit2, Trash2, Navigation
+  AlertTriangle, Loader2, Edit2, Trash2, Navigation,
+  TicketPercent, Tag
 } from 'lucide-react';
 
 const CONFIRMED_ORDER_KEY = 'superwash_last_confirmed_order';
@@ -126,6 +127,19 @@ export const CustomerHome: React.FC = () => {
   const [isBookingSubmitting, setIsBookingSubmitting] = useState<boolean>(false);
   const [bookingSuccessOrder, setBookingSuccessOrder] = useState<Order | null>(null);
   const [bookingError, setBookingError] = useState<string | null>(null);
+
+  // Coupon Discount State
+  const [couponCodeInput, setCouponCodeInput] = useState<string>('');
+  const [appliedCoupon, setAppliedCoupon] = useState<{
+    code: string;
+    discount_type: 'percentage' | 'fixed';
+    discount_value: number;
+    discount_paise: number;
+    description?: string;
+  } | null>(null);
+  const [couponValidationLoading, setCouponValidationLoading] = useState<boolean>(false);
+  const [couponError, setCouponError] = useState<string | null>(null);
+  const [couponSuccessMessage, setCouponSuccessMessage] = useState<string | null>(null);
 
   // Pending Booking Recovery State
   const [pendingRecovery, setPendingRecovery] = useState<PendingBookingRecord | null>(null);
@@ -893,7 +907,9 @@ export const CustomerHome: React.FC = () => {
       pickup_latitude: latitude,
       pickup_longitude: longitude,
       service_id: selectedServiceId || undefined,
-      notes: undefined
+      notes: undefined,
+      coupon_code: appliedCoupon ? appliedCoupon.code : undefined,
+      discount_paise: appliedCoupon ? appliedCoupon.discount_paise : 0
     };
 
     // 1. Persist pending record in sessionStorage with status 'in_flight' BEFORE sending network request
@@ -907,6 +923,8 @@ export const CustomerHome: React.FC = () => {
       const order = await LaundryService.createOrder({
         customer_id: currentUser?.id,
         ...payloadData,
+        coupon_code: appliedCoupon?.code,
+        discount_paise: appliedCoupon?.discount_paise,
         client_submission_id: submissionId
       });
 
@@ -1147,11 +1165,68 @@ export const CustomerHome: React.FC = () => {
     orders[0] ||
     bookingSuccessOrder;
   const selectedService = services.find((s) => s.id === selectedServiceId) || services[0];
-  const pricePerKg = settings ? (settings.price_per_kg_paise / 100).toFixed(0) : '80';
-  const minWeight = settings ? settings.min_weight_kg.toFixed(0) : '3';
-  const minBill = settings ? ((settings.price_per_kg_paise * settings.min_weight_kg) / 100).toFixed(0) : '240';
-  const serviceRateStr = selectedService ? (((selectedService.unit_price_paise || selectedService.price_paise || 8000) / 100)).toFixed(0) : pricePerKg;
-  const serviceUnitLabel = selectedService ? (selectedService.pricing_unit === 'per_kg' ? 'kilogram' : selectedService.pricing_unit.replace('per_', '')) : 'kilogram';
+  const effectiveUnitPricePaise = selectedService
+    ? (selectedService.unit_price_paise || selectedService.price_paise || (settings?.price_per_kg_paise ?? 7900))
+    : (settings?.price_per_kg_paise ?? 7900);
+  const serviceRateStr = (effectiveUnitPricePaise / 100).toFixed(0);
+  const serviceUnitLabel = selectedService
+    ? (selectedService.pricing_unit === 'per_kg' ? 'kilogram' : selectedService.pricing_unit.replace('per_', ''))
+    : 'kilogram';
+  const effectiveMinWeight = selectedService && selectedService.pricing_unit === 'per_kg'
+    ? (selectedService.min_weight_kg ?? (settings?.min_weight_kg ?? 1.0))
+    : 0;
+  const minBill = ((effectiveUnitPricePaise * (effectiveMinWeight > 0 ? effectiveMinWeight : 1)) / 100).toFixed(0);
+  const pricePerKg = serviceRateStr;
+  const minWeight = effectiveMinWeight.toString();
+
+  const handleApplyCoupon = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const code = couponCodeInput.trim().toUpperCase();
+    if (!code) {
+      setCouponError('Please enter a coupon code.');
+      return;
+    }
+    setCouponValidationLoading(true);
+    setCouponError(null);
+    setCouponSuccessMessage(null);
+
+    try {
+      const estimatedSubtotalPaise = effectiveUnitPricePaise * (effectiveMinWeight > 0 ? effectiveMinWeight : 1);
+      const valResult = await LaundryService.validateCoupon(
+        code,
+        customerPhone || currentUser?.phone || '',
+        estimatedSubtotalPaise,
+        selectedService?.id
+      );
+
+      if (!valResult.valid) {
+        setCouponError(valResult.reason || 'Invalid or inapplicable coupon code.');
+        setAppliedCoupon(null);
+        return;
+      }
+
+      setAppliedCoupon({
+        code: valResult.code,
+        discount_type: valResult.discount_type || 'fixed',
+        discount_value: valResult.discount_value || 0,
+        discount_paise: valResult.discount_paise,
+        description: valResult.reason
+      });
+      setCouponSuccessMessage(`Coupon "${valResult.code}" applied! Save ₹${(valResult.discount_paise / 100).toFixed(0)} at scale weigh-in.`);
+    } catch (err: any) {
+      setCouponError(err.message || 'Failed to validate coupon');
+      setAppliedCoupon(null);
+    } finally {
+      setCouponValidationLoading(false);
+    }
+  };
+
+  const handleRemoveCoupon = () => {
+    setAppliedCoupon(null);
+    setCouponCodeInput('');
+    setCouponSuccessMessage(null);
+    setCouponError(null);
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-24">
@@ -1838,6 +1913,79 @@ export const CustomerHome: React.FC = () => {
                   </div>
                 </div>
 
+                {/* 5. Coupon / Promo Code Input */}
+                <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                      <TicketPercent className="w-4 h-4 text-brand-600" /> Apply Coupon / Promo Code
+                    </label>
+                    {appliedCoupon && (
+                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+                        Applied
+                      </span>
+                    )}
+                  </div>
+                  {appliedCoupon ? (
+                    <div className="flex items-center justify-between bg-white border border-emerald-200 p-2.5 rounded-xl">
+                      <div className="flex items-center gap-2">
+                        <Tag className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono font-bold text-slate-900 tracking-wider">{appliedCoupon.code}</span>
+                            <span className="text-[10px] bg-emerald-100 text-emerald-700 font-bold px-1.5 py-0.5 rounded">
+                              {appliedCoupon.discount_type === 'percentage'
+                                ? `${appliedCoupon.discount_value}% OFF`
+                                : `₹${(appliedCoupon.discount_paise / 100).toFixed(0)} OFF`}
+                            </span>
+                          </div>
+                          {appliedCoupon.description && (
+                            <p className="text-[10px] text-slate-500 mt-0.5">{appliedCoupon.description}</p>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleRemoveCoupon}
+                        className="text-xs font-bold text-rose-600 hover:text-rose-700 px-2 py-1 rounded hover:bg-rose-50 transition cursor-pointer"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={couponCodeInput}
+                          onChange={(e) => setCouponCodeInput(e.target.value.toUpperCase())}
+                          placeholder="e.g. WELCOME50 or EXPREZ10"
+                          className="flex-1 px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono uppercase text-xs bg-white"
+                          data-testid="coupon-code-input"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleApplyCoupon()}
+                          disabled={couponValidationLoading || !couponCodeInput.trim()}
+                          className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-sm transition cursor-pointer disabled:opacity-50"
+                          data-testid="apply-coupon-btn"
+                        >
+                          {couponValidationLoading ? 'Applying...' : 'Apply'}
+                        </button>
+                      </div>
+                      {couponError && (
+                        <p className="text-[11px] text-rose-600 font-semibold" data-testid="coupon-error-msg">
+                          {couponError}
+                        </p>
+                      )}
+                      {couponSuccessMessage && (
+                        <p className="text-[11px] text-emerald-600 font-semibold" data-testid="coupon-success-msg">
+                          {couponSuccessMessage}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 {/* Submit button on mobile */}
                 <div className="block lg:hidden pt-2">
                   <button
@@ -1891,6 +2039,25 @@ export const CustomerHome: React.FC = () => {
                       : '.'}
                   </p>
                 </div>
+
+                {appliedCoupon && (
+                  <div className="p-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-2xl text-xs space-y-1">
+                    <div className="flex items-center justify-between font-bold text-white">
+                      <span className="flex items-center gap-1.5">
+                        <Tag className="w-3.5 h-3.5 text-cyan-200" />
+                        <span>Promo Code: {appliedCoupon.code}</span>
+                      </span>
+                      <span className="bg-emerald-400 text-slate-900 text-[10px] font-black px-2 py-0.5 rounded-full">
+                        {appliedCoupon.discount_type === 'percentage'
+                          ? `-${appliedCoupon.discount_value}%`
+                          : `-₹${(appliedCoupon.discount_paise / 100).toFixed(0)}`}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-cyan-100 leading-tight">
+                      Discount applied automatically upon weighing at intake hub.
+                    </p>
+                  </div>
+                )}
 
                 <div className="p-3.5 bg-white/10 rounded-2xl text-xs space-y-1.5 text-brand-50">
                   <span className="font-bold block text-white">How billing works:</span>

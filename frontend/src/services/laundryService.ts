@@ -2,7 +2,8 @@ import {
   Order, OrderStatus, PaymentStatus, PaymentMethod, BusinessSettings,
   PickupSlot, Profile, CustomerAddress, Payment, WeightChangeHistory, OrderStatusHistory,
   OrderFeedback, FeedbackStatus, FeedbackSummaryMetrics,
-  ServiceArea, LaundryServiceItem, PeriodFilter, DashboardPeriodAnalytics, UserRole
+  ServiceArea, LaundryServiceItem, PeriodFilter, DashboardPeriodAnalytics, UserRole,
+  Coupon, CouponValidationResult
 } from '../types';
 import { supabase, isSupabaseConfigured } from './supabase';
 import { WhatsAppService } from './whatsappService';
@@ -165,7 +166,45 @@ export const STORAGE_KEYS = {
   FEEDBACK: 'superwash_feedback',
   SERVICE_AREAS: 'superwash_service_areas',
   SERVICES: 'superwash_services',
+  COUPONS: 'superwash_coupons',
 };
+
+export const DEFAULT_COUPONS: Coupon[] = [
+  {
+    id: 'coupon-welcome50',
+    code: 'WELCOME50',
+    description: 'Flat ₹50 OFF on your first laundry order (Min. ₹200)',
+    discount_type: 'fixed',
+    discount_value: 5000, // ₹50 in paise
+    min_order_paise: 20000, // ₹200 min order
+    max_discount_paise: null,
+    max_redemptions: 500,
+    total_redemptions: 0,
+    per_customer_limit: 1,
+    applicable_service_ids: null,
+    first_time_only: true,
+    is_active: false,
+    valid_until: null,
+    created_at: new Date().toISOString()
+  },
+  {
+    id: 'coupon-exprez10',
+    code: 'EXPREZ10',
+    description: '10% OFF on all orders up to ₹100 discount',
+    discount_type: 'percentage',
+    discount_value: 10, // 10%
+    min_order_paise: 15000, // ₹150 min order
+    max_discount_paise: 10000, // Max ₹100 discount
+    max_redemptions: 1000,
+    total_redemptions: 0,
+    per_customer_limit: 3,
+    applicable_service_ids: null,
+    first_time_only: false,
+    is_active: false,
+    valid_until: null,
+    created_at: new Date().toISOString()
+  }
+];
 
 // Initial Sample Orders
 const INITIAL_SAMPLE_ORDERS: Order[] = [
@@ -257,12 +296,16 @@ export class LaundryService {
     pricePerKgPaise: number,
     minWeightKg: number = 0,
     deliveryChargePaise: number = 0,
-    pricingUnit: string = 'per_kg'
+    pricingUnit: string = 'per_kg',
+    discountPaise: number = 0
   ): {
     measuredWeightKg: number;
     billableWeightKg: number;
     totalAmountPaise: number;
     minWeightApplied: boolean;
+    subtotalPaise: number;
+    discountPaise: number;
+    deliveryChargePaise: number;
   } {
     const safeMeasured = Math.max(0, measuredWeightKg);
     let billableWeightKg = safeMeasured;
@@ -289,13 +332,56 @@ export class LaundryService {
       laundryChargePaise = Math.round(billableWeightKg * pricePerKgPaise);
     }
 
-    const totalAmountPaise = laundryChargePaise + deliveryChargePaise;
+    const effectiveDiscount = Math.max(0, Math.min(discountPaise, laundryChargePaise));
+    const totalAmountPaise = Math.max(0, laundryChargePaise - effectiveDiscount + deliveryChargePaise);
     return {
       measuredWeightKg: safeMeasured,
       billableWeightKg,
       totalAmountPaise,
-      minWeightApplied
+      minWeightApplied,
+      subtotalPaise: laundryChargePaise,
+      discountPaise: effectiveDiscount,
+      deliveryChargePaise
     };
+  }
+
+  static async resolveFinalOrderDiscount(
+    order: Order,
+    laundryChargePaise: number
+  ): Promise<number> {
+    if (!order.coupon_code) {
+      return Math.max(0, Math.min(order.discount_paise || 0, laundryChargePaise));
+    }
+
+    try {
+      const coupons = await this.getCoupons(true);
+      const coupon = coupons.find(
+        c => c.code.trim().toUpperCase() === order.coupon_code!.trim().toUpperCase()
+      );
+
+      if (!coupon) {
+        return Math.max(0, Math.min(order.discount_paise || 0, laundryChargePaise));
+      }
+
+      // Enforce minimum order threshold against actual final laundry subtotal
+      if (coupon.min_order_paise > 0 && laundryChargePaise < coupon.min_order_paise) {
+        return 0;
+      }
+
+      if (coupon.discount_type === 'percentage') {
+        const rawPctDiscount = Math.round(laundryChargePaise * (coupon.discount_value / 100));
+        const cappedDiscount = coupon.max_discount_paise
+          ? Math.min(rawPctDiscount, coupon.max_discount_paise)
+          : rawPctDiscount;
+        return Math.max(0, Math.min(cappedDiscount, laundryChargePaise));
+      } else {
+        // Fixed discount: retain intended flat amount up to laundry charge
+        const fixedDiscount = Math.min(coupon.discount_value, laundryChargePaise);
+        return Math.max(0, fixedDiscount);
+      }
+    } catch {
+      return Math.max(0, Math.min(order.discount_paise || 0, laundryChargePaise));
+    }
   }
 
   // ----------------------------------------------------
@@ -397,17 +483,38 @@ export class LaundryService {
       }
     }
 
-    // Deduplicate by normalized address_line and pincode to guarantee no duplicate address cards in UI
-    const seen = new Set<string>();
-    const deduplicated: CustomerAddress[] = [];
+    // Deduplicate by normalized address_line and pincode, merging missing landmarks and coordinates
+    const map = new Map<string, CustomerAddress>();
     for (const addr of addresses) {
       const key = `${addr.address_line.trim().toLowerCase().replace(/\s+/g, ' ')}:${(addr.pincode || '').trim()}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        deduplicated.push(addr);
+      const existing = map.get(key);
+      if (!existing) {
+        map.set(key, { ...addr });
+      } else {
+        // 1. Preserve default address preference
+        if (addr.is_default && !existing.is_default) {
+          existing.is_default = true;
+        }
+        // 2. Merge missing landmark if retained address lacks one
+        if ((!existing.landmark || !existing.landmark.trim()) && addr.landmark && addr.landmark.trim()) {
+          existing.landmark = addr.landmark.trim();
+        }
+        // 3. Merge missing coordinates without blindly overwriting existing valid coordinates
+        const hasExistingCoords = existing.latitude !== null && existing.latitude !== undefined &&
+                                  existing.longitude !== null && existing.longitude !== undefined;
+        const hasNewCoords = addr.latitude !== null && addr.latitude !== undefined &&
+                             addr.longitude !== null && addr.longitude !== undefined;
+        if (!hasExistingCoords && hasNewCoords) {
+          existing.latitude = addr.latitude;
+          existing.longitude = addr.longitude;
+        }
+        // 4. Preserve custom label over default 'Home'
+        if ((!existing.label || existing.label === 'Home') && addr.label && addr.label !== 'Home') {
+          existing.label = addr.label;
+        }
       }
     }
-    return deduplicated;
+    return Array.from(map.values());
   }
 
   static async saveAddress(address: Omit<CustomerAddress, 'id'>): Promise<CustomerAddress> {
@@ -782,6 +889,8 @@ export class LaundryService {
     service_id?: string;
     notes?: string;
     client_submission_id?: string;
+    coupon_code?: string;
+    discount_paise?: number;
   }): Promise<Order> {
     // 0. Ensure request has a submission identity
     if (!data.client_submission_id) {
@@ -837,6 +946,8 @@ export class LaundryService {
       service_id?: string;
       notes?: string;
       client_submission_id?: string;
+      coupon_code?: string;
+      discount_paise?: number;
     },
     dedupePhone: string
   ): Promise<Order> {
@@ -925,6 +1036,8 @@ export class LaundryService {
       payment_method: 'cash',
       order_status: 'booked',
       notes: data.notes,
+      coupon_code: data.coupon_code || null,
+      discount_paise: data.discount_paise || 0,
       
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
@@ -938,24 +1051,42 @@ export class LaundryService {
       let rpcOrder: Order | null = null;
       let rpcError: any = null;
 
+      const rpcPayload: Record<string, any> = {
+        p_client_submission_id: submissionId,
+        p_customer_name: data.customer_name,
+        p_customer_phone: data.customer_phone,
+        p_pickup_address: data.pickup_address,
+        p_pickup_landmark: data.pickup_landmark || null,
+        p_pickup_pincode: data.pickup_pincode,
+        p_pickup_date: data.pickup_date,
+        p_pickup_slot: data.pickup_slot,
+        p_service_id: data.service_id || null,
+        p_pickup_latitude: data.pickup_latitude || null,
+        p_pickup_longitude: data.pickup_longitude || null,
+        p_notes: data.notes || null
+      };
+
+      if (data.coupon_code) {
+        rpcPayload.p_coupon_code = data.coupon_code;
+        rpcPayload.p_discount_paise = data.discount_paise || 0;
+      }
+
       try {
-        const { data: resOrder, error: err } = await supabase.rpc(
+        let { data: resOrder, error: err } = await supabase.rpc(
           'create_booking_idempotent',
-          {
-            p_client_submission_id: submissionId,
-            p_customer_name: data.customer_name,
-            p_customer_phone: data.customer_phone,
-            p_pickup_address: data.pickup_address,
-            p_pickup_landmark: data.pickup_landmark || null,
-            p_pickup_pincode: data.pickup_pincode,
-            p_pickup_date: data.pickup_date,
-            p_pickup_slot: data.pickup_slot,
-            p_service_id: data.service_id || null,
-            p_pickup_latitude: data.pickup_latitude || null,
-            p_pickup_longitude: data.pickup_longitude || null,
-            p_notes: data.notes || null
-          }
+          rpcPayload
         );
+
+        // Graceful fallback if database schema does not yet have new coupon parameters on the RPC
+        if (err && data.coupon_code && (err.code === 'PGRST202' || err.message?.includes('could not find the function'))) {
+          const basePayload = { ...rpcPayload };
+          delete basePayload.p_coupon_code;
+          delete basePayload.p_discount_paise;
+          const retryRes = await supabase.rpc('create_booking_idempotent', basePayload);
+          resOrder = retryRes.data;
+          err = retryRes.error;
+        }
+
         rpcOrder = resOrder as Order | null;
         rpcError = err;
       } catch (callErr: any) {
@@ -1208,12 +1339,30 @@ export class LaundryService {
     if (!order) throw new Error('Order not found');
 
     const previousStatus = order.order_status;
-    const { billableWeightKg, totalAmountPaise } = this.calculateBill(
+
+    // Preliminary bill calculation to determine base laundry charge before discount
+    const initialBill = this.calculateBill(
       weightKg,
       order.price_per_kg_paise,
       order.min_weight_kg,
       order.delivery_charge_paise,
-      order.pricing_unit || 'per_kg'
+      order.pricing_unit || 'per_kg',
+      0
+    );
+
+    // Resolve accurate discount against actual weighed laundry subtotal
+    const authoritativeDiscountPaise = await this.resolveFinalOrderDiscount(
+      order,
+      initialBill.subtotalPaise
+    );
+
+    const { billableWeightKg, totalAmountPaise, discountPaise: finalDiscountPaise } = this.calculateBill(
+      weightKg,
+      order.price_per_kg_paise,
+      order.min_weight_kg,
+      order.delivery_charge_paise,
+      order.pricing_unit || 'per_kg',
+      authoritativeDiscountPaise
     );
 
     const now = new Date().toISOString();
@@ -1230,6 +1379,7 @@ export class LaundryService {
         pickup_weighed_by: effectiveStaffUuid,
         measured_weight: weightKg,
         billable_weight: billableWeightKg,
+        discount_paise: finalDiscountPaise,
         total_amount_paise: totalAmountPaise,
         collected_at: now,
         delivery_notes: deliveryNotes,
@@ -1258,6 +1408,7 @@ export class LaundryService {
       order.pickup_weighed_by = persisted.pickup_weighed_by;
       order.measured_weight = persisted.measured_weight;
       order.billable_weight = persisted.billable_weight;
+      order.discount_paise = persisted.discount_paise;
       order.total_amount_paise = persisted.total_amount_paise;
       order.collected_at = persisted.collected_at;
       order.delivery_notes = persisted.delivery_notes;
@@ -1278,6 +1429,7 @@ export class LaundryService {
       order.pickup_weighed_by = staffId;
       order.measured_weight = weightKg;
       order.billable_weight = billableWeightKg;
+      order.discount_paise = finalDiscountPaise;
       order.total_amount_paise = totalAmountPaise;
       order.collected_at = now;
       order.delivery_notes = deliveryNotes;
@@ -1286,10 +1438,11 @@ export class LaundryService {
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
 
+    const discountNote = finalDiscountPaise > 0 ? ` (₹${(finalDiscountPaise / 100).toFixed(0)} discount applied)` : '';
     await WhatsAppService.sendNotification(
       order.customer_phone,
       'clothes_collected',
-      `Hello ${order.customer_name}, our pickup executive ${staffName} has collected your clothes (Order #${order.order_number}). Doorstep measured weight: ${weightKg.toFixed(2)} kg. Total Bill: ₹${((order.total_amount_paise || 0) / 100).toFixed(2)}. They are now on their way to the store for washing!`,
+      `Hello ${order.customer_name}, our pickup executive ${staffName} has collected your clothes (Order #${order.order_number}). Doorstep measured weight: ${weightKg.toFixed(2)} kg. Total Bill: ₹${((order.total_amount_paise || 0) / 100).toFixed(2)}${discountNote}. They are now on their way to the store for washing!`,
       order.id
     );
 
@@ -1418,17 +1571,35 @@ export class LaundryService {
     const oldWeight = order.measured_weight;
     const oldAmount = order.total_amount_paise;
 
-    // Apply strict business rule: MAX(measured, min_weight_kg)
-    const { billableWeightKg, totalAmountPaise } = this.calculateBill(
+    // Preliminary bill calculation to determine base laundry charge before discount
+    const initialBill = this.calculateBill(
       measuredWeightKg,
       order.price_per_kg_paise,
       order.min_weight_kg,
       order.delivery_charge_paise,
-      order.pricing_unit || 'per_kg'
+      order.pricing_unit || 'per_kg',
+      0
+    );
+
+    // Resolve accurate discount against actual weighed laundry subtotal
+    const authoritativeDiscountPaise = await this.resolveFinalOrderDiscount(
+      order,
+      initialBill.subtotalPaise
+    );
+
+    // Apply strict business rule: MAX(measured, min_weight_kg)
+    const { billableWeightKg, totalAmountPaise, discountPaise: finalDiscountPaise } = this.calculateBill(
+      measuredWeightKg,
+      order.price_per_kg_paise,
+      order.min_weight_kg,
+      order.delivery_charge_paise,
+      order.pricing_unit || 'per_kg',
+      authoritativeDiscountPaise
     );
 
     order.measured_weight = measuredWeightKg;
     order.billable_weight = billableWeightKg;
+    order.discount_paise = finalDiscountPaise;
     order.total_amount_paise = totalAmountPaise;
     order.weighed_at = new Date().toISOString();
     order.updated_at = new Date().toISOString();
@@ -1457,6 +1628,7 @@ export class LaundryService {
       const { data, error } = await supabase.from('orders').update({
         measured_weight: measuredWeightKg,
         billable_weight: billableWeightKg,
+        discount_paise: finalDiscountPaise,
         total_amount_paise: totalAmountPaise,
         weighed_at: order.weighed_at,
         order_status: order.order_status,
@@ -1473,6 +1645,7 @@ export class LaundryService {
       const persisted = data[0] as Order;
       order.measured_weight = persisted.measured_weight;
       order.billable_weight = persisted.billable_weight;
+      order.discount_paise = persisted.discount_paise;
       order.total_amount_paise = persisted.total_amount_paise;
       order.weighed_at = persisted.weighed_at;
       order.order_status = persisted.order_status;
@@ -1498,10 +1671,11 @@ export class LaundryService {
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
 
     // Send WhatsApp notification
+    const discountNote = finalDiscountPaise > 0 ? ` (₹${(finalDiscountPaise / 100).toFixed(0)} discount applied)` : '';
     await WhatsAppService.sendNotification(
       order.customer_phone,
       'weight_and_bill_ready',
-      `Order #${order.order_number} Update: Your clothes weighed ${measuredWeightKg.toFixed(2)} kg (Billable: ${billableWeightKg.toFixed(2)} kg @ ₹${order.price_per_kg_paise / 100}/kg). Total Bill: ₹${totalAmountPaise / 100}. Washing is now underway!`,
+      `Order #${order.order_number} Update: Your clothes weighed ${measuredWeightKg.toFixed(2)} kg (Billable: ${billableWeightKg.toFixed(2)} kg @ ₹${order.price_per_kg_paise / 100}/kg). Total Bill: ₹${totalAmountPaise / 100}${discountNote}. Washing is now underway!`,
       order.id
     );
 
@@ -2054,6 +2228,8 @@ export class LaundryService {
     service_id?: string;
     notes?: string;
     client_submission_id?: string;
+    coupon_code?: string;
+    discount_paise?: number;
   }): Promise<Order> {
     return this.createBooking(data);
   }
@@ -3161,7 +3337,17 @@ export class LaundryService {
     };
 
     if (isLiveMode) {
-      const { data: updatedDb, error } = await supabase.from('services').update(updatedItem).eq('id', id).select().single();
+      const dbPayload = {
+        name: updatedItem.name,
+        description: updatedItem.description || '',
+        pricing_unit: updatedItem.pricing_unit,
+        unit_price_paise: updatedItem.unit_price_paise,
+        min_weight_kg: updatedItem.min_weight_kg,
+        is_active: updatedItem.is_active,
+        display_order: updatedItem.display_order,
+        updated_at: updatedItem.updated_at
+      };
+      const { data: updatedDb, error } = await supabase.from('services').update(dbPayload).eq('id', id).select().single();
       if (error) throw new Error(this.formatDatabaseError('update service', error));
       const persisted = updatedDb || updatedItem;
       const updatedList = services.map(s => s.id === id ? persisted : s);
@@ -3643,6 +3829,331 @@ export class LaundryService {
       newCount: all.filter(f => f.status === 'new').length,
       reviewedCount: all.filter(f => f.status === 'reviewed').length,
       resolvedCount: all.filter(f => f.status === 'resolved').length
+    };
+  }
+
+  // ----------------------------------------------------
+  // Coupon Management & Validation System
+  // ----------------------------------------------------
+  static async getCoupons(includeInactive: boolean = true): Promise<Coupon[]> {
+    if (isLiveMode) {
+      try {
+        let query = supabase.from('coupons').select('*').order('created_at', { ascending: false });
+        if (!includeInactive) {
+          query = query.eq('is_active', true);
+        }
+        const { data, error } = await query;
+        if (!error && data) {
+          localStorage.setItem(STORAGE_KEYS.COUPONS, JSON.stringify(data));
+          return data as Coupon[];
+        }
+      } catch (err) {
+        console.warn('Falling back to local coupons cache:', err);
+      }
+    }
+
+    const saved = localStorage.getItem(STORAGE_KEYS.COUPONS);
+    let list: Coupon[] = DEFAULT_COUPONS;
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          list = parsed;
+        }
+      } catch {}
+    } else {
+      localStorage.setItem(STORAGE_KEYS.COUPONS, JSON.stringify(DEFAULT_COUPONS));
+    }
+
+    if (!includeInactive) {
+      const now = new Date();
+      return list.filter(c => c.is_active && (!c.valid_until || new Date(c.valid_until) > now));
+    }
+    return list;
+  }
+
+  static async createCoupon(couponData: {
+    code: string;
+    description?: string;
+    discount_type: 'percentage' | 'fixed';
+    discount_value: number;
+    min_order_paise?: number;
+    max_discount_paise?: number | null;
+    max_redemptions?: number | null;
+    per_customer_limit?: number;
+    applicable_service_ids?: string[] | null;
+    first_time_only?: boolean;
+    valid_until?: string | null;
+    is_active?: boolean;
+  }, callerRole?: UserRole): Promise<Coupon> {
+    const currentProfileStr = typeof localStorage !== 'undefined' ? localStorage.getItem('superwash_auth_profile') : null;
+    let storedRole: UserRole | undefined;
+    if (currentProfileStr) {
+      try {
+        const parsed = JSON.parse(currentProfileStr);
+        storedRole = parsed?.role;
+      } catch {}
+    }
+    const effectiveRole = callerRole || storedRole;
+    if (effectiveRole && effectiveRole !== 'owner') {
+      throw new Error(`Unauthorized: Only business owners can create coupons. Current role: '${effectiveRole}'.`);
+    }
+
+    const cleanCode = couponData.code.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+    if (!cleanCode || cleanCode.length < 3) {
+      throw new Error('Coupon code must be at least 3 alphanumeric characters.');
+    }
+
+    if (couponData.discount_type === 'percentage') {
+      if (couponData.discount_value <= 0 || couponData.discount_value > 100) {
+        throw new Error('Percentage discount must be between 1% and 100%.');
+      }
+    } else {
+      if (couponData.discount_value <= 0) {
+        throw new Error('Fixed discount must be greater than ₹0.');
+      }
+    }
+
+    const existingCoupons = await this.getCoupons(true);
+    if (existingCoupons.some(c => c.code.toUpperCase() === cleanCode)) {
+      throw new Error(`A coupon with code '${cleanCode}' already exists.`);
+    }
+
+    const newCoupon: Coupon = {
+      id: generateUUID(),
+      code: cleanCode,
+      description: couponData.description?.trim() || '',
+      discount_type: couponData.discount_type,
+      discount_value: couponData.discount_value,
+      min_order_paise: Math.max(0, couponData.min_order_paise || 0),
+      max_discount_paise: couponData.max_discount_paise || null,
+      max_redemptions: couponData.max_redemptions || null,
+      total_redemptions: 0,
+      per_customer_limit: Math.max(1, couponData.per_customer_limit || 1),
+      applicable_service_ids: couponData.applicable_service_ids || null,
+      first_time_only: Boolean(couponData.first_time_only),
+      is_active: couponData.is_active !== undefined ? couponData.is_active : true,
+      valid_until: couponData.valid_until || null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    if (isLiveMode) {
+      try {
+        const { data, error } = await supabase.from('coupons').insert(newCoupon).select().single();
+        if (error) {
+          console.warn('Coupon DB save notice:', error.message);
+        } else if (data) {
+          const created = data as Coupon;
+          const updatedList = [created, ...existingCoupons];
+          localStorage.setItem(STORAGE_KEYS.COUPONS, JSON.stringify(updatedList));
+          return created;
+        }
+      } catch (err: any) {
+        console.warn('Coupon DB save fallback:', err);
+      }
+    }
+
+    const updatedList = [newCoupon, ...existingCoupons];
+    localStorage.setItem(STORAGE_KEYS.COUPONS, JSON.stringify(updatedList));
+    return newCoupon;
+  }
+
+  static async updateCoupon(
+    id: string,
+    updates: Partial<Coupon>,
+    callerRole?: UserRole
+  ): Promise<Coupon> {
+    const currentProfileStr = typeof localStorage !== 'undefined' ? localStorage.getItem('superwash_auth_profile') : null;
+    let storedRole: UserRole | undefined;
+    if (currentProfileStr) {
+      try {
+        const parsed = JSON.parse(currentProfileStr);
+        storedRole = parsed?.role;
+      } catch {}
+    }
+    const effectiveRole = callerRole || storedRole;
+    if (effectiveRole && effectiveRole !== 'owner') {
+      throw new Error(`Unauthorized: Only business owners can update coupons. Current role: '${effectiveRole}'.`);
+    }
+
+    const list = await this.getCoupons(true);
+    const item = list.find(c => c.id === id);
+    if (!item) throw new Error('Coupon not found');
+
+    const updated: Coupon = {
+      ...item,
+      ...updates,
+      updated_at: new Date().toISOString()
+    };
+
+    if (isLiveMode) {
+      try {
+        const { error } = await supabase.from('coupons').update(updated).eq('id', id);
+        if (error) console.warn('Coupons update note:', error.message);
+      } catch (err) {
+        console.warn('Coupons update fallback:', err);
+      }
+    }
+
+    const updatedList = list.map(c => c.id === id ? updated : c);
+    localStorage.setItem(STORAGE_KEYS.COUPONS, JSON.stringify(updatedList));
+    return updated;
+  }
+
+  static async deleteCoupon(id: string, callerRole?: UserRole): Promise<boolean> {
+    const currentProfileStr = typeof localStorage !== 'undefined' ? localStorage.getItem('superwash_auth_profile') : null;
+    let storedRole: UserRole | undefined;
+    if (currentProfileStr) {
+      try {
+        const parsed = JSON.parse(currentProfileStr);
+        storedRole = parsed?.role;
+      } catch {}
+    }
+    const effectiveRole = callerRole || storedRole;
+    if (effectiveRole && effectiveRole !== 'owner') {
+      throw new Error(`Unauthorized: Only business owners can delete coupons. Current role: '${effectiveRole}'.`);
+    }
+
+    const list = await this.getCoupons(true);
+    const updatedList = list.filter(c => c.id !== id);
+    localStorage.setItem(STORAGE_KEYS.COUPONS, JSON.stringify(updatedList));
+
+    if (isLiveMode) {
+      try {
+        await supabase.from('coupons').delete().eq('id', id);
+      } catch (err) {
+        console.warn('Coupons delete note:', err);
+      }
+    }
+    return true;
+  }
+
+  static async validateCoupon(
+    rawCode: string,
+    customerPhone: string,
+    subtotalPaise: number,
+    serviceId?: string
+  ): Promise<CouponValidationResult> {
+    const cleanCode = (rawCode || '').trim().toUpperCase();
+    if (!cleanCode) {
+      return { valid: false, code: rawCode, reason: 'Please enter a coupon code.', discount_paise: 0 };
+    }
+
+    const coupons = await this.getCoupons(true);
+    const coupon = coupons.find(c => c.code.toUpperCase() === cleanCode);
+
+    if (!coupon) {
+      return {
+        valid: false,
+        code: cleanCode,
+        reason: `Coupon code '${cleanCode}' is invalid or does not exist.`,
+        discount_paise: 0
+      };
+    }
+
+    if (!coupon.is_active) {
+      return {
+        valid: false,
+        code: cleanCode,
+        reason: `Coupon '${cleanCode}' is currently disabled.`,
+        discount_paise: 0
+      };
+    }
+
+    if (coupon.valid_until && new Date(coupon.valid_until) < new Date()) {
+      return {
+        valid: false,
+        code: cleanCode,
+        reason: `Coupon '${cleanCode}' expired on ${new Date(coupon.valid_until).toLocaleDateString('en-IN')}.`,
+        discount_paise: 0
+      };
+    }
+
+    if (coupon.min_order_paise > 0 && subtotalPaise < coupon.min_order_paise) {
+      const minRs = (coupon.min_order_paise / 100).toFixed(0);
+      return {
+        valid: false,
+        code: cleanCode,
+        reason: `Minimum order subtotal of ₹${minRs} required for coupon '${cleanCode}'.`,
+        discount_paise: 0,
+        min_order_paise: coupon.min_order_paise
+      };
+    }
+
+    if (coupon.max_redemptions && coupon.total_redemptions >= coupon.max_redemptions) {
+      return {
+        valid: false,
+        code: cleanCode,
+        reason: `Coupon '${cleanCode}' has reached its maximum total redemption limit.`,
+        discount_paise: 0
+      };
+    }
+
+    if (coupon.applicable_service_ids && coupon.applicable_service_ids.length > 0 && serviceId) {
+      if (!coupon.applicable_service_ids.includes(serviceId)) {
+        return {
+          valid: false,
+          code: cleanCode,
+          reason: `Coupon '${cleanCode}' is not applicable to the selected service.`,
+          discount_paise: 0
+        };
+      }
+    }
+
+    // Check customer usage limit and first-time customer restriction
+    const cleanPhone = (customerPhone || '').replace(/[^0-9]/g, '').slice(-10);
+    if (cleanPhone.length >= 10) {
+      const orders = await this.getOrders();
+      const customerOrders = orders.filter(
+        o => (o.customer_phone || '').replace(/[^0-9]/g, '').slice(-10) === cleanPhone && o.order_status !== 'cancelled'
+      );
+
+      if (coupon.first_time_only && customerOrders.length > 0) {
+        return {
+          valid: false,
+          code: cleanCode,
+          reason: `Coupon '${cleanCode}' is valid only for first-time customer bookings.`,
+          discount_paise: 0
+        };
+      }
+
+      const timesUsed = customerOrders.filter(
+        o => o.coupon_code && o.coupon_code.toUpperCase() === cleanCode
+      ).length;
+
+      if (timesUsed >= coupon.per_customer_limit) {
+        return {
+          valid: false,
+          code: cleanCode,
+          reason: `You have reached the maximum usage limit (${coupon.per_customer_limit} order${coupon.per_customer_limit > 1 ? 's' : ''}) for coupon '${cleanCode}'.`,
+          discount_paise: 0
+        };
+      }
+    }
+
+    // Authoritative discount calculation
+    let calculatedDiscountPaise = 0;
+    if (coupon.discount_type === 'percentage') {
+      const rawPctDiscount = Math.round(subtotalPaise * (coupon.discount_value / 100));
+      calculatedDiscountPaise = coupon.max_discount_paise
+        ? Math.min(rawPctDiscount, coupon.max_discount_paise)
+        : rawPctDiscount;
+    } else {
+      calculatedDiscountPaise = coupon.discount_value;
+    }
+
+    // Never exceed the order subtotal (cannot be negative)
+    const finalDiscountPaise = Math.max(0, Math.min(calculatedDiscountPaise, subtotalPaise));
+
+    return {
+      valid: true,
+      code: coupon.code,
+      discount_type: coupon.discount_type,
+      discount_value: coupon.discount_value,
+      discount_paise: finalDiscountPaise,
+      coupon_id: coupon.id,
+      min_order_paise: coupon.min_order_paise
     };
   }
 }
