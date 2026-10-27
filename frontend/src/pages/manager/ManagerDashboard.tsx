@@ -9,8 +9,8 @@ import { WeightEntryModal } from '../../components/WeightEntryModal';
 import { AssignStaffModal } from '../../components/AssignStaffModal';
 import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
 import {
-  Scale, RefreshCw, Sparkles, CheckCircle,
-  Truck, ArrowRight, UserPlus, Search, Phone, Calendar, LogOut, AlertCircle, ShieldCheck
+  Scale, RefreshCw, Sparkles, CheckCircle, Package,
+  Truck, ArrowRight, UserPlus, Search, Phone, Calendar, LogOut, AlertCircle, ShieldCheck, X
 } from 'lucide-react';
 
 export const ManagerDashboard: React.FC = () => {
@@ -22,6 +22,8 @@ export const ManagerDashboard: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [managerActionError, setManagerActionError] = useState<string | null>(null);
+  const [managerActionSuccess, setManagerActionSuccess] = useState<string | null>(null);
 
   // Modals
   const [weighingOrder, setWeighingOrder] = useState<Order | null>(null);
@@ -102,8 +104,10 @@ export const ManagerDashboard: React.FC = () => {
   const deliveredOrders = filteredOrders.filter((o) => o.order_status === 'delivered');
 
   const handleStartWashing = async (order: Order) => {
+    setManagerActionError(null);
+    setManagerActionSuccess(null);
     if (!order.measured_weight) {
-      alert('Please enter and save the measured weight before starting washing.');
+      setManagerActionError(`Please enter and save the measured scale weight for #${order.order_number} before moving to washing.`);
       return;
     }
 
@@ -115,14 +119,19 @@ export const ManagerDashboard: React.FC = () => {
       );
       if (updated) {
         setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
+        setManagerActionSuccess(`Order #${order.order_number} moved to In Washing.`);
         setActiveTab('washing');
+        setTimeout(() => setManagerActionSuccess(null), 4000);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error starting washing:', err);
+      setManagerActionError(err?.message || 'Failed to update order status to washing.');
     }
   };
 
   const handleMarkReadyForDelivery = async (order: Order) => {
+    setManagerActionError(null);
+    setManagerActionSuccess(null);
     try {
       const updated = await LaundryService.updateOrderStatus(
         order.id,
@@ -131,14 +140,19 @@ export const ManagerDashboard: React.FC = () => {
       );
       if (updated) {
         setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
+        setManagerActionSuccess(`Order #${order.order_number} marked Ready for Delivery.`);
         setActiveTab('ready');
+        setTimeout(() => setManagerActionSuccess(null), 4000);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error marking ready:', err);
+      setManagerActionError(err?.message || 'Failed to mark order ready for delivery.');
     }
   };
 
   const handleDispatchOutForDelivery = async (order: Order) => {
+    setManagerActionError(null);
+    setManagerActionSuccess(null);
     if (!order.assigned_delivery_id) {
       setAssigningOrder(order);
       return;
@@ -152,13 +166,18 @@ export const ManagerDashboard: React.FC = () => {
       );
       if (updated) {
         setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
+        setManagerActionSuccess(`Order #${order.order_number} dispatched out for delivery.`);
+        setTimeout(() => setManagerActionSuccess(null), 4000);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error dispatching order:', err);
+      setManagerActionError(err?.message || 'Failed to dispatch order.');
     }
   };
 
   const handleMarkCollectedAtStore = async (order: Order) => {
+    setManagerActionError(null);
+    setManagerActionSuccess(null);
     try {
       const updated = await LaundryService.markOrderCollected(
         order.id,
@@ -167,9 +186,12 @@ export const ManagerDashboard: React.FC = () => {
       );
       if (updated) {
         setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
+        setManagerActionSuccess(`Order #${order.order_number} marked collected at store.`);
+        setTimeout(() => setManagerActionSuccess(null), 4000);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error marking collected:', err);
+      setManagerActionError(err?.message || 'Failed to mark order collected at store.');
     }
   };
 
@@ -336,6 +358,36 @@ export const ManagerDashboard: React.FC = () => {
           </div>
         )}
 
+        {managerActionError && (
+          <div className="p-4 bg-red-50 border border-red-200 rounded-2xl text-red-900 text-xs flex items-center justify-between gap-3 shadow-sm animate-fade-in">
+            <div className="flex items-center gap-2.5">
+              <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
+              <span>{managerActionError}</span>
+            </div>
+            <button
+              onClick={() => setManagerActionError(null)}
+              className="p-1 hover:bg-red-100 rounded-lg text-red-500 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {managerActionSuccess && (
+          <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-900 text-xs flex items-center justify-between gap-3 shadow-sm animate-fade-in">
+            <div className="flex items-center gap-2.5">
+              <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" />
+              <span>{managerActionSuccess}</span>
+            </div>
+            <button
+              onClick={() => setManagerActionSuccess(null)}
+              className="p-1 hover:bg-emerald-100 rounded-lg text-emerald-500 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {/* ================= TAB 1: NEW / COLLECTED ORDERS ================= */}
         {activeTab === 'collected' && (
           <div className="space-y-4">
@@ -350,8 +402,14 @@ export const ManagerDashboard: React.FC = () => {
             </div>
 
             {collectedOrders.length === 0 ? (
-              <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 text-slate-500 text-xs shadow-sm">
-                No orders waiting for scale weighing or intake.
+              <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 shadow-sm flex flex-col items-center justify-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-purple-50 text-purple-600 flex items-center justify-center">
+                  <Scale className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-800 text-sm">No Orders at Intake</h3>
+                  <p className="text-slate-500 text-xs mt-0.5">Orders waiting for scale weighing or drop-off will appear here.</p>
+                </div>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -503,8 +561,14 @@ export const ManagerDashboard: React.FC = () => {
         {activeTab === 'washing' && (
           <div className="space-y-4">
             {washingOrders.length === 0 ? (
-              <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 text-slate-500 text-xs shadow-sm">
-                No clothes currently being washed.
+              <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 shadow-sm flex flex-col items-center justify-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-cyan-50 text-cyan-600 flex items-center justify-center">
+                  <Sparkles className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-800 text-sm">No Cycles Currently Washing</h3>
+                  <p className="text-slate-500 text-xs mt-0.5">Batches currently undergoing washing or drying cycles will appear here.</p>
+                </div>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -555,8 +619,14 @@ export const ManagerDashboard: React.FC = () => {
         {activeTab === 'ready' && (
           <div className="space-y-4">
             {readyOrders.length === 0 ? (
-              <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 text-slate-500 text-xs shadow-sm">
-                No orders waiting for delivery dispatch.
+              <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 shadow-sm flex flex-col items-center justify-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center">
+                  <Package className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-800 text-sm">No Orders Staged for Delivery</h3>
+                  <p className="text-slate-500 text-xs mt-0.5">Orders washed, ironed, and awaiting courier dispatch will appear here.</p>
+                </div>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -620,8 +690,14 @@ export const ManagerDashboard: React.FC = () => {
         {activeTab === 'out_for_delivery' && (
           <div className="space-y-4">
             {outForDeliveryOrders.length === 0 ? (
-              <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 text-slate-500 text-xs shadow-sm">
-                No orders currently in transit with delivery couriers.
+              <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 shadow-sm flex flex-col items-center justify-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                  <Truck className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-800 text-sm">No Orders in Transit</h3>
+                  <p className="text-slate-500 text-xs mt-0.5">Orders currently out on the road with delivery associates will appear here.</p>
+                </div>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -678,8 +754,14 @@ export const ManagerDashboard: React.FC = () => {
         {activeTab === 'delivered' && (
           <div className="space-y-4">
             {deliveredOrders.length === 0 ? (
-              <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 text-slate-500 text-xs shadow-sm">
-                No delivered orders found in history.
+              <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 shadow-sm flex flex-col items-center justify-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                  <CheckCircle className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-800 text-sm">No Completed Orders Yet</h3>
+                  <p className="text-slate-500 text-xs mt-0.5">Historical orders successfully handed over to customers will appear here.</p>
+                </div>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

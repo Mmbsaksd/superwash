@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
-  Sparkles, Phone, User as UserIcon, LogOut,
+  Sparkles, Phone, LogOut,
   Menu, X, Shield, CalendarCheck, Search, ShoppingBag
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -87,7 +87,7 @@ export const Navbar: React.FC = () => {
                   </Link>
                 ) : (
                   <Link
-                    to="/customer/orders"
+                    to="/customer?tab=current"
                     className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-50 text-brand-700 text-xs font-semibold hover:bg-brand-100 transition border border-brand-200"
                   >
                     <ShoppingBag className="w-3.5 h-3.5" /> My Orders
@@ -194,7 +194,7 @@ export const Navbar: React.FC = () => {
                   </Link>
                 )}
                 <Link
-                  to="/customer/orders"
+                  to="/customer?tab=current"
                   onClick={() => setMobileMenuOpen(false)}
                   className="w-full py-2.5 text-center bg-brand-50 text-brand-700 text-sm font-semibold rounded-lg border border-brand-200"
                 >
@@ -217,11 +217,11 @@ export const Navbar: React.FC = () => {
                   Sign In
                 </Link>
                 <Link
-                  to="/register"
+                  to="/login"
                   onClick={() => setMobileMenuOpen(false)}
                   className="flex-1 py-2 text-center bg-brand-600 text-white rounded-lg font-semibold text-sm"
                 >
-                  Register
+                  Register / Book
                 </Link>
               </div>
             )}

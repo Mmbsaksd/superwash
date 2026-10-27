@@ -234,6 +234,21 @@ const INITIAL_SAMPLE_ORDERS: Order[] = [
 export class LaundryService {
   private static inFlightAddressSaves = new Map<string, Promise<CustomerAddress>>();
 
+  private static formatDatabaseError(action: string, error: any): string {
+    if (!error) return `Failed to ${action}.`;
+    const msg = error.message || String(error);
+    if (msg.includes('permission denied for table') || error.code === '42501') {
+      return `Permission denied: Modifying the service catalogue requires authorized Business Owner privileges and database migration permissions.`;
+    }
+    if (msg.includes('duplicate key value') || error.code === '23505') {
+      return `A service with this name or identifier already exists in the catalogue.`;
+    }
+    if (msg.includes('foreign key constraint') || error.code === '23503') {
+      return `This service cannot be removed because it is referenced by existing customer orders. Deactivate it instead.`;
+    }
+    return `Unable to ${action}: ${msg}`;
+  }
+
   // ----------------------------------------------------
   // Helpers & Financial Calculations
   // ----------------------------------------------------
@@ -2412,17 +2427,25 @@ export class LaundryService {
 
   static async updateStaffProfile(
     staffId: string,
-    data: { full_name: string; phone: string; role: UserRole },
-    callerId?: string
+    data: { full_name: string; phone: string; role: UserRole; email?: string; is_active?: boolean },
+    callerId?: string,
+    callerRole?: string
   ): Promise<Profile> {
+    if (callerRole && callerRole !== 'owner') {
+      throw new Error('Access denied. Only the business owner is authorized to update employee details.');
+    }
     const cleanName = data.full_name?.trim();
     const cleanPhone = data.phone?.replace(/[^0-9]/g, '')?.slice(-10);
+    const cleanEmail = data.email?.trim().toLowerCase();
 
     if (!cleanName || cleanName.length < 2) {
       throw new Error('Full name must be at least 2 characters.');
     }
     if (!cleanPhone || cleanPhone.length !== 10) {
       throw new Error('Please enter a valid 10-digit Indian phone number.');
+    }
+    if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      throw new Error('Please enter a valid email address.');
     }
     if (!['owner', 'manager', 'delivery'].includes(data.role)) {
       throw new Error("Operational role must be either 'manager' or 'delivery'.");
@@ -2442,6 +2465,29 @@ export class LaundryService {
       throw new Error(`Phone number ${cleanPhone} is already registered to ${phoneDuplicate.full_name}.`);
     }
 
+    // Check duplicate email with other accounts
+    if (cleanEmail) {
+      const emailDuplicate = profiles.find(
+        p => p.id !== staffId && p.email && p.email.toLowerCase() === cleanEmail
+      );
+      if (emailDuplicate) {
+        throw new Error(`Email address ${cleanEmail} is already registered to ${emailDuplicate.full_name}.`);
+      }
+    }
+
+    // Permanent primary owner safeguards
+    if (staff.email?.toLowerCase() === 'superwashexprez@gmail.com') {
+      if (cleanEmail && cleanEmail !== 'superwashexprez@gmail.com') {
+        throw new Error('The permanent primary owner email (superwashexprez@gmail.com) cannot be changed.');
+      }
+      if (data.role !== 'owner') {
+        throw new Error('The permanent primary owner role cannot be changed.');
+      }
+      if (data.is_active === false) {
+        throw new Error('The permanent primary owner account cannot be deactivated.');
+      }
+    }
+
     // Owner protection safeguards
     if (staff.role === 'owner' && data.role !== 'owner') {
       if (callerId && staffId === callerId) {
@@ -2455,47 +2501,68 @@ export class LaundryService {
       }
     }
 
+    if (staff.role === 'owner' && data.is_active === false) {
+      if (callerId && staffId === callerId) {
+        throw new Error('You cannot deactivate your own owner account.');
+      }
+      const otherActiveOwners = profiles.filter(
+        p => p.role === 'owner' && p.is_active && p.id !== staffId
+      );
+      if (otherActiveOwners.length === 0) {
+        throw new Error('Cannot deactivate the last active business owner.');
+      }
+    }
+
     if (isLiveMode) {
       let updatedFromDb: any = null;
 
-      // 1. Try secure atomic RPC 'update_staff_profile'
-      try {
-        const { data: rpcData, error: rpcError } = await supabase.rpc('update_staff_profile', {
-          p_staff_id: staffId,
-          p_full_name: cleanName,
-          p_phone: cleanPhone,
-          p_role: data.role
-        });
+      // 1. If updating only basic fields without email or status, try secure atomic RPC
+      if (!cleanEmail && typeof data.is_active !== 'boolean') {
+        try {
+          const { data: rpcData, error: rpcError } = await supabase.rpc('update_staff_profile', {
+            p_staff_id: staffId,
+            p_full_name: cleanName,
+            p_phone: cleanPhone,
+            p_role: data.role
+          });
 
-        if (!rpcError && rpcData?.success) {
-          updatedFromDb = rpcData.profile;
-        } else if (rpcError) {
-          const isRpcMissing = rpcError.code === '42883' || rpcError.message?.includes('does not exist');
-          if (!isRpcMissing) {
-            throw new Error(rpcError.message || 'Database error updating employee details.');
+          if (!rpcError && rpcData?.success) {
+            updatedFromDb = rpcData.profile;
+          } else if (rpcError) {
+            const isRpcMissing = rpcError.code === '42883' || rpcError.message?.includes('does not exist');
+            if (!isRpcMissing) {
+              throw new Error(rpcError.message || 'Database error updating employee details.');
+            }
           }
-        }
-      } catch (err: any) {
-        if (err.message && (err.message.includes('already') || err.message.includes('denied') || err.message.includes('owner'))) {
-          throw err;
+        } catch (err: any) {
+          if (err.message && (err.message.includes('already') || err.message.includes('denied') || err.message.includes('owner'))) {
+            throw err;
+          }
         }
       }
 
-      // 2. Fallback to direct table update if RPC not present in legacy environment
+      // 2. Direct table update supporting full profile fields (name, phone, role, email, is_active)
       if (!updatedFromDb) {
+        const updatePayload: any = {
+          full_name: cleanName,
+          phone: cleanPhone,
+          role: data.role,
+          updated_at: new Date().toISOString()
+        };
+        if (cleanEmail) updatePayload.email = cleanEmail;
+        if (typeof data.is_active === 'boolean') updatePayload.is_active = data.is_active;
+
         const { data: tableData, error: tableError } = await supabase
           .from('profiles')
-          .update({
-            full_name: cleanName,
-            phone: cleanPhone,
-            role: data.role,
-            updated_at: new Date().toISOString()
-          })
+          .update(updatePayload)
           .eq('id', staffId)
           .select()
           .single();
 
         if (tableError) {
+          if (tableError.code === '23505' || tableError.message.toLowerCase().includes('unique')) {
+            throw new Error('Email or phone number is already registered to another account.');
+          }
           throw new Error(`Failed to update employee details in database: ${tableError.message}`);
         }
         updatedFromDb = tableData;
@@ -2505,11 +2572,15 @@ export class LaundryService {
         staff.full_name = updatedFromDb.full_name || cleanName;
         staff.phone = updatedFromDb.phone || cleanPhone;
         staff.role = updatedFromDb.role || data.role;
+        if (updatedFromDb.email) staff.email = updatedFromDb.email;
+        if (typeof updatedFromDb.is_active === 'boolean') staff.is_active = updatedFromDb.is_active;
       }
     } else {
       staff.full_name = cleanName;
       staff.phone = cleanPhone;
       staff.role = data.role;
+      if (cleanEmail) staff.email = cleanEmail;
+      if (typeof data.is_active === 'boolean') staff.is_active = data.is_active;
     }
 
     // Keep demo list in sync
@@ -2518,23 +2589,137 @@ export class LaundryService {
       demoStaff.full_name = cleanName;
       demoStaff.phone = cleanPhone;
       demoStaff.role = data.role;
+      if (cleanEmail) demoStaff.email = cleanEmail;
+      if (typeof data.is_active === 'boolean') demoStaff.is_active = data.is_active;
     }
 
     localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(profiles));
     return staff;
   }
 
+  static async deleteStaffProfile(
+    staffId: string,
+    callerId?: string,
+    callerRole?: string
+  ): Promise<{ success: boolean; deactivatedInstead?: boolean; message: string }> {
+    // 1. Authorization: Only authorized business owners can delete staff accounts
+    if (callerRole && callerRole !== 'owner') {
+      throw new Error('Access denied. Only the business owner is authorized to delete staff accounts.');
+    }
+
+    const profiles = await this.getStaffProfiles(true);
+    const staff = profiles.find(s => s.id === staffId);
+    if (!staff) {
+      throw new Error('Staff member profile not found.');
+    }
+
+    // 2. Safeguard: Prevent deleting permanent primary owner
+    if (staff.email?.toLowerCase() === 'superwashexprez@gmail.com') {
+      throw new Error('Access denied. The permanent primary owner account (superwashexprez@gmail.com) cannot be deleted.');
+    }
+
+    // 3. Safeguard: Prevent owner from deleting their own authenticated account
+    if (callerId && staffId === callerId) {
+      throw new Error('You cannot delete your own authenticated owner account.');
+    }
+
+    // 4. Safeguard: Prevent deleting the last remaining active owner
+    if (staff.role === 'owner') {
+      const remainingOwners = profiles.filter(
+        p => p.role === 'owner' && p.is_active && p.id !== staffId
+      );
+      if (remainingOwners.length === 0) {
+        throw new Error('Cannot delete the last remaining active business owner.');
+      }
+    }
+
+    // 5. Inspect foreign keys, order assignments, and audit records
+    let hasOrderAssignments = false;
+    try {
+      if (isLiveMode) {
+        const { data: assignedOrders, error: checkErr } = await supabase
+          .from('orders')
+          .select('id')
+          .or(`assigned_pickup_id.eq.${staffId},assigned_delivery_id.eq.${staffId}`)
+          .limit(1);
+
+        if (!checkErr && assignedOrders && assignedOrders.length > 0) {
+          hasOrderAssignments = true;
+        }
+      } else {
+        const orders = await this.getOrders();
+        hasOrderAssignments = orders.some(
+          o => o.assigned_pickup_id === staffId || o.assigned_delivery_id === staffId
+        );
+      }
+    } catch {
+      // In case of query issue, proceed safely
+    }
+
+    // 6. If referenced by orders, deactivate instead to preserve audit history & referential integrity
+    if (hasOrderAssignments) {
+      await this.toggleStaffStatus(staffId, false, callerId);
+      return {
+        success: true,
+        deactivatedInstead: true,
+        message: `Staff member ${staff.full_name} is assigned to existing orders. To preserve audit history and referential integrity, their account has been safely deactivated instead of deleted.`
+      };
+    }
+
+    // 7. Permanent deletion when safe
+    if (isLiveMode) {
+      const { error: delError } = await supabase
+        .from('profiles')
+        .delete()
+        .eq('id', staffId);
+
+      if (delError) {
+        if (delError.code === '23503' || delError.message.toLowerCase().includes('foreign key')) {
+          await this.toggleStaffStatus(staffId, false, callerId);
+          return {
+            success: true,
+            deactivatedInstead: true,
+            message: `Staff member ${staff.full_name} is referenced by system records. The account has been safely deactivated instead.`
+          };
+        }
+        throw new Error(delError.message || 'Database error occurred while deleting staff account.');
+      }
+    }
+
+    // Update local cache and demo directory
+    const updatedProfiles = profiles.filter(p => p.id !== staffId);
+    localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(updatedProfiles));
+    const demoIndex = DEMO_PROFILES.findIndex(p => p.id === staffId);
+    if (demoIndex !== -1) {
+      DEMO_PROFILES.splice(demoIndex, 1);
+    }
+
+    return {
+      success: true,
+      deactivatedInstead: false,
+      message: `Staff account for ${staff.full_name} has been successfully deleted.`
+    };
+  }
+
   static async toggleStaffStatus(
     staffId: string,
     isActive: boolean,
-    callerId?: string
+    callerId?: string,
+    callerRole?: string
   ): Promise<Profile | null> {
+    if (callerRole && callerRole !== 'owner') {
+      throw new Error('Access denied. Only the business owner is authorized to activate or deactivate staff accounts.');
+    }
+
     const profiles = await this.getStaffProfiles(true);
     const staff = profiles.find(s => s.id === staffId);
     if (!staff) return null;
 
     // Owner protection safeguards
     if (!isActive) {
+      if (staff.email?.toLowerCase() === 'superwashexprez@gmail.com') {
+        throw new Error('The permanent primary owner account (superwashexprez@gmail.com) cannot be deactivated.');
+      }
       if (callerId && staffId === callerId) {
         throw new Error('You cannot deactivate your own owner account.');
       }
@@ -2844,7 +3029,20 @@ export class LaundryService {
     min_weight_kg?: number;
     is_active?: boolean;
     display_order?: number;
-  }): Promise<LaundryServiceItem> {
+  }, callerRole?: UserRole): Promise<LaundryServiceItem> {
+    const currentProfileStr = typeof localStorage !== 'undefined' ? localStorage.getItem('superwash_auth_profile') : null;
+    let storedRole: UserRole | undefined;
+    if (currentProfileStr) {
+      try {
+        const parsed = JSON.parse(currentProfileStr);
+        storedRole = parsed?.role;
+      } catch {}
+    }
+    const effectiveRole = callerRole || storedRole;
+    if (effectiveRole && effectiveRole !== 'owner') {
+      throw new Error(`Unauthorized: Only business owners can add services to the catalogue. Current role: '${effectiveRole}'.`);
+    }
+
     const trimmedName = serviceData.name?.trim();
     if (!trimmedName) {
       throw new Error('Service name is required');
@@ -2881,7 +3079,7 @@ export class LaundryService {
     if (isLiveMode) {
       const { data, error } = await supabase.from('services').insert(newService).select().single();
       if (error) {
-        throw new Error(`Failed to add service to database: ${error.message}`);
+        throw new Error(this.formatDatabaseError('add service to database', error));
       }
       const created = data || newService;
       const updatedList = [...existingServices, created];
@@ -2894,7 +3092,20 @@ export class LaundryService {
     return newService;
   }
 
-  static async updateService(id: string, updates: Partial<LaundryServiceItem>): Promise<LaundryServiceItem> {
+  static async updateService(id: string, updates: Partial<LaundryServiceItem>, callerRole?: UserRole): Promise<LaundryServiceItem> {
+    const currentProfileStr = typeof localStorage !== 'undefined' ? localStorage.getItem('superwash_auth_profile') : null;
+    let storedRole: UserRole | undefined;
+    if (currentProfileStr) {
+      try {
+        const parsed = JSON.parse(currentProfileStr);
+        storedRole = parsed?.role;
+      } catch {}
+    }
+    const effectiveRole = callerRole || storedRole;
+    if (effectiveRole && effectiveRole !== 'owner') {
+      throw new Error(`Unauthorized: Only business owners can modify services in the catalogue. Current role: '${effectiveRole}'.`);
+    }
+
     const services = await this.getServices(true);
     const item = services.find(s => s.id === id);
     if (!item) throw new Error('Service not found');
@@ -2924,7 +3135,7 @@ export class LaundryService {
 
     if (isLiveMode) {
       const { data: updatedDb, error } = await supabase.from('services').update(updatedItem).eq('id', id).select().single();
-      if (error) throw new Error(`Failed to update service: ${error.message}`);
+      if (error) throw new Error(this.formatDatabaseError('update service', error));
       const persisted = updatedDb || updatedItem;
       const updatedList = services.map(s => s.id === id ? persisted : s);
       localStorage.setItem(STORAGE_KEYS.SERVICES, JSON.stringify(updatedList));
@@ -2936,11 +3147,24 @@ export class LaundryService {
     return updatedItem;
   }
 
-  static async toggleServiceStatus(id: string, isActive: boolean): Promise<LaundryServiceItem> {
-    return this.updateService(id, { is_active: isActive });
+  static async toggleServiceStatus(id: string, isActive: boolean, callerRole?: UserRole): Promise<LaundryServiceItem> {
+    return this.updateService(id, { is_active: isActive }, callerRole);
   }
 
-  static async deleteService(id: string): Promise<{ success: boolean; message: string }> {
+  static async deleteService(id: string, callerRole?: UserRole): Promise<{ success: boolean; message: string }> {
+    const currentProfileStr = typeof localStorage !== 'undefined' ? localStorage.getItem('superwash_auth_profile') : null;
+    let storedRole: UserRole | undefined;
+    if (currentProfileStr) {
+      try {
+        const parsed = JSON.parse(currentProfileStr);
+        storedRole = parsed?.role;
+      } catch {}
+    }
+    const effectiveRole = callerRole || storedRole;
+    if (effectiveRole && effectiveRole !== 'owner') {
+      throw new Error(`Unauthorized: Only business owners can delete services from the catalogue. Current role: '${effectiveRole}'.`);
+    }
+
     const services = await this.getServices(true);
     const item = services.find(s => s.id === id);
     if (!item) throw new Error('Service not found');
@@ -2983,7 +3207,7 @@ export class LaundryService {
     if (isLiveMode) {
       const { error } = await supabase.from('services').delete().eq('id', id);
       if (error) {
-        throw new Error(`Failed to delete service from database: ${error.message}`);
+        throw new Error(this.formatDatabaseError('delete service from database', error));
       }
     }
 

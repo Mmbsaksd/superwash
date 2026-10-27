@@ -73,6 +73,7 @@ export const CustomerHome: React.FC = () => {
   const [addressActionSuccess, setAddressActionSuccess] = useState<string | null>(null);
 
   const [addressToDelete, setAddressToDelete] = useState<CustomerAddress | null>(null);
+  const [addressDeleteError, setAddressDeleteError] = useState<string | null>(null);
   const [isDeletingAddress, setIsDeletingAddress] = useState<boolean>(false);
 
   // Post-Booking Order Pickup Location Correction State (Track Order Tab)
@@ -644,6 +645,7 @@ export const CustomerHome: React.FC = () => {
   const handleConfirmDeleteAddress = async () => {
     if (!addressToDelete || !currentUser) return;
     setIsDeletingAddress(true);
+    setAddressDeleteError(null);
     try {
       await LaundryService.deleteCustomerAddress(addressToDelete.id, currentUser.id);
       setAddresses((prev) => {
@@ -665,7 +667,7 @@ export const CustomerHome: React.FC = () => {
       });
       setAddressToDelete(null);
     } catch (err: any) {
-      alert(formatCustomerError(err) || 'Failed to delete address.');
+      setAddressDeleteError(formatCustomerError(err) || 'Failed to delete address.');
     } finally {
       setIsDeletingAddress(false);
     }
@@ -2745,10 +2747,20 @@ export const CustomerHome: React.FC = () => {
               <span className="text-[11px] text-slate-400 font-mono">PIN: {addressToDelete.pincode}</span>
             </div>
 
+            {addressDeleteError && (
+              <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                <span>{addressDeleteError}</span>
+              </div>
+            )}
+
             <div className="flex items-center gap-2 pt-2 justify-end">
               <button
                 type="button"
-                onClick={() => setAddressToDelete(null)}
+                onClick={() => {
+                  setAddressToDelete(null);
+                  setAddressDeleteError(null);
+                }}
                 className="py-2.5 px-4 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 transition cursor-pointer"
               >
                 Cancel

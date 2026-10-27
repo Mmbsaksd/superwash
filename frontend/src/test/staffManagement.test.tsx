@@ -487,4 +487,246 @@ describe('Staff Management Enhancements (Edit, Toggle Status, Search & Filter)',
       });
     });
   });
+
+  describe('4. Staff Account Deletion & Security Authorization Audit', () => {
+    it('successfully deletes an eligible demo staff member without order assignments', async () => {
+      // Add a disposable staff member
+      const disposableStaff: Profile = {
+        id: 'disposable-staff-99',
+        email: 'disposable@superwash.in',
+        phone: '9876543999',
+        full_name: 'Temporary Assistant',
+        role: 'delivery',
+        is_active: true,
+        created_at: new Date().toISOString()
+      };
+      const existing = await LaundryService.getStaffProfiles(true);
+      localStorage.setItem('superwash_profiles', JSON.stringify([...existing, disposableStaff]));
+
+      const res = await LaundryService.deleteStaffProfile(
+        'disposable-staff-99',
+        'staff-owner-1',
+        'owner'
+      );
+
+      expect(res.success).toBe(true);
+      expect(res.deactivatedInstead).toBe(false);
+      expect(res.message).toMatch(/successfully deleted/i);
+
+      // Verify profile is removed from directory
+      const fresh = await LaundryService.getStaffProfiles(true);
+      expect(fresh.find(p => p.id === 'disposable-staff-99')).toBeUndefined();
+
+      // Verify unrelated staff profiles remain intact
+      expect(fresh.find(p => p.id === 'staff-delivery-1')).toBeDefined();
+      expect(fresh.find(p => p.id === 'staff-manager-1')).toBeDefined();
+      expect(fresh.find(p => p.id === 'staff-owner-1')).toBeDefined();
+    });
+
+    it('safely deactivates staff with historical order assignments instead of deleting to protect audit history', async () => {
+      // Seed an order assigned to Ramesh (staff-delivery-1)
+      const testOrder = {
+        id: 'ord-hist-audit-1',
+        order_number: 'SW-9901',
+        customer_phone: '9876543210',
+        customer_name: 'Audit Customer',
+        assigned_delivery_id: 'staff-delivery-1',
+        order_status: 'delivered',
+        created_at: new Date().toISOString()
+      };
+      localStorage.setItem('superwash_orders', JSON.stringify([testOrder]));
+
+      const res = await LaundryService.deleteStaffProfile(
+        'staff-delivery-1',
+        'staff-owner-1',
+        'owner'
+      );
+
+      expect(res.success).toBe(true);
+      expect(res.deactivatedInstead).toBe(true);
+      expect(res.message).toMatch(/safely deactivated instead of deleted/i);
+
+      // Profile must still exist to satisfy foreign key and audit history, but is_active = false
+      const fresh = await LaundryService.getStaffProfiles(true);
+      const ramesh = fresh.find(p => p.id === 'staff-delivery-1');
+      expect(ramesh).toBeDefined();
+      expect(ramesh?.is_active).toBe(false);
+
+      // Historical order still retains assigned_delivery_id intact
+      const orders = await LaundryService.getOrders();
+      const preservedOrder = orders.find(o => o.id === 'ord-hist-audit-1');
+      expect(preservedOrder?.assigned_delivery_id).toBe('staff-delivery-1');
+    });
+
+    it('strictly prevents the authenticated owner from deleting their own account', async () => {
+      await expect(
+        LaundryService.deleteStaffProfile(
+          'staff-owner-1',
+          'staff-owner-1', // callerId === staffId
+          'owner'
+        )
+      ).rejects.toThrow(/cannot delete your own authenticated owner account/i);
+    });
+
+    it('strictly prevents deleting the permanent primary owner account (superwashexprez@gmail.com)', async () => {
+      const primaryOwner: Profile = {
+        id: 'primary-owner-perm',
+        email: 'superwashexprez@gmail.com',
+        phone: '9876543000',
+        full_name: 'SuperWash Primary Owner',
+        role: 'owner',
+        is_active: true,
+        created_at: new Date().toISOString()
+      };
+      const existing = await LaundryService.getStaffProfiles(true);
+      localStorage.setItem('superwash_profiles', JSON.stringify([...existing, primaryOwner]));
+
+      await expect(
+        LaundryService.deleteStaffProfile(
+          'primary-owner-perm',
+          'staff-owner-1',
+          'owner'
+        )
+      ).rejects.toThrow(/permanent primary owner account \(superwashexprez@gmail.com\) cannot be deleted/i);
+    });
+
+    it('strictly prevents deleting the last active business owner account', async () => {
+      // Remove all owners except staff-owner-1
+      const onlyOneOwnerStaff = getSeedStaff().filter(p => p.role !== 'owner' || p.id === 'staff-owner-1');
+      localStorage.setItem('superwash_profiles', JSON.stringify(onlyOneOwnerStaff));
+
+      await expect(
+        LaundryService.deleteStaffProfile(
+          'staff-owner-1',
+          'different-caller-id',
+          'owner'
+        )
+      ).rejects.toThrow(/cannot delete the last remaining active business owner/i);
+    });
+
+    it('strictly rejects non-owner roles (manager, delivery, customer) from deleting staff', async () => {
+      // Manager attempt
+      await expect(
+        LaundryService.deleteStaffProfile(
+          'staff-delivery-1',
+          'staff-manager-1',
+          'manager' // unauthorized role
+        )
+      ).rejects.toThrow(/access denied.*only the business owner is authorized/i);
+
+      // Delivery attempt
+      await expect(
+        LaundryService.deleteStaffProfile(
+          'staff-delivery-1',
+          'staff-delivery-1',
+          'delivery' // unauthorized role
+        )
+      ).rejects.toThrow(/access denied.*only the business owner is authorized/i);
+
+      // Customer attempt
+      await expect(
+        LaundryService.deleteStaffProfile(
+          'staff-delivery-1',
+          'cust-101',
+          'customer' // unauthorized role
+        )
+      ).rejects.toThrow(/access denied.*only the business owner is authorized/i);
+    });
+
+    it('strictly rejects non-owner roles from editing staff details or updating active status', async () => {
+      // Manager attempting to edit staff
+      await expect(
+        LaundryService.updateStaffProfile(
+          'staff-delivery-1',
+          { full_name: 'Unauthorized Change', phone: '9876543215', role: 'delivery' },
+          'staff-manager-1',
+          'manager'
+        )
+      ).rejects.toThrow(/access denied.*only the business owner is authorized/i);
+
+      // Delivery attempting to toggle active status
+      await expect(
+        LaundryService.toggleStaffStatus(
+          'staff-delivery-1',
+          false,
+          'staff-delivery-1',
+          'delivery'
+        )
+      ).rejects.toThrow(/access denied.*only the business owner is authorized/i);
+    });
+
+    it('cancelling the delete confirmation modal makes zero modifications to staff records', async () => {
+      render(
+        <MemoryRouter initialEntries={['/admin']}>
+          <AuthProvider>
+            <OwnerDashboard />
+          </AuthProvider>
+        </MemoryRouter>
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: /staff accounts/i }));
+      await screen.findByText('Ramesh Kumar');
+
+      // Click Delete button on Ramesh's card
+      const rameshCard = screen.getByText('Ramesh Kumar').closest('.bg-white') as HTMLElement;
+      const deleteBtn = within(rameshCard).getByRole('button', { name: /delete/i });
+      fireEvent.click(deleteBtn);
+
+      // Confirmation modal should open
+      expect(await screen.findByText(/Delete Employee Account\?/i)).toBeInTheDocument();
+      expect(screen.getByText(/Are you sure you want to delete/i)).toBeInTheDocument();
+
+      // Click Cancel button in modal
+      const cancelBtn = screen.getByRole('button', { name: /^cancel$/i });
+      fireEvent.click(cancelBtn);
+
+      // Modal closes, Ramesh remains in directory
+      await waitFor(() => {
+        expect(screen.queryByText(/Delete Employee Account\?/i)).not.toBeInTheDocument();
+      });
+      expect(screen.getByText('Ramesh Kumar')).toBeInTheDocument();
+    });
+
+    it('confirming delete in the UI modal removes the employee and updates the directory view', async () => {
+      // Add a clean temporary staff member without orders
+      const tempStaff: Profile = {
+        id: 'staff-temp-delete-test',
+        email: 'temp.clean@superwash.in',
+        phone: '9876543555',
+        full_name: 'Temp Delete Candidate',
+        role: 'delivery',
+        is_active: true,
+        created_at: new Date().toISOString()
+      };
+      const existing = await LaundryService.getStaffProfiles(true);
+      localStorage.setItem('superwash_profiles', JSON.stringify([...existing, tempStaff]));
+
+      render(
+        <MemoryRouter initialEntries={['/admin']}>
+          <AuthProvider>
+            <OwnerDashboard />
+          </AuthProvider>
+        </MemoryRouter>
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: /staff accounts/i }));
+      await screen.findByText('Temp Delete Candidate');
+
+      // Find Temp Candidate card and click Delete
+      const tempCard = screen.getByText('Temp Delete Candidate').closest('.bg-white') as HTMLElement;
+      const deleteBtn = within(tempCard).getByRole('button', { name: /delete/i });
+      fireEvent.click(deleteBtn);
+
+      // Confirm modal opens
+      expect(await screen.findByText(/Delete Employee Account\?/i)).toBeInTheDocument();
+      const confirmDeleteBtn = screen.getByRole('button', { name: /confirm delete/i });
+      fireEvent.click(confirmDeleteBtn);
+
+      // Modal closes, success notice shown, candidate removed from DOM
+      await waitFor(() => {
+        expect(screen.getByText(/has been successfully deleted/i)).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Temp Delete Candidate')).not.toBeInTheDocument();
+    });
+  });
 });

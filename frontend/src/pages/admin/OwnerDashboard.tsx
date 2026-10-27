@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import {
   Order, BusinessSettings, Profile, PickupSlot,
@@ -14,18 +14,17 @@ import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
 import {
   IndianRupee, Package, CheckCircle2,
   Users, Settings, Plus, RefreshCw,
-  Search, Shield, Phone, Sparkles, Star, MessageSquareHeart,
-  Calendar, Check, AlertCircle, X, MapPin, Download, TrendingUp, TrendingDown, LogOut, Loader2,
-  Edit2, Trash2, ArrowRight, Store, Truck, Scale
+  Search, Shield, Star, MessageSquareHeart,
+  AlertCircle, X, Download, TrendingUp, TrendingDown, LogOut, Loader2,
+  Edit2, Trash2
 } from 'lucide-react';
 import {
   ServiceArea, LaundryServiceItem, PeriodFilter, DashboardPeriodAnalytics
 } from '../../types';
 
 export const OwnerDashboard: React.FC = () => {
-  const navigate = useNavigate();
   const { currentUser, logout, sendPasswordResetEmail } = useAuth();
-  const [activeTab, setActiveTab] = useState<'overview' | 'orders' | 'staff' | 'payments' | 'feedback' | 'settings'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'orders' | 'staff' | 'payments' | 'feedback' | 'settings'>('staff');
   const [orders, setOrders] = useState<Order[]>([]);
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [staffList, setStaffList] = useState<Profile[]>([]);
@@ -51,6 +50,10 @@ export const OwnerDashboard: React.FC = () => {
   const [pickupPincode, setPickupPincode] = useState<string>('560038');
   const [pickupDate, setPickupDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [selectedSlot, setSelectedSlot] = useState<string>('');
+  const [manualOrderError, setManualOrderError] = useState<string | null>(null);
+  const [orderActionNotice, setOrderActionNotice] = useState<string | null>(null);
+  const [feedbackReviewError, setFeedbackReviewError] = useState<string | null>(null);
+  const [serviceActionError, setServiceActionError] = useState<string | null>(null);
 
   // Settings Form State
   const [businessPhoneInput, setBusinessPhoneInput] = useState<string>(DEFAULT_SETTINGS.business_phone);
@@ -94,11 +97,18 @@ export const OwnerDashboard: React.FC = () => {
   // Staff Edit Modal State
   const [editingStaff, setEditingStaff] = useState<Profile | null>(null);
   const [editStaffName, setEditStaffName] = useState<string>('');
+  const [editStaffEmail, setEditStaffEmail] = useState<string>('');
   const [editStaffPhone, setEditStaffPhone] = useState<string>('');
   const [editStaffRole, setEditStaffRole] = useState<UserRole>('delivery');
+  const [editStaffIsActive, setEditStaffIsActive] = useState<boolean>(true);
   const [isConfirmingRoleChange, setIsConfirmingRoleChange] = useState<boolean>(false);
   const [editStaffError, setEditStaffError] = useState<string | null>(null);
   const [isSubmittingEdit, setIsSubmittingEdit] = useState<boolean>(false);
+
+  // Staff Delete Modal State
+  const [deletingStaff, setDeletingStaff] = useState<Profile | null>(null);
+  const [isSubmittingDelete, setIsSubmittingDelete] = useState<boolean>(false);
+  const [deleteStaffError, setDeleteStaffError] = useState<string | null>(null);
 
   // Staff Toggle Confirmation State
   const [confirmToggleStaff, setConfirmToggleStaff] = useState<{ staff: Profile; nextActive: boolean } | null>(null);
@@ -208,7 +218,7 @@ export const OwnerDashboard: React.FC = () => {
         setTimeout(() => setAreaActionSuccess(null), 3000);
       }
     } catch (err: any) {
-      alert(err.message || 'Error updating service area');
+      setAreaFormError(err.message || 'Error updating service area');
     }
   };
 
@@ -231,7 +241,7 @@ export const OwnerDashboard: React.FC = () => {
 
     setIsSubmittingArea(true);
     try {
-      const added = await LaundryService.addServiceArea({
+      await LaundryService.addServiceArea({
         pincode: pin,
         area_name: name,
         city: city,
@@ -258,7 +268,8 @@ export const OwnerDashboard: React.FC = () => {
 
   const handleExportCSV = () => {
     if (orders.length === 0) {
-      alert('No orders to export');
+      setOrderActionNotice('No orders found to export as CSV.');
+      setTimeout(() => setOrderActionNotice(null), 4000);
       return;
     }
     const headers = [
@@ -399,7 +410,7 @@ export const OwnerDashboard: React.FC = () => {
       setSelectedManualServiceId('');
       setActiveTab('orders');
     } catch (err: any) {
-      alert(err.message || 'Error creating manual order');
+      setManualOrderError(err.message || 'Error creating manual order');
     }
   };
 
@@ -429,8 +440,10 @@ export const OwnerDashboard: React.FC = () => {
   const handleOpenEdit = (staff: Profile) => {
     setEditingStaff(staff);
     setEditStaffName(staff.full_name);
+    setEditStaffEmail(staff.email || '');
     setEditStaffPhone(staff.phone || '');
     setEditStaffRole(staff.role);
+    setEditStaffIsActive(staff.is_active);
     setEditStaffError(null);
     setIsConfirmingRoleChange(false);
   };
@@ -452,9 +465,36 @@ export const OwnerDashboard: React.FC = () => {
       return;
     }
 
-    if (editingStaff.email?.toLowerCase() === 'superwashexprez@gmail.com' && editStaffRole !== 'owner') {
-      setEditStaffError('The permanent primary owner role cannot be changed.');
+    const cleanEmail = editStaffEmail.trim().toLowerCase();
+    if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setEditStaffError('Please enter a valid email address.');
       return;
+    }
+
+    if (editingStaff.email?.toLowerCase() === 'superwashexprez@gmail.com') {
+      if (cleanEmail && cleanEmail !== 'superwashexprez@gmail.com') {
+        setEditStaffError('The permanent primary owner email cannot be changed.');
+        return;
+      }
+      if (editStaffRole !== 'owner') {
+        setEditStaffError('The permanent primary owner role cannot be changed.');
+        return;
+      }
+      if (!editStaffIsActive) {
+        setEditStaffError('The permanent primary owner account cannot be deactivated.');
+        return;
+      }
+    }
+
+    if (editingStaff.id === currentUser?.id) {
+      if (editStaffRole !== editingStaff.role) {
+        setEditStaffError('Business owners cannot demote their own account role.');
+        return;
+      }
+      if (!editStaffIsActive) {
+        setEditStaffError('You cannot deactivate your own owner account.');
+        return;
+      }
     }
 
     // Require confirmation if role changed
@@ -469,10 +509,13 @@ export const OwnerDashboard: React.FC = () => {
         editingStaff.id,
         {
           full_name: trimmedName,
+          email: cleanEmail || undefined,
           phone: cleanPhone,
-          role: editStaffRole
+          role: editStaffRole,
+          is_active: editStaffIsActive
         },
-        currentUser?.id
+        currentUser?.id,
+        currentUser?.role
       );
 
       const freshStaff = await LaundryService.getStaffProfiles(true);
@@ -487,13 +530,39 @@ export const OwnerDashboard: React.FC = () => {
     }
   };
 
+  const handleConfirmDeleteStaff = async () => {
+    if (!deletingStaff) return;
+    setDeleteStaffError(null);
+    setIsSubmittingDelete(true);
+    try {
+      const res = await LaundryService.deleteStaffProfile(
+        deletingStaff.id,
+        currentUser?.id,
+        currentUser?.role
+      );
+      const freshStaff = await LaundryService.getStaffProfiles(true);
+      setStaffList(freshStaff);
+      setDeletingStaff(null);
+      setStaffActionMsg(res.message);
+      setTimeout(() => setStaffActionMsg(null), 5000);
+    } catch (err: any) {
+      setDeleteStaffError(err.message || 'Failed to delete staff member.');
+    } finally {
+      setIsSubmittingDelete(false);
+    }
+  };
+
+  const [staffActionMsg, setStaffActionMsg] = useState<string | null>(null);
+
   const handleRequestToggleStatus = (staff: Profile) => {
     if (staff.email?.toLowerCase() === 'superwashexprez@gmail.com') {
-      alert('The permanent primary owner account cannot be deactivated.');
+      setStaffActionMsg('The permanent primary owner account cannot be deactivated.');
+      setTimeout(() => setStaffActionMsg(null), 5000);
       return;
     }
     if (staff.id === currentUser?.id) {
-      alert('You cannot deactivate your own owner account.');
+      setStaffActionMsg('You cannot deactivate your own owner account.');
+      setTimeout(() => setStaffActionMsg(null), 5000);
       return;
     }
     setConfirmToggleStaff({
@@ -523,13 +592,12 @@ export const OwnerDashboard: React.FC = () => {
       }
       setConfirmToggleStaff(null);
     } catch (err: any) {
-      alert(err.message || 'Error updating staff status');
+      setStaffActionMsg(err.message || 'Error updating staff status');
+      setTimeout(() => setStaffActionMsg(null), 5000);
     } finally {
       setIsTogglingStaff(false);
     }
   };
-
-  const [staffActionMsg, setStaffActionMsg] = useState<string | null>(null);
 
   const handleSendStaffReset = async (email: string) => {
     try {
@@ -537,7 +605,8 @@ export const OwnerDashboard: React.FC = () => {
       setStaffActionMsg(res.message);
       setTimeout(() => setStaffActionMsg(null), 6000);
     } catch (err: any) {
-      alert(err.message || 'Failed to send reset email');
+      setStaffActionMsg(err.message || 'Failed to send reset email');
+      setTimeout(() => setStaffActionMsg(null), 5000);
     }
   };
 
@@ -572,7 +641,7 @@ export const OwnerDashboard: React.FC = () => {
 
     setIsSubmittingStaff(true);
     try {
-      const added = await LaundryService.addStaffProfile({
+      await LaundryService.addStaffProfile({
         full_name: name,
         email: email,
         phone: phone,
@@ -618,8 +687,8 @@ export const OwnerDashboard: React.FC = () => {
         setFeedbackMetrics(fm);
         setReviewingFeedback(null);
       }
-    } catch (err) {
-      alert('Error updating feedback review');
+    } catch (err: any) {
+      setFeedbackReviewError(err?.message || 'Error updating feedback review');
     }
   };
 
@@ -675,7 +744,7 @@ export const OwnerDashboard: React.FC = () => {
           min_weight_kg: minWeightNum,
           is_active: serviceIsActive,
           display_order: Number(serviceDisplayOrder) || 1
-        });
+        }, currentUser?.role);
         setServicesList((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
         setServiceActionSuccess(`Service '${updated.name}' updated successfully.`);
         setEditingService(null);
@@ -688,7 +757,7 @@ export const OwnerDashboard: React.FC = () => {
           min_weight_kg: minWeightNum,
           is_active: serviceIsActive,
           display_order: Number(serviceDisplayOrder) || (servicesList.length + 1)
-        });
+        }, currentUser?.role);
         setServicesList((prev) => [...prev, created]);
         setServiceActionSuccess(`New service '${created.name}' added to catalogue.`);
         setIsAddingService(false);
@@ -703,12 +772,13 @@ export const OwnerDashboard: React.FC = () => {
 
   const handleToggleServiceStatus = async (srv: LaundryServiceItem) => {
     try {
-      const updated = await LaundryService.toggleServiceStatus(srv.id, !srv.is_active);
+      const updated = await LaundryService.toggleServiceStatus(srv.id, !srv.is_active, currentUser?.role);
       setServicesList((prev) => prev.map((s) => (s.id === srv.id ? updated : s)));
       setServiceActionSuccess(`Service '${srv.name}' ${updated.is_active ? 'activated' : 'deactivated'}.`);
       setTimeout(() => setServiceActionSuccess(null), 3000);
     } catch (err: any) {
-      alert(err.message || 'Error updating service status.');
+      setServiceActionError(err.message || 'Error updating service status.');
+      setTimeout(() => setServiceActionError(null), 5000);
     }
   };
 
@@ -717,7 +787,7 @@ export const OwnerDashboard: React.FC = () => {
     setServiceDeleteError(null);
     setIsSubmittingService(true);
     try {
-      await LaundryService.deleteService(deletingService.id);
+      await LaundryService.deleteService(deletingService.id, currentUser?.role);
       setServicesList((prev) => prev.filter((s) => s.id !== deletingService.id));
       setServiceActionSuccess(`Service '${deletingService.name}' deleted.`);
       setTimeout(() => setServiceActionSuccess(null), 3000);
@@ -732,14 +802,14 @@ export const OwnerDashboard: React.FC = () => {
   const handleDeactivateInstead = async () => {
     if (!deletingService) return;
     try {
-      const updated = await LaundryService.toggleServiceStatus(deletingService.id, false);
+      const updated = await LaundryService.toggleServiceStatus(deletingService.id, false, currentUser?.role);
       setServicesList((prev) => prev.map((s) => (s.id === deletingService.id ? updated : s)));
       setServiceActionSuccess(`Service '${deletingService.name}' has been deactivated. Historical orders remain intact.`);
       setTimeout(() => setServiceActionSuccess(null), 4000);
       setDeletingService(null);
       setServiceDeleteError(null);
     } catch (err: any) {
-      alert(err.message || 'Error deactivating service.');
+      setServiceDeleteError(err.message || 'Error deactivating service.');
     }
   };
 
@@ -799,12 +869,12 @@ export const OwnerDashboard: React.FC = () => {
       <div className="bg-white border-b border-slate-200 sticky top-[68px] z-20">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2.5 overflow-x-auto flex gap-2 scrollbar-none">
           {[
+            { key: 'staff', label: `Staff Accounts (${staffList.length})` },
+            { key: 'settings', label: 'Pricing & Coverage' },
             { key: 'overview', label: 'Executive Dashboard' },
             { key: 'orders', label: `Orders (${orders.length})` },
             { key: 'feedback', label: `Private Feedback (${feedbacks.length})` },
-            { key: 'staff', label: `Staff Accounts (${staffList.length})` },
             { key: 'payments', label: `Payments (${payments.length})` },
-            { key: 'settings', label: 'Pricing & Coverage' },
           ].map((tab) => (
             <button
               key={tab.key}
@@ -823,128 +893,6 @@ export const OwnerDashboard: React.FC = () => {
 
       {/* Main Container */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full flex-1 space-y-6">
-        {/* ================= QUICK ACCESS: OWNER PORTAL SHORTCUTS ================= */}
-        {currentUser?.role === 'owner' && currentUser?.is_active !== false && (
-          <section aria-label="Owner Quick Access" className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-amber-500/10 text-amber-600 flex items-center justify-center">
-                  <Shield className="w-4 h-4" />
-                </div>
-                <div>
-                  <h2 id="owner-quick-access-title" className="text-base font-black text-slate-900 tracking-tight">
-                    Quick Access
-                  </h2>
-                  <p className="text-xs text-slate-500">
-                    Switch between business management portals with your owner credentials
-                  </p>
-                </div>
-              </div>
-              <span className="self-start sm:self-auto text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full uppercase tracking-wider">
-                Owner Direct Access
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
-              {/* Card 1: Admin Portal */}
-              <button
-                type="button"
-                onClick={() => navigate('/admin')}
-                aria-label="Admin Portal — staff management and business settings; navigate to /admin"
-                className="group p-4 rounded-2xl border-2 border-slate-900 bg-slate-900 text-white text-left transition hover:shadow-md focus:outline-none focus:ring-2 focus:ring-slate-900 focus:ring-offset-2 flex flex-col justify-between cursor-pointer"
-              >
-                <div>
-                  <div className="flex items-center justify-between mb-2.5">
-                    <div className="w-9 h-9 rounded-xl bg-white/10 text-amber-400 flex items-center justify-center group-hover:scale-105 transition">
-                      <Shield className="w-5 h-5" />
-                    </div>
-                    <span className="text-[10px] font-bold bg-white/20 text-white px-2 py-0.5 rounded-full uppercase tracking-wider">
-                      Current Portal
-                    </span>
-                  </div>
-                  <h3 className="font-black text-sm text-white group-hover:text-amber-300 transition">
-                    Admin Portal
-                  </h3>
-                  <p className="text-xs text-slate-300 mt-1 leading-relaxed">
-                    Staff management and business settings
-                  </p>
-                </div>
-                <div className="mt-3.5 pt-2 border-t border-slate-800 flex items-center justify-between text-[11px] font-bold text-amber-400">
-                  <span className="font-mono">/admin</span>
-                  <div className="flex items-center gap-1 group-hover:translate-x-0.5 transition">
-                    <span>Active</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </div>
-                </div>
-              </button>
-
-              {/* Card 2: Store Manager */}
-              <button
-                type="button"
-                onClick={() => navigate('/manager')}
-                aria-label="Store Manager — intake, weighing, washing, and order processing; navigate to /manager"
-                className="group p-4 rounded-2xl border border-slate-200 hover:border-purple-300 bg-gradient-to-br from-white to-purple-50/30 text-left transition hover:shadow-md focus:outline-none focus:ring-2 focus:ring-purple-600 focus:ring-offset-2 flex flex-col justify-between cursor-pointer"
-              >
-                <div>
-                  <div className="flex items-center justify-between mb-2.5">
-                    <div className="w-9 h-9 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center group-hover:scale-105 transition">
-                      <Store className="w-5 h-5" />
-                    </div>
-                    <span className="text-[10px] font-bold bg-purple-100 text-purple-800 px-2 py-0.5 rounded-full uppercase tracking-wider">
-                      Intake & Wash
-                    </span>
-                  </div>
-                  <h3 className="font-black text-sm text-slate-900 group-hover:text-purple-700 transition">
-                    Store Manager
-                  </h3>
-                  <p className="text-xs text-slate-600 mt-1 leading-relaxed">
-                    Intake, weighing, washing, and order processing
-                  </p>
-                </div>
-                <div className="mt-3.5 pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] font-bold text-purple-700">
-                  <span className="font-mono">/manager</span>
-                  <div className="flex items-center gap-1 group-hover:translate-x-0.5 transition">
-                    <span>Open Portal</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </div>
-                </div>
-              </button>
-
-              {/* Card 3: Delivery Portal */}
-              <button
-                type="button"
-                onClick={() => navigate('/delivery')}
-                aria-label="Delivery Portal — assigned pickups, deliveries, and delivery operations; navigate to /delivery"
-                className="group p-4 rounded-2xl border border-slate-200 hover:border-emerald-300 bg-gradient-to-br from-white to-emerald-50/30 text-left transition hover:shadow-md focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:ring-offset-2 flex flex-col justify-between cursor-pointer"
-              >
-                <div>
-                  <div className="flex items-center justify-between mb-2.5">
-                    <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center group-hover:scale-105 transition">
-                      <Truck className="w-5 h-5" />
-                    </div>
-                    <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full uppercase tracking-wider">
-                      Logistics
-                    </span>
-                  </div>
-                  <h3 className="font-black text-sm text-slate-900 group-hover:text-emerald-700 transition">
-                    Delivery Portal
-                  </h3>
-                  <p className="text-xs text-slate-600 mt-1 leading-relaxed">
-                    Assigned pickups, deliveries, and delivery operations
-                  </p>
-                </div>
-                <div className="mt-3.5 pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] font-bold text-emerald-700">
-                  <span className="font-mono">/delivery</span>
-                  <div className="flex items-center gap-1 group-hover:translate-x-0.5 transition">
-                    <span>Open Portal</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </div>
-                </div>
-              </button>
-            </div>
-          </section>
-        )}
-
         {/* ================= TAB 1: EXECUTIVE DASHBOARD ================= */}
         {activeTab === 'overview' && (
           <div className="space-y-6">
@@ -990,6 +938,18 @@ export const OwnerDashboard: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {orderActionNotice && (
+              <div className="p-3.5 bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl flex items-center justify-between gap-2 text-xs shadow-xs animate-fade-in">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>{orderActionNotice}</span>
+                </div>
+                <button onClick={() => setOrderActionNotice(null)} className="text-amber-600 hover:text-amber-800 p-1">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
 
             {/* Operational KPIs */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -1449,30 +1409,7 @@ export const OwnerDashboard: React.FC = () => {
               </div>
             )}
 
-            {/* Supabase Dashboard Password Administration Guide Card */}
-            <div className="bg-gradient-to-r from-slate-900 to-purple-950 text-white p-5 rounded-3xl shadow-sm text-xs space-y-2">
-              <div className="flex items-center gap-2 font-bold text-purple-300">
-                <Shield className="w-4 h-4" />
-                <span>Staff Credential & Password Management (Owner Access)</span>
-              </div>
-              <p className="text-slate-300 leading-relaxed text-[11px]">
-                To assign or reset a staff member's password, you can either click <strong className="text-white">"Send Reset Link"</strong> below to send a recovery link to their inbox, or set a new password instantly in the <strong>Supabase Dashboard</strong> without waiting for an email.
-              </p>
-              <div className="pt-2 border-t border-slate-700/60 grid grid-cols-1 sm:grid-cols-3 gap-2 font-mono text-[11px]">
-                <div className="bg-white/5 p-2 rounded-xl">
-                  <span className="text-purple-300 font-sans block text-[10px] font-bold">STORE MANAGER</span>
-                  manager@superwash.in
-                </div>
-                <div className="bg-white/5 p-2 rounded-xl">
-                  <span className="text-emerald-300 font-sans block text-[10px] font-bold">DELIVERY (RAMESH)</span>
-                  superwash.audit.1792664886550@gmail.com
-                </div>
-                <div className="bg-white/5 p-2 rounded-xl">
-                  <span className="text-teal-300 font-sans block text-[10px] font-bold">DELIVERY (SURESH)</span>
-                  suresh.superwash.express@gmail.com
-                </div>
-              </div>
-            </div>
+
 
             {isAddingStaff && (
               <form onSubmit={handleAddStaff} className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-4 text-xs">
@@ -1853,6 +1790,29 @@ export const OwnerDashboard: React.FC = () => {
                           {staff.is_active ? 'Active' : 'Deactivated'}
                         </button>
                       )}
+
+                      {/* Delete Staff Button */}
+                      {staff.email?.toLowerCase() === 'superwashexprez@gmail.com' || staff.id === currentUser?.id ? (
+                        <span
+                          className="px-2.5 py-1.5 rounded-xl font-bold text-[11px] bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
+                          title="Protected account cannot be deleted"
+                        >
+                          Protected
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDeletingStaff(staff);
+                            setDeleteStaffError(null);
+                          }}
+                          className="px-2.5 py-1.5 rounded-xl font-bold text-[11px] bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 flex items-center gap-1 transition cursor-pointer"
+                          title={`Delete ${staff.full_name}'s account`}
+                        >
+                          <Trash2 className="w-3 h-3 text-red-500" />
+                          <span>Delete</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -1944,18 +1904,55 @@ export const OwnerDashboard: React.FC = () => {
                       ) : null}
                     </div>
 
-                    {/* Read-only Auth Email */}
-                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl space-y-1">
-                      <div className="flex justify-between items-center text-[11px]">
-                        <span className="text-slate-500 font-bold">Email Address (Supabase Auth Identity)</span>
-                        <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-slate-200 text-slate-600">
-                          Read Only
+                    {/* Email Address */}
+                    <div>
+                      <div className="flex justify-between items-center mb-1">
+                        <label className="block text-slate-700 font-bold" htmlFor="edit-staff-email">
+                          Email Address <span className="text-red-500">*</span>
+                        </label>
+                        <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">
+                          Auth Identity • Read Only Sync
                         </span>
                       </div>
-                      <p className="font-mono text-slate-700 text-xs font-semibold">{editingStaff.email || 'No email associated'}</p>
-                      <span className="text-[11px] text-slate-400 block">
-                        Email is tied to authentication credentials and cannot be edited as an ordinary profile field.
+                      <input
+                        id="edit-staff-email"
+                        type="email"
+                        value={editStaffEmail}
+                        onChange={(e) => setEditStaffEmail(e.target.value)}
+                        disabled={editingStaff.email?.toLowerCase() === 'superwashexprez@gmail.com'}
+                        className="w-full px-3.5 py-2.5 rounded-2xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 font-mono font-semibold text-slate-800 disabled:bg-slate-100 disabled:cursor-not-allowed"
+                        required
+                      />
+                      <span className="text-[11px] text-slate-400 block mt-1">
+                        Employee login email and operational notifications contact.
                       </span>
+                    </div>
+
+                    {/* Active Status */}
+                    <div>
+                      <label className="block text-slate-700 font-bold mb-1">
+                        Account Status
+                      </label>
+                      <label className="flex items-center gap-2.5 p-3 rounded-2xl border border-slate-200 bg-slate-50/50 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          id="edit-staff-active-checkbox"
+                          checked={editStaffIsActive}
+                          onChange={(e) => setEditStaffIsActive(e.target.checked)}
+                          disabled={editingStaff.email?.toLowerCase() === 'superwashexprez@gmail.com' || editingStaff.id === currentUser?.id}
+                          className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500"
+                        />
+                        <div>
+                          <span className="text-xs font-bold text-slate-800">
+                            {editStaffIsActive ? 'Account Active' : 'Account Deactivated'}
+                          </span>
+                          <p className="text-[11px] text-slate-500">
+                            {editStaffIsActive
+                              ? 'Staff member can log in and perform assigned operational duties.'
+                              : 'Staff access is suspended. Operational actions are blocked.'}
+                          </p>
+                        </div>
+                      </label>
                     </div>
 
                     {/* Role Change Confirmation Alert */}
@@ -2007,6 +2004,67 @@ export const OwnerDashboard: React.FC = () => {
                       </button>
                     </div>
                   </form>
+                </div>
+              </div>
+            )}
+
+            {/* Delete Staff Confirmation Dialog */}
+            {deletingStaff && (
+              <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl border border-slate-100 text-xs">
+                  <div className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto bg-red-100 text-red-600">
+                    <Trash2 className="w-6 h-6" />
+                  </div>
+
+                  <div className="text-center space-y-1">
+                    <h3 className="font-black text-slate-900 text-base">
+                      Delete Employee Account?
+                    </h3>
+                    <p className="text-slate-600 leading-relaxed">
+                      Are you sure you want to delete <strong className="text-slate-900">{deletingStaff.full_name}</strong> ({deletingStaff.role.toUpperCase()})?
+                      This action may revoke their access to SuperWash operational portals immediately.
+                    </p>
+                    <p className="text-[11px] text-slate-500 bg-amber-50 border border-amber-200 p-2.5 rounded-xl text-left mt-2">
+                      <strong>Note:</strong> If this staff member has historical order assignments, their account will be safely deactivated instead of deleted to protect order audit history and referential integrity.
+                    </p>
+                  </div>
+
+                  {deleteStaffError && (
+                    <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-2xl flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+                      <span>{deleteStaffError}</span>
+                    </div>
+                  )}
+
+                  <div className="flex gap-2 pt-2">
+                    <button
+                      type="button"
+                      disabled={isSubmittingDelete}
+                      onClick={() => {
+                        setDeletingStaff(null);
+                        setDeleteStaffError(null);
+                      }}
+                      className="flex-1 py-2.5 px-4 border border-slate-200 rounded-xl text-slate-700 font-bold hover:bg-slate-50 transition cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      id="confirm-delete-staff-btn"
+                      disabled={isSubmittingDelete}
+                      onClick={handleConfirmDeleteStaff}
+                      className="flex-1 py-2.5 px-4 font-bold rounded-xl shadow-sm text-white bg-red-600 hover:bg-red-700 transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      {isSubmittingDelete ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin text-white" />
+                          <span>Deleting...</span>
+                        </>
+                      ) : (
+                        <span>Confirm Delete</span>
+                      )}
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -2423,6 +2481,18 @@ export const OwnerDashboard: React.FC = () => {
                 </div>
               )}
 
+              {serviceActionError && (
+                <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded-2xl flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                    <span className="font-semibold text-xs">{serviceActionError}</span>
+                  </div>
+                  <button onClick={() => setServiceActionError(null)} className="text-red-500 hover:text-red-700">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {servicesList.length === 0 ? (
                   <div className="col-span-2 p-6 text-center text-slate-400 bg-slate-50 rounded-2xl">
@@ -2530,10 +2600,22 @@ export const OwnerDashboard: React.FC = () => {
           <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl border border-slate-200 p-6 space-y-4 text-xs">
             <div className="flex justify-between items-center pb-2 border-b">
               <h3 className="font-black text-sm text-slate-900">Create Manual Order (Walk-in or Phone)</h3>
-              <button onClick={() => setIsCreatingManualOrder(false)} className="p-1 hover:bg-slate-100 rounded-full">
+              <button
+                onClick={() => {
+                  setIsCreatingManualOrder(false);
+                  setManualOrderError(null);
+                }}
+                className="p-1 hover:bg-slate-100 rounded-full"
+              >
                 <X className="w-4 h-4" />
               </button>
             </div>
+            {manualOrderError && (
+              <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                <span>{manualOrderError}</span>
+              </div>
+            )}
             <form onSubmit={handleCreateManualOrder} className="space-y-3">
               <div>
                 <label className="block font-bold text-slate-700 mb-1">Customer Name *</label>
@@ -2634,10 +2716,23 @@ export const OwnerDashboard: React.FC = () => {
                 <h3 className="font-black text-sm text-slate-900">Review Customer Feedback</h3>
                 <span className="text-slate-400 text-[11px]">Order #{reviewingFeedback.order_number} • {reviewingFeedback.customer_name}</span>
               </div>
-              <button onClick={() => setReviewingFeedback(null)} className="p-1 hover:bg-slate-100 rounded-full">
+              <button
+                onClick={() => {
+                  setReviewingFeedback(null);
+                  setFeedbackReviewError(null);
+                }}
+                className="p-1 hover:bg-slate-100 rounded-full"
+              >
                 <X className="w-4 h-4" />
               </button>
             </div>
+
+            {feedbackReviewError && (
+              <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                <span>{feedbackReviewError}</span>
+              </div>
+            )}
 
             <div className="p-3 bg-slate-50 rounded-2xl space-y-1">
               <div className="flex justify-between font-bold">

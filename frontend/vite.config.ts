@@ -14,6 +14,18 @@ export default defineConfig({
       }
     }
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+          'vendor-supabase': ['@supabase/supabase-js'],
+          'vendor-leaflet': ['leaflet'],
+          'vendor-icons': ['lucide-react']
+        }
+      }
+    }
+  },
   test: {
     globals: true,
     environment: 'jsdom',

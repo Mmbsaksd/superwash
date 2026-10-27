@@ -25,7 +25,7 @@ describe('Owner Quick Access, Secure Logout, and PWA Installation Improvements',
   // ==========================================
   // Task 1: Owner Dashboard Quick Access
   // ==========================================
-  describe('Task 1: Owner Dashboard Quick Access', () => {
+  describe('Task 1: Owner Dashboard Layout & Route Security', () => {
     const ownerProfile: Profile = {
       id: '00000000-0000-4000-a000-000000000001',
       email: 'owner@superwash.in',
@@ -36,7 +36,7 @@ describe('Owner Quick Access, Secure Logout, and PWA Installation Improvements',
       created_at: new Date().toISOString()
     };
 
-    it('renders Quick Access section with 3 portal shortcuts for active owner', async () => {
+    it('confirms the three-card portal navigation section is completely removed and staff directory is immediately visible', async () => {
       localStorage.setItem('superwash_auth_profile', JSON.stringify(ownerProfile));
 
       render(
@@ -47,47 +47,17 @@ describe('Owner Quick Access, Secure Logout, and PWA Installation Improvements',
         </MemoryRouter>
       );
 
-      // Verify Quick Access section is rendered
+      // Verify the three-card portal section is completely gone
       await waitFor(() => {
-        expect(screen.getByRole('region', { name: /quick access/i })).toBeInTheDocument();
+        expect(screen.queryByRole('region', { name: /quick access/i })).toBeNull();
       });
+      expect(screen.queryByLabelText(/Admin Portal/i)).toBeNull();
+      expect(screen.queryByLabelText(/Store Manager/i)).toBeNull();
+      expect(screen.queryByLabelText(/Delivery Portal/i)).toBeNull();
 
-      // Verify all 3 cards/buttons are present with accessible labels
-      expect(screen.getByLabelText(/Admin Portal/i)).toBeInTheDocument();
-      expect(screen.getByLabelText(/Store Manager/i)).toBeInTheDocument();
-      expect(screen.getByLabelText(/Delivery Portal/i)).toBeInTheDocument();
-
-      // Verify descriptions are clearly displayed
-      expect(screen.getByText(/Staff management and business settings/i)).toBeInTheDocument();
-      expect(screen.getByText(/Intake, weighing, washing, and order processing/i)).toBeInTheDocument();
-      expect(screen.getByText(/Assigned pickups, deliveries, and delivery operations/i)).toBeInTheDocument();
-    });
-
-    it('allows owner to navigate to Store Manager and Delivery Portal via router shortcuts', async () => {
-      localStorage.setItem('superwash_auth_profile', JSON.stringify(ownerProfile));
-
-      render(
-        <MemoryRouter initialEntries={['/admin']}>
-          <AuthProvider>
-            <Routes>
-              <Route path="/admin" element={<OwnerDashboard />} />
-              <Route path="/manager" element={<div data-testid="manager-page">Store Manager Portal View</div>} />
-              <Route path="/delivery" element={<div data-testid="delivery-page">Delivery Portal View</div>} />
-            </Routes>
-          </AuthProvider>
-        </MemoryRouter>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByLabelText(/Store Manager/i)).toBeInTheDocument();
-      });
-
-      // Click Store Manager button
-      fireEvent.click(screen.getByLabelText(/Store Manager/i));
-
-      await waitFor(() => {
-        expect(screen.getByTestId('manager-page')).toBeInTheDocument();
-      });
+      // Verify Staff Directory is immediately visible without scrolling
+      expect(screen.getByText(/Authorized Staff Directory/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Add Staff Member/i })).toBeInTheDocument();
     });
 
     it('strictly blocks non-owners from accessing Owner Dashboard routes', async () => {

@@ -158,8 +158,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               setIsLoading(false);
               return;
             }
-          } else if (isLiveAuth) {
-            // In live Supabase mode, if session restoration returns null/error, clear stale session profile
+          } else if (isLiveAuth && !import.meta.env.DEV) {
+            // In live production mode, if session restoration returns null/error, clear stale session profile
             localStorage.removeItem(AUTH_STORAGE_KEY);
             if (isMounted) setCurrentUser(null);
             setIsLoading(false);
@@ -532,7 +532,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const switchDemoRole = async (role: UserRole): Promise<void> => {
-    if (isLiveAuth) {
+    if (isLiveAuth && !import.meta.env.DEV) {
       if (role === 'customer') {
         await supabase.auth.signOut();
         LaundryService.clearUserOperationalCache();
