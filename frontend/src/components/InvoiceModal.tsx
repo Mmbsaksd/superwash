@@ -27,12 +27,12 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
   // Authorization check: Customer can only view their own invoice; staff (manager, owner, delivery) can view for store operations
   const isOwnerOrManager = currentUser?.role === 'owner' || currentUser?.role === 'manager';
   const isDeliveryStaff = currentUser?.role === 'delivery' && (order.assigned_pickup_id === currentUser.id || order.assigned_delivery_id === currentUser.id);
-  const isAuthorizedCustomer = !currentUser || currentUser.role === 'customer'
-    ? (currentUser?.id === order.customer_id ||
-       (currentUser?.phone && order.customer_phone && currentUser.phone.slice(-10) === order.customer_phone.slice(-10)))
+  const isAuthorizedCustomer = currentUser?.role === 'customer'
+    ? (currentUser.id === order.customer_id ||
+       Boolean(currentUser.phone && order.customer_phone && currentUser.phone.slice(-10) === order.customer_phone.slice(-10)))
     : false;
 
-  if (!isOwnerOrManager && !isDeliveryStaff && !isAuthorizedCustomer && currentUser) {
+  if (!isOwnerOrManager && !isDeliveryStaff && !isAuthorizedCustomer) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
         <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4 text-center">

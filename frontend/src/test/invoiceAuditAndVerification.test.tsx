@@ -114,6 +114,22 @@ describe('Invoice Audit, Visibility & Financial Integrity Verification', () => {
       expect(screen.queryByText('Billed To (Customer)')).toBeNull();
     });
 
+    it('blocks unauthenticated visitors without a valid session from accessing invoices', () => {
+      render(
+        <InvoiceModal
+          isOpen={true}
+          onClose={() => {}}
+          order={sampleOrder}
+          settings={mockSettings}
+          currentUser={null}
+        />
+      );
+
+      expect(screen.getByText('Access Restricted')).toBeDefined();
+      expect(screen.getByText(/You do not have permission to access invoices for this order/i)).toBeDefined();
+      expect(screen.queryByText('Billed To (Customer)')).toBeNull();
+    });
+
     it('permits store manager and store owner to inspect any customer invoice for operations', () => {
       render(
         <InvoiceModal
