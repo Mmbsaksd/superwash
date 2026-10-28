@@ -11,13 +11,14 @@ import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
 import { AssignStaffModal } from '../../components/AssignStaffModal';
 import { PaymentModal } from '../../components/PaymentModal';
 import { WeightEntryModal } from '../../components/WeightEntryModal';
+import { InvoiceModal } from '../../components/InvoiceModal';
 import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
 import {
   IndianRupee, Package, CheckCircle2,
   Users, Settings, Plus, RefreshCw,
   Search, Shield, Star, MessageSquareHeart,
   AlertCircle, X, Download, TrendingUp, TrendingDown, LogOut, Loader2,
-  Edit2, Trash2, TicketPercent
+  Edit2, Trash2, TicketPercent, FileText
 } from 'lucide-react';
 
 export const OwnerDashboard: React.FC = () => {
@@ -140,6 +141,7 @@ export const OwnerDashboard: React.FC = () => {
   const [assignmentType, setAssignmentType] = useState<'pickup' | 'delivery'>('pickup');
   const [paymentOrder, setPaymentOrder] = useState<Order | null>(null);
   const [weighingOrder, setWeighingOrder] = useState<Order | null>(null);
+  const [invoiceOrder, setInvoiceOrder] = useState<Order | null>(null);
 
   // Service Catalogue Management State
   const [isAddingService, setIsAddingService] = useState<boolean>(false);
@@ -1369,6 +1371,15 @@ export const OwnerDashboard: React.FC = () => {
                           Record Payment
                         </button>
                       )}
+
+                      <button
+                        onClick={() => setInvoiceOrder(order)}
+                        className="py-1.5 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl font-bold text-[11px] flex items-center gap-1"
+                        title="View & Print Official Invoice / Bill"
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                        <span>Invoice</span>
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -3319,6 +3330,22 @@ export const OwnerDashboard: React.FC = () => {
             setWeighingOrder(null);
           }}
           managerName={currentUser?.full_name || 'Owner'}
+        />
+      )}
+
+      {/* Invoice Modal */}
+      {invoiceOrder && (
+        <InvoiceModal
+          order={invoiceOrder}
+          isOpen={!!invoiceOrder}
+          onClose={() => setInvoiceOrder(null)}
+          linkedOrders={(() => {
+            const batchMatch = invoiceOrder.notes?.match(/\[Linked Batch ([^:\]]+)/);
+            const batchId = batchMatch ? batchMatch[1] : null;
+            return batchId ? orders.filter((o) => o.notes?.includes(batchId)) : [invoiceOrder];
+          })()}
+          settings={settings}
+          currentUser={currentUser}
         />
       )}
 

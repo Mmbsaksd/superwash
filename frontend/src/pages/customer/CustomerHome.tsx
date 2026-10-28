@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { Order, CustomerAddress, PickupSlot, BusinessSettings, OrderFeedback, LaundryServiceItem } from '../../types';
+import { Order, CustomerAddress, PickupSlot, BusinessSettings, OrderFeedback, LaundryServiceItem, Coupon } from '../../types';
 import { LaundryService, DEFAULT_SETTINGS } from '../../services/laundryService';
 import { supabase } from '../../services/supabase';
 import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
 import { PaymentModal } from '../../components/PaymentModal';
 import { FeedbackModal } from '../../components/FeedbackModal';
+import { InvoiceModal } from '../../components/InvoiceModal';
 import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
 import { MapLocationPicker } from '../../components/MapLocationPicker';
 import { formatCustomerError } from '../../utils/errorHandling';
@@ -26,7 +27,7 @@ import {
   QrCode, ArrowRight, User, Star, MessageSquareHeart,
   ShieldCheck, RefreshCw, LogOut, X, Truck, Scale, Package, Lock,
   AlertTriangle, Loader2, Edit2, Trash2, Navigation,
-  TicketPercent, Tag
+  TicketPercent, Tag, Printer, FileText
 } from 'lucide-react';
 
 const CONFIRMED_ORDER_KEY = 'superwash_last_confirmed_order';
@@ -147,8 +148,11 @@ export const CustomerHome: React.FC = () => {
     discount_type: 'percentage' | 'fixed';
     discount_value: number;
     discount_paise: number;
+    min_order_paise?: number;
+    max_discount_paise?: number | null;
     description?: string;
   } | null>(null);
+  const [availablePromotions, setAvailablePromotions] = useState<Coupon[]>([]);
   const [couponValidationLoading, setCouponValidationLoading] = useState<boolean>(false);
   const [couponError, setCouponError] = useState<string | null>(null);
   const [couponSuccessMessage, setCouponSuccessMessage] = useState<string | null>(null);
@@ -239,6 +243,7 @@ export const CustomerHome: React.FC = () => {
   // Modals
   const [selectedPaymentOrder, setSelectedPaymentOrder] = useState<Order | null>(null);
   const [selectedFeedbackOrder, setSelectedFeedbackOrder] = useState<Order | null>(null);
+  const [selectedInvoiceOrder, setSelectedInvoiceOrder] = useState<Order | null>(null);
 
   const handleTabChange = (tab: 'book' | 'current' | 'history' | 'addresses' | 'contact') => {
     if (tab === 'book') {
@@ -753,14 +758,16 @@ export const CustomerHome: React.FC = () => {
     setIsLoading(true);
     setDataLoadError(null);
     try {
-      const [s, sl, ords, srv] = await Promise.all([
+      const [s, sl, ords, srv, activeCoupons] = await Promise.all([
         LaundryService.getSettings(),
         LaundryService.getPickupSlots(),
         currentUser ? LaundryService.getCustomerOrders(currentUser.id, currentUser.phone) : [],
-        LaundryService.getServices(false)
+        LaundryService.getServices(false),
+        LaundryService.getCoupons(false)
       ]);
       setSettings(s);
       setServices(srv || []);
+      setAvailablePromotions(activeCoupons || []);
       if (srv && srv.length > 0) {
         setSelectedServiceIds((prev) => (prev.length > 0 ? prev : [srv[0].id]));
       }
@@ -958,6 +965,13 @@ export const CustomerHome: React.FC = () => {
           notes: batchNote,
           coupon_code: couponToApply ? appliedCoupon?.code : undefined,
           discount_paise: couponToApply ? appliedCoupon?.discount_paise : 0,
+          coupon_snapshot: couponToApply && appliedCoupon ? {
+            code: appliedCoupon.code,
+            discount_type: appliedCoupon.discount_type,
+            discount_value: appliedCoupon.discount_value,
+            min_order_paise: appliedCoupon.min_order_paise,
+            max_discount_paise: appliedCoupon.max_discount_paise
+          } : null,
           client_submission_id: currentSubId
         });
         createdOrders.push(order);
@@ -1228,9 +1242,9 @@ export const CustomerHome: React.FC = () => {
   const pricePerKg = serviceRateStr;
   const minWeight = effectiveMinWeight.toString();
 
-  const handleApplyCoupon = async (e?: React.FormEvent) => {
+  const handleApplyCoupon = async (codeOverride?: string, e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const code = couponCodeInput.trim().toUpperCase();
+    const code = (codeOverride || couponCodeInput).trim().toUpperCase();
     if (!code) {
       setCouponError('Please enter a coupon code.');
       return;
@@ -1258,9 +1272,11 @@ export const CustomerHome: React.FC = () => {
         discount_type: valResult.discount_type || 'fixed',
         discount_value: valResult.discount_value || 0,
         discount_paise: valResult.discount_paise,
+        min_order_paise: valResult.min_order_paise,
         description: valResult.reason
       });
-      setCouponSuccessMessage(`Coupon "${valResult.code}" applied! Save ₹${(valResult.discount_paise / 100).toFixed(0)} at scale weigh-in.`);
+      setCouponCodeInput(valResult.code);
+      setCouponSuccessMessage(`Coupon "${valResult.code}" attached! Estimated discount of up to ₹${(valResult.discount_paise / 100).toFixed(0)} (pending final scale weight verification at store intake).`);
     } catch (err: any) {
       setCouponError(err.message || 'Failed to validate coupon');
       setAppliedCoupon(null);
@@ -1971,65 +1987,143 @@ export const CustomerHome: React.FC = () => {
                   </div>
                 </div>
 
-                {/* 5. Coupon / Promo Code Input */}
-                <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-2 text-xs">
+                {/* 5. Promotional Offers & Coupon Section */}
+                <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3 text-xs">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                      <TicketPercent className="w-4 h-4 text-brand-600" /> Apply Coupon / Promo Code
+                      <TicketPercent className="w-4 h-4 text-brand-600" /> Promotional Offers & Coupons
                     </label>
-                    {appliedCoupon && (
+                    {appliedCoupon ? (
                       <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
-                        Applied
+                        Offer Attached
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-semibold text-slate-400">
+                        Pre-Booking Only
                       </span>
                     )}
                   </div>
+
                   {appliedCoupon ? (
-                    <div className="flex items-center justify-between bg-white border border-emerald-200 p-2.5 rounded-xl">
-                      <div className="flex items-center gap-2">
-                        <Tag className="w-4 h-4 text-emerald-600 shrink-0" />
-                        <div>
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-mono font-bold text-slate-900 tracking-wider">{appliedCoupon.code}</span>
-                            <span className="text-[10px] bg-emerald-100 text-emerald-700 font-bold px-1.5 py-0.5 rounded">
-                              {appliedCoupon.discount_type === 'percentage'
-                                ? `${appliedCoupon.discount_value}% OFF`
-                                : `₹${(appliedCoupon.discount_paise / 100).toFixed(0)} OFF`}
-                            </span>
+                    <div className="bg-white border border-emerald-300 rounded-2xl p-3.5 space-y-2 shadow-xs">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-start gap-2.5">
+                          <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0 mt-0.5">
+                            <Tag className="w-4 h-4" />
                           </div>
-                          {appliedCoupon.description && (
-                            <p className="text-[10px] text-slate-500 mt-0.5">{appliedCoupon.description}</p>
-                          )}
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono font-black text-slate-900 text-sm tracking-wider">
+                                {appliedCoupon.code}
+                              </span>
+                              <span className="text-[10px] bg-emerald-100 text-emerald-800 font-black px-2 py-0.5 rounded-full">
+                                {appliedCoupon.discount_type === 'percentage'
+                                  ? `${appliedCoupon.discount_value}% OFF`
+                                  : `₹${(appliedCoupon.discount_paise / 100).toFixed(0)} OFF`}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-600 mt-1 font-medium">
+                              Estimated Savings: <span className="font-bold text-emerald-700">Up to ₹{(appliedCoupon.discount_paise / 100).toFixed(0)}</span>
+                            </p>
+                            <p className="text-[10px] text-amber-700 font-medium mt-0.5 flex items-center gap-1">
+                              <span>⏳</span> Final savings verified upon digital scale weighing at intake hub.
+                            </p>
+                            {appliedCoupon.min_order_paise ? (
+                              <p className="text-[10px] text-slate-500 mt-0.5">
+                                Condition: Requires final measured subtotal of min. ₹{(appliedCoupon.min_order_paise / 100).toFixed(0)}.
+                              </p>
+                            ) : null}
+                          </div>
                         </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleRemoveCoupon}
-                        className="text-xs font-bold text-rose-600 hover:text-rose-700 px-2 py-1 rounded hover:bg-rose-50 transition cursor-pointer"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="space-y-1.5">
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          value={couponCodeInput}
-                          onChange={(e) => setCouponCodeInput(e.target.value.toUpperCase())}
-                          placeholder="e.g. WELCOME50 or EXPREZ10"
-                          className="flex-1 px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono uppercase text-xs bg-white"
-                          data-testid="coupon-code-input"
-                        />
                         <button
                           type="button"
-                          onClick={() => handleApplyCoupon()}
-                          disabled={couponValidationLoading || !couponCodeInput.trim()}
-                          className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-sm transition cursor-pointer disabled:opacity-50"
-                          data-testid="apply-coupon-btn"
+                          onClick={handleRemoveCoupon}
+                          className="text-xs font-bold text-rose-600 hover:text-rose-700 px-2.5 py-1 rounded-lg hover:bg-rose-50 transition cursor-pointer"
                         >
-                          {couponValidationLoading ? 'Applying...' : 'Apply'}
+                          Remove
                         </button>
                       </div>
+                      <div className="text-[10px] text-slate-500 bg-slate-50 p-2 rounded-xl border border-slate-100">
+                        🔒 Offer locked for this order. As per our pre-booking promotion policy, terms are snapshotted and will be applied at weighing.
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {/* Active Advertised Offers for 1-Tap Application */}
+                      {availablePromotions.length > 0 && (
+                        <div className="space-y-2">
+                          <span className="text-[11px] font-bold text-slate-600 block">
+                            Featured Offers Available:
+                          </span>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {availablePromotions.map((promo) => {
+                              const isEligible = !promo.min_order_paise || combinedEstimatedSubtotalPaise >= promo.min_order_paise;
+                              return (
+                                <div
+                                  key={promo.id}
+                                  className="bg-white border border-slate-200 hover:border-brand-300 rounded-xl p-2.5 flex items-center justify-between gap-2 transition shadow-xs"
+                                >
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="font-mono font-bold text-xs text-brand-900 bg-brand-50 px-1.5 py-0.5 rounded border border-brand-200">
+                                        {promo.code}
+                                      </span>
+                                      <span className="text-[10px] font-bold text-emerald-700">
+                                        {promo.discount_type === 'percentage'
+                                          ? `${promo.discount_value}% OFF`
+                                          : `₹${(promo.discount_value / 100).toFixed(0)} OFF`}
+                                      </span>
+                                    </div>
+                                    <p className="text-[10px] text-slate-500 mt-1 truncate" title={promo.description}>
+                                      {promo.description || 'Promotional discount'}
+                                    </p>
+                                    {promo.min_order_paise ? (
+                                      <p className="text-[9px] text-amber-700 font-medium">
+                                        Min. ₹{(promo.min_order_paise / 100).toFixed(0)} (pending weighing)
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleApplyCoupon(promo.code)}
+                                    disabled={couponValidationLoading}
+                                    className="px-2.5 py-1.5 bg-brand-50 hover:bg-brand-600 text-brand-700 hover:text-white border border-brand-200 hover:border-brand-600 rounded-lg font-bold text-[11px] transition shrink-0 cursor-pointer disabled:opacity-50"
+                                  >
+                                    Apply
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Manual Code Input Field */}
+                      <div className="pt-1 border-t border-slate-200/60 space-y-1.5">
+                        <span className="text-[11px] text-slate-500 block">
+                          Have another promo code?
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={couponCodeInput}
+                            onChange={(e) => setCouponCodeInput(e.target.value.toUpperCase())}
+                            placeholder="Enter code (e.g. WELCOME50)"
+                            className="flex-1 px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono uppercase text-xs bg-white"
+                            data-testid="coupon-code-input"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleApplyCoupon()}
+                            disabled={couponValidationLoading || !couponCodeInput.trim()}
+                            className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-sm transition cursor-pointer disabled:opacity-50"
+                            data-testid="apply-coupon-btn"
+                          >
+                            {couponValidationLoading ? 'Applying...' : 'Apply'}
+                          </button>
+                        </div>
+                      </div>
+
                       {couponError && (
                         <p className="text-[11px] text-rose-600 font-semibold" data-testid="coupon-error-msg">
                           {couponError}
@@ -2040,6 +2134,10 @@ export const CustomerHome: React.FC = () => {
                           {couponSuccessMessage}
                         </p>
                       )}
+
+                      <p className="text-[10px] text-slate-400 italic">
+                        ℹ️ Pre-booking policy: Coupons must be applied before confirming pickup. Once confirmed, promotions cannot be added or changed.
+                      </p>
                     </div>
                   )}
                 </div>
@@ -2136,8 +2234,13 @@ export const CustomerHome: React.FC = () => {
                       </span>
                     </div>
                     <p className="text-[11px] text-cyan-100 leading-tight">
-                      Discount applied automatically upon weighing at intake hub.
+                      Estimated savings: Up to ₹{(appliedCoupon.discount_paise / 100).toFixed(0)} (Pending final scale weight verification). Final bill established upon store intake weighing.
                     </p>
+                    {appliedCoupon.min_order_paise ? (
+                      <p className="text-[10px] text-cyan-200">
+                        *Condition: Requires final order subtotal of min. ₹{(appliedCoupon.min_order_paise / 100).toFixed(0)}.
+                      </p>
+                    ) : null}
                   </div>
                 )}
 
@@ -2204,6 +2307,73 @@ export const CustomerHome: React.FC = () => {
         {/* ================= 2. TRACK ORDER / CURRENT ORDER ================= */}
         {activeTab === 'current' && (
           <div className="space-y-6">
+            {/* Multi-Service Linked Batch Switcher & Combined Overview */}
+            {(() => {
+              const batchMatch = currentActiveOrder?.notes?.match(/\[Linked Batch ([^:\]]+)/);
+              const batchId = batchMatch ? batchMatch[1] : null;
+              const linkedSiblings = batchId
+                ? orders.filter((o) => o.notes?.includes(batchId))
+                : [];
+              if (linkedSiblings.length <= 1) return null;
+
+              const combinedTotalPaise = linkedSiblings.reduce((sum, o) => {
+                if (o.order_status === 'cancelled') return sum;
+                return sum + (o.total_amount_paise !== null && o.total_amount_paise !== undefined
+                  ? o.total_amount_paise
+                  : Math.max(0, Math.round((o.price_per_kg_paise || 7900) * (o.min_weight_kg || 1)) - (o.discount_paise || 0)));
+              }, 0);
+
+              return (
+                <div className="bg-brand-50/80 border border-brand-200 rounded-3xl p-4 sm:p-5 space-y-3 shadow-sm">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-brand-900 flex items-center gap-1.5">
+                          <Sparkles className="w-4 h-4 text-brand-600" />
+                          Linked Pickup Appointment ({linkedSiblings.length} Services)
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-white text-brand-800 border border-brand-200">
+                          Batch: {batchId}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-brand-700 mt-0.5">
+                        These services share the scheduled pickup on {currentActiveOrder?.pickup_date} during {currentActiveOrder?.pickup_slot}.
+                      </p>
+                    </div>
+                    <div className="text-left sm:text-right">
+                      <span className="text-[10px] uppercase font-bold text-slate-500 block">Combined Total</span>
+                      <span className="text-base font-black text-brand-900">
+                        ₹{(combinedTotalPaise / 100).toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2 pt-1 border-t border-brand-200/60">
+                    <span className="text-[11px] font-bold text-slate-600 self-center mr-1">Switch Service:</span>
+                    {linkedSiblings.map((sib) => {
+                      const isCurrent = sib.id === currentActiveOrder?.id;
+                      return (
+                        <button
+                          key={sib.id}
+                          type="button"
+                          onClick={() => setBookingSuccessOrder(sib)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                            isCurrent
+                              ? 'bg-brand-600 text-white shadow-sm ring-2 ring-brand-600/30'
+                              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
+                          }`}
+                        >
+                          <span>#{sib.order_number}</span>
+                          <span className="opacity-90 font-medium">({sib.service_name || 'Laundry'})</span>
+                          <StatusBadge status={sib.order_status} size="sm" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+
             {currentActiveOrder ? (
               <div className="bg-white rounded-3xl border border-slate-200 p-6 sm:p-8 space-y-6 shadow-sm">
                 {/* Header */}
@@ -2432,8 +2602,24 @@ export const CustomerHome: React.FC = () => {
                       </span>
                     </div>
 
+                    {currentActiveOrder.coupon_code && (
+                      <div className="flex justify-between items-center text-slate-700 bg-emerald-50 border border-emerald-200 px-3 py-2 rounded-xl">
+                        <div className="flex items-center gap-1.5">
+                          <Tag className="w-3.5 h-3.5 text-emerald-600" />
+                          <span className="font-semibold text-emerald-950">
+                            Coupon Redeemed: <span className="font-mono font-black">{currentActiveOrder.coupon_code}</span>
+                          </span>
+                        </div>
+                        <span className="font-bold text-emerald-700">
+                          {currentActiveOrder.total_amount_paise !== null && currentActiveOrder.total_amount_paise !== undefined
+                            ? `-₹${((currentActiveOrder.discount_paise || 0) / 100).toFixed(2)}`
+                            : `Est. -₹${((currentActiveOrder.discount_paise || 0) / 100).toFixed(2)} (Pending scale weigh-in)`}
+                        </span>
+                      </div>
+                    )}
+
                     <div className="flex justify-between items-center pt-2 border-t border-slate-200">
-                      <span className="font-bold text-slate-900 text-sm">Total Amount:</span>
+                      <span className="font-bold text-slate-900 text-sm">Final Payable Total:</span>
                       <span className="font-black text-brand-600 text-lg">
                         {currentActiveOrder.total_amount_paise !== null && currentActiveOrder.total_amount_paise !== undefined
                           ? `₹${(currentActiveOrder.total_amount_paise / 100).toFixed(2)}`
@@ -2446,15 +2632,28 @@ export const CustomerHome: React.FC = () => {
                       <PaymentBadge status={currentActiveOrder.payment_status} />
                     </div>
 
-                    {currentActiveOrder.total_amount_paise && currentActiveOrder.payment_status !== 'paid' && (
+                    <div className="pt-2 flex flex-col sm:flex-row gap-2">
                       <button
-                        onClick={() => setSelectedPaymentOrder(currentActiveOrder)}
-                        className="w-full mt-2 py-2.5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-2"
+                        type="button"
+                        onClick={() => setSelectedInvoiceOrder(currentActiveOrder)}
+                        className="flex-1 py-2.5 bg-white hover:bg-slate-100 text-slate-800 font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer border border-slate-200 shadow-xs"
+                        data-testid="view-invoice-btn"
                       >
-                        <QrCode className="w-4 h-4" />
-                        <span>Pay via UPI / QR Code (₹{((currentActiveOrder.total_amount_paise - currentActiveOrder.paid_amount_paise) / 100).toFixed(2)} due)</span>
+                        <Printer className="w-3.5 h-3.5 text-slate-600" />
+                        <span>{currentActiveOrder.measured_weight !== null && currentActiveOrder.measured_weight !== undefined ? 'View Invoice / Bill' : 'View Booking Estimate'}</span>
                       </button>
-                    )}
+
+                      {currentActiveOrder.total_amount_paise && currentActiveOrder.payment_status !== 'paid' && (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedPaymentOrder(currentActiveOrder)}
+                          className="flex-1 py-2.5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer"
+                        >
+                          <QrCode className="w-4 h-4" />
+                          <span>Pay via UPI (₹{((currentActiveOrder.total_amount_paise - currentActiveOrder.paid_amount_paise) / 100).toFixed(2)})</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {/* Pickup & Courier Info Card */}
@@ -2624,6 +2823,16 @@ export const CustomerHome: React.FC = () => {
                         <PaymentBadge status={ord.payment_status} />
 
                         <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedInvoiceOrder(ord)}
+                            className="text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 px-2.5 py-1 rounded-lg font-bold text-[11px] flex items-center gap-1 cursor-pointer"
+                            data-testid={`history-invoice-btn-${ord.order_number}`}
+                          >
+                            <Printer className="w-3 h-3 text-slate-500" />
+                            <span>Invoice</span>
+                          </button>
+
                           {ord.order_status === 'delivered' && (
                             <button
                               onClick={() => setSelectedFeedbackOrder(ord)}
@@ -2800,6 +3009,22 @@ export const CustomerHome: React.FC = () => {
             setFeedbackMap((prev) => ({ ...prev, [fb.order_id]: fb }));
             setSelectedFeedbackOrder(null);
           }}
+        />
+      )}
+
+      {/* Customer Invoice Modal */}
+      {selectedInvoiceOrder && (
+        <InvoiceModal
+          order={selectedInvoiceOrder}
+          isOpen={!!selectedInvoiceOrder}
+          onClose={() => setSelectedInvoiceOrder(null)}
+          linkedOrders={(() => {
+            const batchMatch = selectedInvoiceOrder.notes?.match(/\[Linked Batch ([^:\]]+)/);
+            const batchId = batchMatch ? batchMatch[1] : null;
+            return batchId ? orders.filter((o) => o.notes?.includes(batchId)) : [selectedInvoiceOrder];
+          })()}
+          settings={settings}
+          currentUser={currentUser}
         />
       )}
 

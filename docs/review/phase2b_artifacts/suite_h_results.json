@@ -1,0 +1,17 @@
+[
+    {
+        "test_id":  "H1_CONCURRENT_WEIGHING",
+        "status":  "PASS",
+        "details":  "Both sessions committed with 0 deadlocks; exact pricing synchronized"
+    },
+    {
+        "test_id":  "H2_WEIGH_VS_CANCEL",
+        "status":  "PASS",
+        "details":  "Operations serialized cleanly, atomic discount revocation confirmed"
+    },
+    {
+        "test_id":  "H3_LOCK_RELEASE_ON_ROLLBACK",
+        "status":  "PASS",
+        "details":  "Advisory lock released on abort, Session 2 immediately succeeded"
+    }
+]

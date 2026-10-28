@@ -1,0 +1,8 @@
+{
+    "suite":  "Suite I: Randomized Property Regression",
+    "total_iterations":  20,
+    "random_seed":  42,
+    "passed":  20,
+    "failed":  0,
+    "status":  "PASS"
+}

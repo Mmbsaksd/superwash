@@ -1,0 +1,1220 @@
+-- ==============================================================================
+-- SuperWash Exprez — DRAFT REVIEW ONLY (NON-EXECUTABLE IN CURRENT PHASE)
+-- Path: docs/review/20261028100000_secure_weighing_coupon_snapshot.sql.draft
+-- Purpose: Review draft for Stage 5B Phase 1J (Resolve Final Design Contradictions)
+-- Notice: DO NOT apply to any database or rename to active migration until approved.
+-- Concurrency Status: Linked-order concurrency is NOT YET PRODUCTION-READY pending
+--                     cancellation-side batch advisory lock integration in Phase 2.
+-- Execution Status: SQL execution remains UNVERIFIED on live database in this review phase;
+--                   requires isolated PostgreSQL integration testing prior to deployment.
+-- ==============================================================================
+--
+-- ------------------------------------------------------------------------------
+-- STAGE 5B PHASE 1J FINAL DESIGN SPECIFICATION: RECONCILED SYSTEM ARCHITECTURE
+-- ------------------------------------------------------------------------------
+--
+-- 1. AUTHORITATIVE PRICING ALGORITHM ACROSS ALL 5 PRICING UNITS
+--    - Measured Orders (Authoritative Scale Calculation):
+--      * per_kg:
+--          billable_weight = GREATEST(p_measured_weight, COALESCE(min_weight_kg, 0.00))
+--          laundry_charge_paise = ROUND(billable_weight * price_per_kg_paise)
+--      * per_piece:
+--          billable_weight = ROUND(p_measured_weight)
+--          laundry_charge_paise = ROUND(billable_weight * price_per_kg_paise)
+--      * per_item:
+--          billable_weight = ROUND(p_measured_weight)
+--          laundry_charge_paise = ROUND(billable_weight * price_per_kg_paise)
+--      * per_load:
+--          billable_weight = GREATEST(1, ROUND(COALESCE(p_measured_weight, 1)))
+--          laundry_charge_paise = ROUND(billable_weight * price_per_kg_paise)
+--      * per_order:
+--          billable_weight = 1.00
+--          laundry_charge_paise = price_per_kg_paise
+--      * Unknown / fallback unit: defaults to per_kg logic.
+--    - Unweighed Sibling Orders (Agreed Booking Estimate):
+--        estimated_charge_paise = GREATEST(0, ROUND(COALESCE(NULLIF(o.price_per_kg_paise, 0), 7900) * COALESCE(NULLIF(o.min_weight_kg, 0.0), 1.0)))
+--    - Financial Component Breakdown:
+--        L_i   = Laundry Charge Before Discount (calculated base charge above)
+--        S_bat = Coupon-Eligible Batch Subtotal = SUM(L_i) across active non-cancelled orders in batch
+--        D_ord = Discount Allocated ONLY to the coupon-bearing order = LEAST(raw_discount, L_coupon)
+--        C_del = Delivery Charge (delivery_charge_paise, excluded from coupon eligibility)
+--        T_ord = Final Amount Payable = GREATEST(0, L_i - D_ord + C_del)
+--    - Note: For already-weighed siblings, read the stored laundry charge:
+--        GREATEST(0, o.total_amount_paise + COALESCE(o.discount_paise, 0) - COALESCE(o.delivery_charge_paise, 0))
+--        Do not re-infer via raw weight which could corrupt per_piece or per_load charges.
+--
+-- 2. RECONCILED LEGACY ORDER DECISION MATRIX
+--    Target-order weighing, sibling weighing, and cancellation strictly follow one policy:
+--    * State 1: snapshot valid, code matches, disc >= 0, unmeasured -> Provisional new booking.
+--    * State 2: snapshot valid, code matches, disc >= 0, measured -> Authoritative new order. Dynamic recalculation on sibling events.
+--    * State 3: snapshot malformed -> Abort with exception. Prevents overwriting with zero or applying false discounts.
+--    * State 4: snapshot NULL, code NULL, disc = 0, unmeasured -> Provisional standard non-coupon order.
+--    * State 5: snapshot NULL, code NULL, disc = 0, measured -> Authoritative non-coupon order. Contributes actual laundry charge to batch.
+--    * State 6: snapshot NULL, code non-NULL, disc > 0, unmeasured -> Provisional grandfathered discount. Never backfills from public.coupons.
+--    * State 7: snapshot NULL, code non-NULL, disc > 0, measured -> Authoritative grandfathered discount. Clamps to new laundry charge:
+--               discount_paise := LEAST(COALESCE(OLD.discount_paise, 0), laundry_charge_paise). Never expands or recalculates against coupons.
+--    * State 8: snapshot NULL, code non-NULL, disc = 0 -> Inactive/unapplied legacy coupon. Snapshot is NOT reconstructed. Discount remains 0.
+--    * State 9: snapshot NULL, code NULL, disc > 0 -> Anomalous legacy discount. Preserves clamped discount; flags audit log for review.
+--    * Ambiguous data (missing price_per_kg_paise <= 0 or unparseable legacy records) abort with recoverable exceptions requiring manual review.
+--
+-- 3. PAYMENT POLICY RECOMMENDATION & WORKFLOW IMPACT
+--    - PRODUCT BEHAVIOUR CHANGE (Requires Explicit Approval):
+--        Disable self-service final digital customer payment on multi-service bookings until
+--        every active service is weighed and the batch invoice is final (isFullyWeighed = true).
+--    - Affected Workflows:
+--        * Customer Home Portal: Digital checkout button hidden/disabled during provisional state.
+--        * Doorstep Courier: Records pickup scale weight; unweighed siblings are not paid online at doorstep.
+--        * Store Manager: Can record offline deposits/advances if necessary; invoice remains marked provisional.
+--        * Owner Accounting: Official bill and tax receipt lock only upon full weighing.
+--    - Invariant: An order total cannot be reduced below paid_amount_paise without an explicit refund workflow.
+--        If sibling weighing/cancellation reduces Order 1 total below paid amount, transaction ROLLS BACK.
+--        No automatic refunds, credit balances, or payment adjustments are synthesized.
+--
+-- 4. PERMISSIONS RECONCILIATION & CONCURRENCY MODEL
+--    - Clear Separation of Security Layers:
+--        * SQL Column Privileges: 'authenticated' role has UPDATE only on operational workflow columns.
+--          discount_paise, coupon_snapshot, and paid_amount_paise are NOT granted to 'authenticated'.
+--          total_amount_paise is granted in 20261022180000 but guarded by business logic.
+--        * RLS Row Access: Restricts update operations to managers/owners or assigned couriers.
+--        * Trigger Protection: enforce_order_workflow_integrity protects payment fields and lifecycle.
+--          enforce_order_coupon_snapshot_immutability ensures snapshot immutability on UPDATE.
+--        * Secure RPCs: record_store_intake_weight, record_courier_pickup_collection, and
+--          cancel_order_with_batch_sync execute as SECURITY DEFINER (owner postgres).
+--    - Concurrency & Deadlock Reality:
+--        Shared batch advisory locks (pg_advisory_xact_lock) and deterministic row ordering
+--        (ORDER BY id ASC FOR UPDATE) substantially mitigate lock-inversion deadlock risks within a batch.
+--        However, they DO NOT prove absolute deadlock freedom across multi-table operations.
+--        Isolated PostgreSQL concurrency testing under multi-client load is mandatory.
+--    - Synchronized Cancellation: Direct client updates to order_status = 'cancelled' must be
+--      blocked at rollout, ensuring all cancellations pass through cancel_order_with_batch_sync.
+--
+-- 5. FINAL INVOICE BEHAVIOUR
+--    - Maturity Status:
+--        PROVISIONAL ('Pro-Forma Booking Estimate') if ANY active order in batch has measured_weight IS NULL.
+--        FINAL ('Official Bill & Tax Invoice') ONLY when ALL active orders have measured_weight IS NOT NULL.
+--    - UI Controls:
+--        Display clear provisional estimate banner and disable final online settlement when provisional.
+--
+-- ==============================================================================
+
+BEGIN;
+
+-- ------------------------------------------------------------------------------
+-- 1. SCHEMA EXTENSION: PERSISTED BOOKING-TIME COUPON SNAPSHOT
+-- ------------------------------------------------------------------------------
+-- Extends public.orders with an immutable server-controlled promotional snapshot.
+-- This ensures promotional terms agreed at booking time are preserved regardless
+-- of subsequent coupon deactivation, editing, or deletion in public.coupons.
+ALTER TABLE public.orders 
+ADD COLUMN IF NOT EXISTS coupon_snapshot JSONB DEFAULT NULL;
+
+COMMENT ON COLUMN public.orders.coupon_snapshot IS 
+'Authoritative promotional terms snapshot locked at booking time. Immutable once created. NULL for legacy orders or bookings without coupons.';
+
+-- ------------------------------------------------------------------------------
+-- 2. ENFORCE DATABASE-LEVEL SNAPSHOT IMMUTABILITY
+-- ------------------------------------------------------------------------------
+-- Prevents alteration, addition, or clearing of a promotional terms snapshot on UPDATE.
+-- Preserves existing coupon_snapshot exactly, including legacy rows where OLD is NULL.
+-- Rejects NULL-to-value, value-to-NULL, and value-to-different-value changes.
+-- Permits initial snapshot assignment during booking INSERT (trigger fires BEFORE UPDATE only).
+-- Permits all operational workflow updates when coupon_snapshot remains unchanged.
+CREATE OR REPLACE FUNCTION public.enforce_order_coupon_snapshot_immutability()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.coupon_snapshot IS DISTINCT FROM OLD.coupon_snapshot THEN
+        RAISE EXCEPTION 'Security violation: coupon_snapshot is immutable and cannot be modified on UPDATE (order #%).',
+            OLD.order_number;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp;
+
+ALTER FUNCTION public.enforce_order_coupon_snapshot_immutability() OWNER TO postgres;
+
+REVOKE ALL ON FUNCTION public.enforce_order_coupon_snapshot_immutability() FROM PUBLIC, anon;
+
+DROP TRIGGER IF EXISTS trigger_enforce_coupon_snapshot_immutability ON public.orders;
+CREATE TRIGGER trigger_enforce_coupon_snapshot_immutability
+    BEFORE UPDATE ON public.orders
+    FOR EACH ROW
+    EXECUTE FUNCTION public.enforce_order_coupon_snapshot_immutability();
+
+-- ------------------------------------------------------------------------------
+-- 3. UPDATE CREATE_BOOKING_IDEMPOTENT (CORE 14-PARAMETER FUNCTION)
+-- ------------------------------------------------------------------------------
+-- Modifies the core 14-parameter booking RPC to atomically build and persist
+-- coupon_snapshot inside the same transactional order insertion block.
+CREATE OR REPLACE FUNCTION public.create_booking_idempotent(
+    p_client_submission_id TEXT,
+    p_customer_name TEXT,
+    p_customer_phone TEXT,
+    p_pickup_address TEXT,
+    p_pickup_landmark TEXT,
+    p_pickup_pincode TEXT,
+    p_pickup_date DATE,
+    p_pickup_slot TEXT,
+    p_service_id UUID,
+    p_pickup_latitude NUMERIC,
+    p_pickup_longitude NUMERIC,
+    p_notes TEXT,
+    p_coupon_code TEXT,
+    p_discount_paise INTEGER
+)
+RETURNS public.orders AS $$
+DECLARE
+    v_caller_id UUID;
+    v_existing_order public.orders;
+    v_new_order public.orders;
+    v_service public.services;
+    v_service_id UUID;
+    v_service_name TEXT;
+    v_pricing_unit TEXT;
+    v_unit_price_paise INTEGER;
+    v_min_weight_kg NUMERIC(4, 2);
+    v_delivery_charge_paise INTEGER := 0;
+    v_settings public.business_settings;
+    v_clean_phone TEXT;
+    v_slot public.pickup_slots;
+    v_slot_capacity INTEGER;
+    v_current_slot_bookings INTEGER := 0;
+    v_constraint_name TEXT;
+    v_payload_fingerprint TEXT;
+    v_coupon public.coupons;
+    v_clean_coupon_code TEXT := NULL;
+    v_authoritative_discount_paise INTEGER := 0;
+    v_estimated_subtotal INTEGER := 0;
+    v_prior_coupon_redemptions INTEGER := 0;
+    v_prior_delivered_orders INTEGER := 0;
+    v_coupon_snapshot JSONB := NULL;
+BEGIN
+    -- 1. Caller Authentication Validation
+    v_caller_id := auth.uid();
+    IF v_caller_id IS NULL THEN
+        RAISE EXCEPTION 'Authentication required: You must be signed in to create a pickup booking.';
+    END IF;
+
+    -- 2. Submission Identity Validation
+    IF p_client_submission_id IS NULL OR TRIM(p_client_submission_id) = '' THEN
+        RAISE EXCEPTION 'Invalid request: client_submission_id is required for idempotent booking submission.';
+    END IF;
+
+    IF LENGTH(p_client_submission_id) > 128 THEN
+        RAISE EXCEPTION 'Invalid request: client_submission_id exceeds maximum permitted length.';
+    END IF;
+
+    -- 3. Sanitize and Validate Inputs
+    v_clean_phone := REGEXP_REPLACE(COALESCE(p_customer_phone, ''), '[^0-9]', '', 'g');
+    IF LENGTH(v_clean_phone) < 10 THEN
+        RAISE EXCEPTION 'Please provide a valid 10-digit Indian mobile number.';
+    END IF;
+
+    IF p_pickup_address IS NULL OR TRIM(p_pickup_address) = '' THEN
+        RAISE EXCEPTION 'Pickup address is required.';
+    END IF;
+
+    IF p_pickup_pincode IS NULL OR TRIM(p_pickup_pincode) = '' THEN
+        RAISE EXCEPTION 'Pickup PIN code is required.';
+    END IF;
+
+    IF p_pickup_date < (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::DATE THEN
+        RAISE EXCEPTION 'Pickup date cannot be in the past.';
+    END IF;
+
+    IF p_pickup_slot IS NULL OR TRIM(p_pickup_slot) = '' THEN
+        RAISE EXCEPTION 'Pickup time slot is required.';
+    END IF;
+
+    -- 4. Business Settings & Service Resolution (Server-Authoritative Pricing)
+    SELECT * INTO v_settings
+    FROM public.business_settings
+    LIMIT 1;
+
+    IF FOUND THEN
+        v_delivery_charge_paise := COALESCE(v_settings.delivery_charge_paise, 0);
+    END IF;
+
+    IF p_service_id IS NOT NULL THEN
+        SELECT * INTO v_service
+        FROM public.services
+        WHERE id = p_service_id;
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Selected service was not found in the active catalog.';
+        END IF;
+
+        IF NOT v_service.is_active THEN
+            RAISE EXCEPTION 'The selected service is currently deactivated and not accepting new bookings.';
+        END IF;
+
+        v_service_id := v_service.id;
+        v_service_name := v_service.name;
+        v_pricing_unit := v_service.pricing_unit;
+        v_unit_price_paise := COALESCE(v_service.unit_price_paise, 8000);
+        v_min_weight_kg := COALESCE(v_service.min_weight_kg, 3.00);
+    ELSE
+        SELECT * INTO v_service
+        FROM public.services
+        WHERE is_active = true
+        ORDER BY display_order ASC, created_at ASC
+        LIMIT 1;
+
+        IF FOUND THEN
+            v_service_id := v_service.id;
+            v_service_name := v_service.name;
+            v_pricing_unit := v_service.pricing_unit;
+            v_unit_price_paise := COALESCE(v_service.unit_price_paise, 8000);
+            v_min_weight_kg := COALESCE(v_service.min_weight_kg, 3.00);
+        ELSE
+            v_service_id := NULL;
+            v_service_name := 'Wash & Fold (Normal)';
+            v_pricing_unit := 'per_kg';
+            v_unit_price_paise := COALESCE(v_settings.price_per_kg_paise, 8000);
+            v_min_weight_kg := COALESCE(v_settings.min_weight_kg, 3.00);
+        END IF;
+    END IF;
+
+    -- Compute deterministic server-side payload fingerprint
+    v_clean_coupon_code := NULLIF(UPPER(TRIM(COALESCE(p_coupon_code, ''))), '');
+    v_payload_fingerprint := md5(
+        v_clean_phone || '|' ||
+        LOWER(TRIM(COALESCE(p_customer_name, ''))) || '|' ||
+        LOWER(TRIM(COALESCE(p_pickup_address, ''))) || '|' ||
+        LOWER(TRIM(COALESCE(p_pickup_landmark, ''))) || '|' ||
+        TRIM(COALESCE(p_pickup_pincode, '')) || '|' ||
+        p_pickup_date::text || '|' ||
+        LOWER(TRIM(COALESCE(p_pickup_slot, ''))) || '|' ||
+        COALESCE(v_service_id::text, '') || '|' ||
+        COALESCE(ROUND(p_pickup_latitude, 6)::text, '') || '|' ||
+        COALESCE(ROUND(p_pickup_longitude, 6)::text, '') || '|' ||
+        LOWER(TRIM(COALESCE(p_notes, ''))) || '|' ||
+        COALESCE(v_clean_coupon_code, '')
+    );
+
+    -- 5. Idempotency Pre-Check (Return existing order without double-redemption)
+    SELECT * INTO v_existing_order
+    FROM public.orders
+    WHERE client_submission_id = p_client_submission_id;
+
+    IF FOUND THEN
+        IF v_existing_order.customer_id IS DISTINCT FROM v_caller_id THEN
+            RAISE EXCEPTION 'Security violation: Submission ID conflict detected.';
+        END IF;
+
+        IF (v_existing_order.client_submission_fingerprint IS NOT NULL
+            AND v_existing_order.client_submission_fingerprint <> v_payload_fingerprint)
+           OR v_existing_order.customer_phone <> v_clean_phone
+           OR LOWER(TRIM(COALESCE(v_existing_order.customer_name, ''))) <> LOWER(TRIM(COALESCE(p_customer_name, '')))
+           OR v_existing_order.pickup_date <> p_pickup_date
+           OR LOWER(TRIM(COALESCE(v_existing_order.pickup_slot, ''))) <> LOWER(TRIM(COALESCE(p_pickup_slot, '')))
+           OR TRIM(COALESCE(v_existing_order.pickup_pincode, '')) <> TRIM(COALESCE(p_pickup_pincode, ''))
+           OR LOWER(TRIM(COALESCE(v_existing_order.pickup_address, ''))) <> LOWER(TRIM(COALESCE(p_pickup_address, '')))
+           OR (v_service_id IS NOT NULL AND v_existing_order.service_id IS DISTINCT FROM v_service_id) THEN
+            RAISE EXCEPTION 'Idempotency conflict: client_submission_id "%" was already used for a booking with different details.', p_client_submission_id;
+        END IF;
+
+        RETURN v_existing_order;
+    END IF;
+
+    -- 6. Pickup Slot Validation
+    SELECT * INTO v_slot
+    FROM public.pickup_slots
+    WHERE name = TRIM(p_pickup_slot);
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Pickup slot "%" does not exist in the store schedule.', p_pickup_slot;
+    END IF;
+
+    IF NOT v_slot.is_active THEN
+        RAISE EXCEPTION 'Pickup slot "%" is currently deactivated and not accepting bookings.', p_pickup_slot;
+    END IF;
+
+    v_slot_capacity := COALESCE(v_slot.max_capacity, 15);
+
+    -- 7. Transaction-Level Advisory Lock for Capacity
+    PERFORM pg_advisory_xact_lock(
+        hashtext('slot_capacity_' || p_pickup_date::text || '_' || v_slot.name)
+    );
+
+    SELECT COUNT(*) INTO v_current_slot_bookings
+    FROM public.orders
+    WHERE pickup_date = p_pickup_date
+      AND pickup_slot = v_slot.name
+      AND order_status <> 'cancelled';
+
+    IF v_current_slot_bookings >= v_slot_capacity THEN
+        RAISE EXCEPTION 'The pickup slot "%" on % is fully booked (%/%). Please select another slot.',
+            v_slot.name, p_pickup_date, v_current_slot_bookings, v_slot_capacity;
+    END IF;
+
+    -- 8. Authoritative Coupon Validation & Snapshot Construction
+    IF v_clean_coupon_code IS NOT NULL THEN
+        SELECT * INTO v_coupon
+        FROM public.coupons
+        WHERE UPPER(TRIM(code)) = v_clean_coupon_code
+        FOR UPDATE;
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Coupon code "%" is invalid or does not exist.', p_coupon_code;
+        END IF;
+
+        IF NOT v_coupon.is_active THEN
+            RAISE EXCEPTION 'Coupon "%" is currently disabled.', p_coupon_code;
+        END IF;
+
+        IF v_coupon.valid_until IS NOT NULL AND v_coupon.valid_until < timezone('utc'::text, now()) THEN
+            RAISE EXCEPTION 'Coupon "%" has expired.', p_coupon_code;
+        END IF;
+
+        IF v_coupon.max_redemptions IS NOT NULL AND v_coupon.total_redemptions >= v_coupon.max_redemptions THEN
+            RAISE EXCEPTION 'Coupon "%" has reached its overall maximum redemption limit.', p_coupon_code;
+        END IF;
+
+        IF v_clean_phone <> '' AND v_coupon.per_customer_limit > 0 THEN
+            SELECT COUNT(*) INTO v_prior_coupon_redemptions
+            FROM public.orders
+            WHERE UPPER(TRIM(coupon_code)) = v_clean_coupon_code
+              AND RIGHT(REGEXP_REPLACE(COALESCE(customer_phone, ''), '[^0-9]', '', 'g'), 10) = RIGHT(v_clean_phone, 10)
+              AND order_status <> 'cancelled';
+
+            IF v_prior_coupon_redemptions >= v_coupon.per_customer_limit THEN
+                RAISE EXCEPTION 'You have reached the maximum usage limit (% order) for coupon "%".', v_coupon.per_customer_limit, p_coupon_code;
+            END IF;
+        END IF;
+
+        IF v_clean_phone <> '' AND v_coupon.first_time_only THEN
+            SELECT COUNT(*) INTO v_prior_delivered_orders
+            FROM public.orders
+            WHERE RIGHT(REGEXP_REPLACE(COALESCE(customer_phone, ''), '[^0-9]', '', 'g'), 10) = RIGHT(v_clean_phone, 10)
+              AND order_status = 'delivered';
+
+            IF v_prior_delivered_orders > 0 THEN
+                RAISE EXCEPTION 'Coupon "%" is valid only for first-time customers.', p_coupon_code;
+            END IF;
+        END IF;
+
+        IF v_coupon.applicable_service_ids IS NOT NULL AND array_length(v_coupon.applicable_service_ids, 1) > 0 AND v_service_id IS NOT NULL THEN
+            IF NOT (v_service_id = ANY(v_coupon.applicable_service_ids)) THEN
+                RAISE EXCEPTION 'Coupon "%" is not valid for the selected service.', p_coupon_code;
+            END IF;
+        END IF;
+
+        -- Authoritative server-side discount calculation for initial booking estimate
+        v_estimated_subtotal := ROUND(v_unit_price_paise * GREATEST(1.0, COALESCE(v_min_weight_kg, 1.0)))::integer;
+
+        IF v_coupon.min_order_paise > 0 AND v_estimated_subtotal < v_coupon.min_order_paise THEN
+            RAISE EXCEPTION 'Minimum order subtotal of ₹% required for coupon "%".', (v_coupon.min_order_paise / 100)::text, p_coupon_code;
+        END IF;
+
+        IF v_coupon.discount_type = 'percentage' THEN
+            v_authoritative_discount_paise := ROUND((v_estimated_subtotal * v_coupon.discount_value)::NUMERIC / 100.0);
+            IF v_coupon.max_discount_paise IS NOT NULL AND v_authoritative_discount_paise > v_coupon.max_discount_paise THEN
+                v_authoritative_discount_paise := v_coupon.max_discount_paise;
+            END IF;
+        ELSE
+            v_authoritative_discount_paise := v_coupon.discount_value;
+        END IF;
+
+        -- Ensure discount never exceeds eligible subtotal
+        IF v_authoritative_discount_paise > v_estimated_subtotal THEN
+            v_authoritative_discount_paise := v_estimated_subtotal;
+        END IF;
+
+        -- Lock authoritative snapshot terms at booking time
+        v_coupon_snapshot := jsonb_build_object(
+            'code', v_coupon.code,
+            'discount_type', v_coupon.discount_type,
+            'discount_value', v_coupon.discount_value,
+            'min_order_paise', v_coupon.min_order_paise,
+            'max_discount_paise', v_coupon.max_discount_paise,
+            'applicable_service_ids', to_jsonb(v_coupon.applicable_service_ids)
+        );
+    END IF;
+
+    -- 9. Atomic Order Insert & Conditional Redemption Increment
+    BEGIN
+        INSERT INTO public.orders (
+            customer_id,
+            customer_name,
+            customer_phone,
+            pickup_address,
+            pickup_landmark,
+            pickup_pincode,
+            pickup_date,
+            pickup_slot,
+            pickup_latitude,
+            pickup_longitude,
+            service_id,
+            service_name,
+            pricing_unit,
+            price_per_kg_paise,
+            min_weight_kg,
+            delivery_charge_paise,
+            measured_weight,
+            billable_weight,
+            total_amount_paise,
+            paid_amount_paise,
+            payment_status,
+            payment_method,
+            order_status,
+            notes,
+            coupon_code,
+            discount_paise,
+            coupon_snapshot,
+            client_submission_id,
+            client_submission_fingerprint
+        ) VALUES (
+            v_caller_id,
+            COALESCE(TRIM(p_customer_name), 'Customer'),
+            v_clean_phone,
+            TRIM(p_pickup_address),
+            NULLIF(TRIM(p_pickup_landmark), ''),
+            TRIM(p_pickup_pincode),
+            p_pickup_date,
+            v_slot.name,
+            p_pickup_latitude,
+            p_pickup_longitude,
+            v_service_id,
+            v_service_name,
+            v_pricing_unit,
+            v_unit_price_paise,
+            v_min_weight_kg,
+            v_delivery_charge_paise,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            'pending',
+            'cash',
+            'booked',
+            NULLIF(TRIM(p_notes), ''),
+            v_clean_coupon_code,
+            v_authoritative_discount_paise,
+            v_coupon_snapshot,
+            p_client_submission_id,
+            v_payload_fingerprint
+        )
+        RETURNING * INTO v_new_order;
+
+        -- Increment total redemptions atomically upon successful order insertion
+        IF v_coupon.id IS NOT NULL THEN
+            UPDATE public.coupons
+            SET total_redemptions = total_redemptions + 1,
+                updated_at = timezone('utc'::text, now())
+            WHERE id = v_coupon.id;
+        END IF;
+
+        RETURN v_new_order;
+
+    EXCEPTION
+        WHEN unique_violation THEN
+            GET STACKED DIAGNOSTICS v_constraint_name = CONSTRAINT_NAME;
+            IF v_constraint_name = 'idx_orders_client_submission_id'
+               OR v_constraint_name LIKE '%client_submission_id%' THEN
+                SELECT * INTO v_existing_order
+                FROM public.orders
+                WHERE client_submission_id = p_client_submission_id;
+
+                IF FOUND THEN
+                    RETURN v_existing_order;
+                END IF;
+            END IF;
+            RAISE;
+    END;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp;
+
+ALTER FUNCTION public.create_booking_idempotent(
+    TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, DATE, TEXT, UUID, NUMERIC, NUMERIC, TEXT, TEXT, INTEGER
+) OWNER TO postgres;
+
+REVOKE ALL ON FUNCTION public.create_booking_idempotent(
+    TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, DATE, TEXT, UUID, NUMERIC, NUMERIC, TEXT, TEXT, INTEGER
+) FROM PUBLIC, anon;
+
+GRANT EXECUTE ON FUNCTION public.create_booking_idempotent(
+    TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, DATE, TEXT, UUID, NUMERIC, NUMERIC, TEXT, TEXT, INTEGER
+) TO authenticated, service_role;
+
+-- ------------------------------------------------------------------------------
+-- 4. BACKWARD-COMPATIBLE 12-PARAMETER BOOKING WRAPPER
+-- ------------------------------------------------------------------------------
+-- Preserves backwards-compatibility for callers invoking create_booking_idempotent
+-- without coupon parameters.
+CREATE OR REPLACE FUNCTION public.create_booking_idempotent(
+    p_client_submission_id TEXT,
+    p_customer_name TEXT,
+    p_customer_phone TEXT,
+    p_pickup_address TEXT,
+    p_pickup_landmark TEXT DEFAULT NULL,
+    p_pickup_pincode TEXT DEFAULT '560038',
+    p_pickup_date DATE DEFAULT CURRENT_DATE,
+    p_pickup_slot TEXT DEFAULT 'Morning (08:00 AM - 11:00 AM)',
+    p_service_id UUID DEFAULT NULL,
+    p_pickup_latitude NUMERIC DEFAULT NULL,
+    p_pickup_longitude NUMERIC DEFAULT NULL,
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS public.orders AS $$
+BEGIN
+    RETURN public.create_booking_idempotent(
+        p_client_submission_id := p_client_submission_id,
+        p_customer_name        := p_customer_name,
+        p_customer_phone       := p_customer_phone,
+        p_pickup_address       := p_pickup_address,
+        p_pickup_landmark      := p_pickup_landmark,
+        p_pickup_pincode       := p_pickup_pincode,
+        p_pickup_date          := p_pickup_date,
+        p_pickup_slot          := p_pickup_slot,
+        p_service_id           := p_service_id,
+        p_pickup_latitude      := p_pickup_latitude,
+        p_pickup_longitude     := p_pickup_longitude,
+        p_notes                := p_notes,
+        p_coupon_code          := NULL,
+        p_discount_paise       := 0
+    );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp;
+
+ALTER FUNCTION public.create_booking_idempotent(
+    TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, DATE, TEXT, UUID, NUMERIC, NUMERIC, TEXT
+) OWNER TO postgres;
+
+REVOKE ALL ON FUNCTION public.create_booking_idempotent(
+    TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, DATE, TEXT, UUID, NUMERIC, NUMERIC, TEXT
+) FROM PUBLIC, anon;
+
+GRANT EXECUTE ON FUNCTION public.create_booking_idempotent(
+    TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, DATE, TEXT, UUID, NUMERIC, NUMERIC, TEXT
+) TO authenticated, service_role;
+
+-- ------------------------------------------------------------------------------
+-- 5. STORE MANAGER & OWNER INTAKE WEIGHING RPC
+-- ------------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.record_store_intake_weight(
+    p_order_id UUID,
+    p_measured_weight NUMERIC(5, 2),
+    p_correction_reason TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_order public.orders;
+    v_caller_role VARCHAR;
+    v_batch_id TEXT;
+    v_billable_weight NUMERIC(5, 2);
+    v_laundry_charge_paise INTEGER;
+    v_siblings_subtotal INTEGER := 0;
+    v_eligible_subtotal INTEGER;
+    v_discount_paise INTEGER := 0;
+    v_total_amount_paise INTEGER;
+    v_new_status VARCHAR(30);
+    v_snap_type TEXT;
+    v_snap_val NUMERIC;
+    v_snap_min INTEGER;
+    v_snap_max INTEGER;
+    v_snap_svcs JSONB;
+    v_raw_num NUMERIC;
+    v_raw_discount INTEGER;
+BEGIN
+    -- 1. Role Authorization
+    v_caller_role := public.current_user_role();
+    IF v_caller_role IS NULL OR v_caller_role NOT IN ('manager', 'owner') THEN
+        RAISE EXCEPTION 'Unauthorized: Only Store Managers and Owners can record store intake weight.';
+    END IF;
+
+    -- 2. Concurrency Control: Advisory lock on linked batch if multi-service booking
+    SELECT notes INTO v_order.notes FROM public.orders WHERE id = p_order_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Order % not found.', p_order_id;
+    END IF;
+
+    v_batch_id := substring(v_order.notes FROM '\[Linked Batch ([^:\]]+)');
+    IF v_batch_id IS NOT NULL THEN
+        PERFORM pg_advisory_xact_lock(hashtext('batch_weigh'), hashtext(v_batch_id));
+    END IF;
+
+    -- 3. Row Locking & Lifecycle Status Validation
+    SELECT * INTO v_order FROM public.orders WHERE id = p_order_id FOR UPDATE;
+
+    -- Strict status allowlist: Intake weighing is strictly permitted in collected, weighed, or washing
+    IF v_order.order_status NOT IN ('collected', 'weighed', 'washing') THEN
+        RAISE EXCEPTION 'Invalid order state: Store intake weighing cannot be performed on order #% in status "%". Allowed statuses: collected, weighed, washing.',
+            v_order.order_number, v_order.order_status;
+    END IF;
+
+    -- 4. Scale Weight & Stored Unit Price Validation
+    IF p_measured_weight IS NULL OR p_measured_weight < 0.10 OR p_measured_weight > 250.00 THEN
+        RAISE EXCEPTION 'Measured weight % kg out of valid range (0.10 - 250.00 kg).', p_measured_weight;
+    END IF;
+
+    IF v_order.price_per_kg_paise IS NULL OR v_order.price_per_kg_paise <= 0 THEN
+        RAISE EXCEPTION 'Order % has an invalid stored service unit price (% paise).', p_order_id, v_order.price_per_kg_paise;
+    END IF;
+
+    -- 5. Authoritative Subtotal Calculation Across Supported Pricing Units
+    -- Matches LaundryService.calculateBill() semantics exactly
+    IF v_order.pricing_unit = 'per_kg' OR v_order.pricing_unit IS NULL THEN
+        v_billable_weight := GREATEST(p_measured_weight, COALESCE(v_order.min_weight_kg, 0.00));
+        v_laundry_charge_paise := ROUND(v_billable_weight * v_order.price_per_kg_paise);
+    ELSIF v_order.pricing_unit IN ('per_piece', 'per_item') THEN
+        v_billable_weight := ROUND(p_measured_weight);
+        v_laundry_charge_paise := ROUND(v_billable_weight * v_order.price_per_kg_paise);
+    ELSIF v_order.pricing_unit = 'per_load' THEN
+        v_billable_weight := GREATEST(1, ROUND(COALESCE(p_measured_weight, 1)));
+        v_laundry_charge_paise := ROUND(v_billable_weight * v_order.price_per_kg_paise);
+    ELSIF v_order.pricing_unit = 'per_order' THEN
+        v_billable_weight := 1.00;
+        v_laundry_charge_paise := v_order.price_per_kg_paise;
+    ELSE
+        -- Fallback to per_kg formula if unknown pricing unit encountered
+        v_billable_weight := GREATEST(p_measured_weight, COALESCE(v_order.min_weight_kg, 0.00));
+        v_laundry_charge_paise := ROUND(v_billable_weight * v_order.price_per_kg_paise);
+    END IF;
+
+    -- 6. Linked Sibling Subtotal Aggregation (Excluding Cancelled Siblings)
+    -- Preserves exact existing frontend fallback expression: Math.round((price_per_kg_paise || 7900) * (min_weight_kg || 1.0))
+    IF v_batch_id IS NOT NULL THEN
+        SELECT COALESCE(SUM(
+            CASE 
+                -- If sibling already weighed, use actual laundry subtotal excluding discounts and delivery charges
+                WHEN o.total_amount_paise IS NOT NULL 
+                THEN GREATEST(0, o.total_amount_paise + COALESCE(o.discount_paise, 0) - COALESCE(o.delivery_charge_paise, 0))
+                -- If unweighed, evaluate exact existing frontend expression: Math.round((price_per_kg_paise || 7900) * (min_weight_kg || 1.0))
+                ELSE GREATEST(0, ROUND(COALESCE(NULLIF(o.price_per_kg_paise, 0), 7900) * COALESCE(NULLIF(o.min_weight_kg, 0.0), 1.0)))
+            END
+        ), 0)
+        INTO v_siblings_subtotal
+        FROM public.orders o
+        WHERE o.notes LIKE '%[Linked Batch ' || v_batch_id || '%'
+          AND o.id <> v_order.id
+          AND o.order_status <> 'cancelled';
+    END IF;
+
+    v_eligible_subtotal := v_laundry_charge_paise + v_siblings_subtotal;
+
+    -- 7. Authoritative Discount Resolution Against Booking Snapshot
+    IF v_order.coupon_snapshot IS NOT NULL THEN
+        -- Structural & Type Validation: Abort with recoverable error on malformed snapshot
+        IF jsonb_typeof(v_order.coupon_snapshot) <> 'object' THEN
+            RAISE EXCEPTION 'Malformed coupon snapshot on order #%: root must be a JSON object (found: %). Weighing aborted to protect agreed customer discount.',
+                v_order.order_number, jsonb_typeof(v_order.coupon_snapshot);
+        END IF;
+
+        IF NOT (v_order.coupon_snapshot ? 'code') 
+           OR jsonb_typeof(v_order.coupon_snapshot->'code') <> 'string' 
+           OR TRIM(v_order.coupon_snapshot->>'code') = '' THEN
+            RAISE EXCEPTION 'Malformed coupon snapshot on order #%: missing or empty "code". Weighing aborted to protect agreed customer discount.',
+                v_order.order_number;
+        END IF;
+
+        -- Consistency Check: Snapshot code must match order coupon_code, including NULL mismatches
+        IF v_order.coupon_code IS NULL 
+           OR UPPER(TRIM(v_order.coupon_snapshot->>'code')) <> UPPER(TRIM(v_order.coupon_code)) THEN
+            RAISE EXCEPTION 'Coupon snapshot mismatch on order #%: snapshot code "%" does not match order coupon_code "%". Weighing aborted.',
+                v_order.order_number, v_order.coupon_snapshot->>'code', COALESCE(v_order.coupon_code, 'NULL');
+        END IF;
+
+        IF NOT (v_order.coupon_snapshot ? 'discount_type') 
+           OR jsonb_typeof(v_order.coupon_snapshot->'discount_type') <> 'string'
+           OR v_order.coupon_snapshot->>'discount_type' NOT IN ('percentage', 'fixed') THEN
+            RAISE EXCEPTION 'Malformed coupon snapshot on order #%: unsupported or missing "discount_type" ("%"). Expected "percentage" or "fixed". Weighing aborted.',
+                v_order.order_number, COALESCE(v_order.coupon_snapshot->>'discount_type', 'NULL');
+        END IF;
+
+        IF NOT (v_order.coupon_snapshot ? 'discount_value') 
+           OR jsonb_typeof(v_order.coupon_snapshot->'discount_value') <> 'number' THEN
+            RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "discount_value" must be a valid number. Weighing aborted to protect agreed customer discount.',
+                v_order.order_number;
+        END IF;
+
+        v_snap_type := v_order.coupon_snapshot->>'discount_type';
+        v_snap_val  := (v_order.coupon_snapshot->>'discount_value')::numeric;
+
+        -- In the existing database schema (public.coupons), discount_value is defined as INTEGER NOT NULL CHECK (discount_value > 0).
+        -- Both fixed (in paise) and percentage (1-100) coupons require whole integer values.
+        IF trunc(v_snap_val) <> v_snap_val THEN
+            RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "discount_value" must be a whole integer without fractions (received: %). Weighing aborted.',
+                v_order.order_number, v_snap_val;
+        END IF;
+
+        IF v_snap_type = 'fixed' THEN
+            IF v_snap_val <= 0 OR v_snap_val > 2147483647 THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: fixed "discount_value" out of valid integer range (received: %). Weighing aborted.',
+                    v_order.order_number, v_snap_val;
+            END IF;
+        ELSIF v_snap_type = 'percentage' THEN
+            IF v_snap_val < 1 OR v_snap_val > 100 THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: percentage "discount_value" must be an integer between 1 and 100 (received: %). Weighing aborted.',
+                    v_order.order_number, v_snap_val;
+            END IF;
+        END IF;
+
+        -- Validate Optional Minimum Order Field
+        v_snap_min := 0;
+        IF v_order.coupon_snapshot ? 'min_order_paise' 
+           AND v_order.coupon_snapshot->'min_order_paise' IS NOT NULL 
+           AND jsonb_typeof(v_order.coupon_snapshot->'min_order_paise') <> 'null' THEN
+            IF jsonb_typeof(v_order.coupon_snapshot->'min_order_paise') <> 'number' THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "min_order_paise" must be numeric. Weighing aborted.',
+                    v_order.order_number;
+            END IF;
+            v_raw_num := (v_order.coupon_snapshot->>'min_order_paise')::numeric;
+            IF trunc(v_raw_num) <> v_raw_num THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "min_order_paise" must be a whole integer paise amount without fractions. Weighing aborted.',
+                    v_order.order_number;
+            END IF;
+            IF v_raw_num < 0 OR v_raw_num > 2147483647 THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "min_order_paise" out of valid integer range. Weighing aborted.',
+                    v_order.order_number;
+            END IF;
+            v_snap_min := v_raw_num::integer;
+        END IF;
+
+        -- Validate Optional Maximum Discount Field
+        v_snap_max := NULL;
+        IF v_order.coupon_snapshot ? 'max_discount_paise' 
+           AND v_order.coupon_snapshot->'max_discount_paise' IS NOT NULL 
+           AND jsonb_typeof(v_order.coupon_snapshot->'max_discount_paise') <> 'null' THEN
+            IF jsonb_typeof(v_order.coupon_snapshot->'max_discount_paise') <> 'number' THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "max_discount_paise" must be numeric. Weighing aborted.',
+                    v_order.order_number;
+            END IF;
+            v_raw_num := (v_order.coupon_snapshot->>'max_discount_paise')::numeric;
+            IF trunc(v_raw_num) <> v_raw_num THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "max_discount_paise" must be a whole integer paise amount without fractions. Weighing aborted.',
+                    v_order.order_number;
+            END IF;
+            IF v_raw_num <= 0 OR v_raw_num > 2147483647 THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "max_discount_paise" out of valid integer range. Weighing aborted.',
+                    v_order.order_number;
+            END IF;
+            v_snap_max := v_raw_num::integer;
+        END IF;
+
+        -- Validate Applicable Service IDs Array & Elements
+        v_snap_svcs := v_order.coupon_snapshot->'applicable_service_ids';
+        IF v_snap_svcs IS NOT NULL AND jsonb_typeof(v_snap_svcs) <> 'null' THEN
+            IF jsonb_typeof(v_snap_svcs) <> 'array' THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "applicable_service_ids" must be a JSON array. Weighing aborted.',
+                    v_order.order_number;
+            END IF;
+            IF EXISTS (
+                SELECT 1 FROM jsonb_array_elements(v_snap_svcs) elem
+                WHERE jsonb_typeof(elem) <> 'string'
+                   OR elem#>>'{}' !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            ) THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "applicable_service_ids" contains invalid service UUID. Weighing aborted.',
+                    v_order.order_number;
+            END IF;
+        END IF;
+
+        -- Business Rules Control Flow:
+        -- Rule 1: Service Applicability Check FIRST
+        -- If coupon is restricted to specific services and current service does not match, discount is definitively 0.
+        IF v_snap_svcs IS NOT NULL 
+           AND jsonb_typeof(v_snap_svcs) = 'array' 
+           AND jsonb_array_length(v_snap_svcs) > 0 
+           AND (v_order.service_id IS NULL OR NOT (v_order.service_id::text = ANY(ARRAY(SELECT jsonb_array_elements_text(v_snap_svcs))))) THEN
+            v_discount_paise := 0;
+        -- Rule 2: Minimum Order Threshold Check (Combined Batch Subtotal)
+        ELSIF v_snap_min > 0 AND v_eligible_subtotal < v_snap_min THEN
+            v_discount_paise := 0;
+        -- Rule 3: Percentage Discount Calculation
+        ELSIF v_snap_type = 'percentage' THEN
+            v_raw_discount := ROUND(v_eligible_subtotal * (v_snap_val / 100.0));
+            IF v_snap_max IS NOT NULL AND v_snap_max > 0 AND v_raw_discount > v_snap_max THEN
+                v_raw_discount := v_snap_max;
+            END IF;
+            -- Clamp discount to target order's laundry charge
+            v_discount_paise := LEAST(v_raw_discount, v_laundry_charge_paise);
+        -- Rule 4: Fixed Discount Calculation
+        ELSIF v_snap_type = 'fixed' THEN
+            -- Unused discount beyond target order subtotal is forfeited (does not spill over)
+            v_discount_paise := LEAST(v_snap_val::integer, v_laundry_charge_paise);
+        ELSE
+            v_discount_paise := 0;
+        END IF;
+
+    ELSIF v_order.coupon_code IS NOT NULL THEN
+        -- Legacy order without snapshot: preserve existing discount clamped to new laundry subtotal
+        v_discount_paise := LEAST(COALESCE(v_order.discount_paise, 0), v_laundry_charge_paise);
+    ELSE
+        v_discount_paise := 0;
+    END IF;
+
+    v_discount_paise := GREATEST(0, LEAST(v_discount_paise, v_laundry_charge_paise));
+    v_total_amount_paise := GREATEST(0, v_laundry_charge_paise - v_discount_paise + COALESCE(v_order.delivery_charge_paise, 0));
+
+    -- 8. Downward Re-weighing Guard: Abort if recalculated total is less than amount already paid
+    IF v_order.paid_amount_paise > 0 AND v_total_amount_paise < v_order.paid_amount_paise THEN
+        RAISE EXCEPTION 'Downward re-weighing rejected: Recalculated total (₹%) is less than already paid amount (₹%). Modifications below paid amount are not permitted without refund processing.',
+            (v_total_amount_paise / 100.0)::numeric(10, 2),
+            (v_order.paid_amount_paise / 100.0)::numeric(10, 2);
+    END IF;
+
+    -- 9. State Machine Progression
+    IF v_order.order_status = 'collected' THEN
+        v_new_status := 'washing';
+    ELSE
+        v_new_status := v_order.order_status;
+    END IF;
+
+    -- 10. Atomic Order Update
+    UPDATE public.orders SET
+        measured_weight = p_measured_weight,
+        billable_weight = v_billable_weight,
+        discount_paise = v_discount_paise,
+        total_amount_paise = v_total_amount_paise,
+        weighed_at = COALESCE(v_order.weighed_at, timezone('utc', now())),
+        order_status = v_new_status,
+        updated_at = timezone('utc', now())
+    WHERE id = v_order.id;
+
+    -- 11. Audit History Logging with Actor Identity (auth.uid())
+    INSERT INTO public.weight_change_history (
+        order_id, old_weight, new_weight, old_amount_paise, new_amount_paise, reason, changed_by
+    ) VALUES (
+        v_order.id, v_order.measured_weight, p_measured_weight,
+        v_order.total_amount_paise, v_total_amount_paise,
+        COALESCE(p_correction_reason, CASE WHEN v_order.measured_weight IS NULL THEN 'Initial intake weight' ELSE 'Weight correction by manager' END),
+        auth.uid()
+    );
+
+    IF v_new_status IS DISTINCT FROM v_order.order_status THEN
+        INSERT INTO public.order_status_history (
+            order_id, previous_status, new_status, notes, changed_by
+        ) VALUES (
+            v_order.id, v_order.order_status, v_new_status,
+            'Weighed at store intake: ' || p_measured_weight || ' kg',
+            auth.uid()
+        );
+    END IF;
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'order_id', v_order.id,
+        'measured_weight', p_measured_weight,
+        'billable_weight', v_billable_weight,
+        'discount_paise', v_discount_paise,
+        'total_amount_paise', v_total_amount_paise,
+        'order_status', v_new_status
+    );
+END;
+$$;
+
+ALTER FUNCTION public.record_store_intake_weight(UUID, NUMERIC, TEXT) OWNER TO postgres;
+REVOKE ALL ON FUNCTION public.record_store_intake_weight(UUID, NUMERIC, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.record_store_intake_weight(UUID, NUMERIC, TEXT) TO authenticated;
+
+-- ------------------------------------------------------------------------------
+-- 6. COURIER DOORSTEP PICKUP COLLECTION & WEIGHING RPC
+-- ------------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.record_courier_pickup_collection(
+    p_order_id UUID,
+    p_measured_weight NUMERIC(5, 2),
+    p_delivery_notes TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_order public.orders;
+    v_caller_role VARCHAR;
+    v_batch_id TEXT;
+    v_billable_weight NUMERIC(5, 2);
+    v_laundry_charge_paise INTEGER;
+    v_siblings_subtotal INTEGER := 0;
+    v_eligible_subtotal INTEGER;
+    v_discount_paise INTEGER := 0;
+    v_total_amount_paise INTEGER;
+    v_snap_type TEXT;
+    v_snap_val NUMERIC;
+    v_snap_min INTEGER;
+    v_snap_max INTEGER;
+    v_snap_svcs JSONB;
+    v_raw_num NUMERIC;
+    v_raw_discount INTEGER;
+BEGIN
+    -- 1. Role Authorization
+    v_caller_role := public.current_user_role();
+    IF v_caller_role IS NULL OR v_caller_role NOT IN ('delivery', 'owner') THEN
+        RAISE EXCEPTION 'Unauthorized: Only assigned delivery associates can record pickup collection.';
+    END IF;
+
+    -- 2. Concurrency Control: Advisory lock on linked batch if multi-service booking
+    SELECT notes INTO v_order.notes FROM public.orders WHERE id = p_order_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Order % not found.', p_order_id;
+    END IF;
+
+    v_batch_id := substring(v_order.notes FROM '\[Linked Batch ([^:\]]+)');
+    IF v_batch_id IS NOT NULL THEN
+        PERFORM pg_advisory_xact_lock(hashtext('batch_weigh'), hashtext(v_batch_id));
+    END IF;
+
+    -- 3. Row Locking & Assignment Verification
+    SELECT * INTO v_order FROM public.orders WHERE id = p_order_id FOR UPDATE;
+
+    -- Delivery associate must be explicitly assigned as pickup associate (owner exception permitted)
+    IF v_caller_role = 'delivery' AND v_order.assigned_pickup_id IS DISTINCT FROM auth.uid() THEN
+        RAISE EXCEPTION 'Unauthorized: You are not the assigned pickup associate for Order #%.', v_order.order_number;
+    END IF;
+
+    -- Strict lifecycle check: Doorstep collection requires pickup_assigned state
+    IF v_order.order_status <> 'pickup_assigned' THEN
+        RAISE EXCEPTION 'Invalid transition: Only orders in pickup_assigned state can be collected (current status: %).', v_order.order_status;
+    END IF;
+
+    -- Portable scale bounds validation
+    IF p_measured_weight IS NULL OR p_measured_weight < 0.10 OR p_measured_weight > 100.00 THEN
+        RAISE EXCEPTION 'Measured weight % kg exceeds portable scale limit (0.10 - 100.00 kg).', p_measured_weight;
+    END IF;
+
+    IF v_order.price_per_kg_paise IS NULL OR v_order.price_per_kg_paise <= 0 THEN
+        RAISE EXCEPTION 'Order % has an invalid stored service unit price (% paise).', p_order_id, v_order.price_per_kg_paise;
+    END IF;
+
+    -- 4. Authoritative Subtotal Calculation Across Supported Pricing Units
+    IF v_order.pricing_unit = 'per_kg' OR v_order.pricing_unit IS NULL THEN
+        v_billable_weight := GREATEST(p_measured_weight, COALESCE(v_order.min_weight_kg, 0.00));
+        v_laundry_charge_paise := ROUND(v_billable_weight * v_order.price_per_kg_paise);
+    ELSIF v_order.pricing_unit IN ('per_piece', 'per_item') THEN
+        v_billable_weight := ROUND(p_measured_weight);
+        v_laundry_charge_paise := ROUND(v_billable_weight * v_order.price_per_kg_paise);
+    ELSIF v_order.pricing_unit = 'per_load' THEN
+        v_billable_weight := GREATEST(1, ROUND(COALESCE(p_measured_weight, 1)));
+        v_laundry_charge_paise := ROUND(v_billable_weight * v_order.price_per_kg_paise);
+    ELSIF v_order.pricing_unit = 'per_order' THEN
+        v_billable_weight := 1.00;
+        v_laundry_charge_paise := v_order.price_per_kg_paise;
+    ELSE
+        v_billable_weight := GREATEST(p_measured_weight, COALESCE(v_order.min_weight_kg, 0.00));
+        v_laundry_charge_paise := ROUND(v_billable_weight * v_order.price_per_kg_paise);
+    END IF;
+
+    -- 5. Linked Sibling Subtotal Aggregation
+    -- Preserves exact existing frontend fallback expression: Math.round((price_per_kg_paise || 7900) * (min_weight_kg || 1.0))
+    IF v_batch_id IS NOT NULL THEN
+        SELECT COALESCE(SUM(
+            CASE 
+                -- If sibling already weighed, use actual laundry subtotal excluding discounts and delivery charges
+                WHEN o.total_amount_paise IS NOT NULL 
+                THEN GREATEST(0, o.total_amount_paise + COALESCE(o.discount_paise, 0) - COALESCE(o.delivery_charge_paise, 0))
+                -- If unweighed, evaluate exact existing frontend expression: Math.round((price_per_kg_paise || 7900) * (min_weight_kg || 1.0))
+                ELSE GREATEST(0, ROUND(COALESCE(NULLIF(o.price_per_kg_paise, 0), 7900) * COALESCE(NULLIF(o.min_weight_kg, 0.0), 1.0)))
+            END
+        ), 0)
+        INTO v_siblings_subtotal
+        FROM public.orders o
+        WHERE o.notes LIKE '%[Linked Batch ' || v_batch_id || '%'
+          AND o.id <> v_order.id
+          AND o.order_status <> 'cancelled';
+    END IF;
+
+    v_eligible_subtotal := v_laundry_charge_paise + v_siblings_subtotal;
+
+    -- 6. Authoritative Coupon Discount Resolution Against Snapshot
+    IF v_order.coupon_snapshot IS NOT NULL THEN
+        IF jsonb_typeof(v_order.coupon_snapshot) <> 'object' THEN
+            RAISE EXCEPTION 'Malformed coupon snapshot on order #%: root must be a JSON object (found: %). Weighing aborted to protect agreed customer discount.',
+                v_order.order_number, jsonb_typeof(v_order.coupon_snapshot);
+        END IF;
+
+        IF NOT (v_order.coupon_snapshot ? 'code') 
+           OR jsonb_typeof(v_order.coupon_snapshot->'code') <> 'string' 
+           OR TRIM(v_order.coupon_snapshot->>'code') = '' THEN
+            RAISE EXCEPTION 'Malformed coupon snapshot on order #%: missing or empty "code". Weighing aborted to protect agreed customer discount.',
+                v_order.order_number;
+        END IF;
+
+        -- Consistency Check: Snapshot code must match order coupon_code, including NULL mismatches
+        IF v_order.coupon_code IS NULL 
+           OR UPPER(TRIM(v_order.coupon_snapshot->>'code')) <> UPPER(TRIM(v_order.coupon_code)) THEN
+            RAISE EXCEPTION 'Coupon snapshot mismatch on order #%: snapshot code "%" does not match order coupon_code "%". Weighing aborted.',
+                v_order.order_number, v_order.coupon_snapshot->>'code', COALESCE(v_order.coupon_code, 'NULL');
+        END IF;
+
+        IF NOT (v_order.coupon_snapshot ? 'discount_type') 
+           OR jsonb_typeof(v_order.coupon_snapshot->'discount_type') <> 'string'
+           OR v_order.coupon_snapshot->>'discount_type' NOT IN ('percentage', 'fixed') THEN
+            RAISE EXCEPTION 'Malformed coupon snapshot on order #%: unsupported or missing "discount_type" ("%"). Expected "percentage" or "fixed". Weighing aborted.',
+                v_order.order_number, COALESCE(v_order.coupon_snapshot->>'discount_type', 'NULL');
+        END IF;
+
+        IF NOT (v_order.coupon_snapshot ? 'discount_value') 
+           OR jsonb_typeof(v_order.coupon_snapshot->'discount_value') <> 'number' THEN
+            RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "discount_value" must be a valid number. Weighing aborted to protect agreed customer discount.',
+                v_order.order_number;
+        END IF;
+
+        v_snap_type := v_order.coupon_snapshot->>'discount_type';
+        v_snap_val  := (v_order.coupon_snapshot->>'discount_value')::numeric;
+
+        -- In the existing database schema (public.coupons), discount_value is defined as INTEGER NOT NULL CHECK (discount_value > 0).
+        -- Both fixed (in paise) and percentage (1-100) coupons require whole integer values.
+        IF trunc(v_snap_val) <> v_snap_val THEN
+            RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "discount_value" must be a whole integer without fractions (received: %). Weighing aborted.',
+                v_order.order_number, v_snap_val;
+        END IF;
+
+        IF v_snap_type = 'fixed' THEN
+            IF v_snap_val <= 0 OR v_snap_val > 2147483647 THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: fixed "discount_value" out of valid integer range (received: %). Weighing aborted.',
+                    v_order.order_number, v_snap_val;
+            END IF;
+        ELSIF v_snap_type = 'percentage' THEN
+            IF v_snap_val < 1 OR v_snap_val > 100 THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: percentage "discount_value" must be an integer between 1 and 100 (received: %). Weighing aborted.',
+                    v_order.order_number, v_snap_val;
+            END IF;
+        END IF;
+
+        -- Validate Optional Minimum Order Field
+        v_snap_min := 0;
+        IF v_order.coupon_snapshot ? 'min_order_paise' 
+           AND v_order.coupon_snapshot->'min_order_paise' IS NOT NULL 
+           AND jsonb_typeof(v_order.coupon_snapshot->'min_order_paise') <> 'null' THEN
+            IF jsonb_typeof(v_order.coupon_snapshot->'min_order_paise') <> 'number' THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "min_order_paise" must be numeric. Weighing aborted.',
+                    v_order.order_number;
+            END IF;
+            v_raw_num := (v_order.coupon_snapshot->>'min_order_paise')::numeric;
+            IF trunc(v_raw_num) <> v_raw_num THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "min_order_paise" must be a whole integer paise amount without fractions. Weighing aborted.',
+                    v_order.order_number;
+            END IF;
+            IF v_raw_num < 0 OR v_raw_num > 2147483647 THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "min_order_paise" out of valid integer range. Weighing aborted.',
+                    v_order.order_number;
+            END IF;
+            v_snap_min := v_raw_num::integer;
+        END IF;
+
+        -- Validate Optional Maximum Discount Field
+        v_snap_max := NULL;
+        IF v_order.coupon_snapshot ? 'max_discount_paise' 
+           AND v_order.coupon_snapshot->'max_discount_paise' IS NOT NULL 
+           AND jsonb_typeof(v_order.coupon_snapshot->'max_discount_paise') <> 'null' THEN
+            IF jsonb_typeof(v_order.coupon_snapshot->'max_discount_paise') <> 'number' THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "max_discount_paise" must be numeric. Weighing aborted.',
+                    v_order.order_number;
+            END IF;
+            v_raw_num := (v_order.coupon_snapshot->>'max_discount_paise')::numeric;
+            IF trunc(v_raw_num) <> v_raw_num THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "max_discount_paise" must be a whole integer paise amount without fractions. Weighing aborted.',
+                    v_order.order_number;
+            END IF;
+            IF v_raw_num <= 0 OR v_raw_num > 2147483647 THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "max_discount_paise" out of valid integer range. Weighing aborted.',
+                    v_order.order_number;
+            END IF;
+            v_snap_max := v_raw_num::integer;
+        END IF;
+
+        -- Validate Applicable Service IDs Array & Elements
+        v_snap_svcs := v_order.coupon_snapshot->'applicable_service_ids';
+        IF v_snap_svcs IS NOT NULL AND jsonb_typeof(v_snap_svcs) <> 'null' THEN
+            IF jsonb_typeof(v_snap_svcs) <> 'array' THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "applicable_service_ids" must be a JSON array. Weighing aborted.',
+                    v_order.order_number;
+            END IF;
+            IF EXISTS (
+                SELECT 1 FROM jsonb_array_elements(v_snap_svcs) elem
+                WHERE jsonb_typeof(elem) <> 'string'
+                   OR elem#>>'{}' !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            ) THEN
+                RAISE EXCEPTION 'Malformed coupon snapshot on order #%: "applicable_service_ids" contains invalid service UUID. Weighing aborted.',
+                    v_order.order_number;
+            END IF;
+        END IF;
+
+        -- Business Rules Control Flow:
+        -- Rule 1: Service Applicability Check FIRST
+        IF v_snap_svcs IS NOT NULL 
+           AND jsonb_typeof(v_snap_svcs) = 'array' 
+           AND jsonb_array_length(v_snap_svcs) > 0 
+           AND (v_order.service_id IS NULL OR NOT (v_order.service_id::text = ANY(ARRAY(SELECT jsonb_array_elements_text(v_snap_svcs))))) THEN
+            v_discount_paise := 0;
+        -- Rule 2: Minimum Order Threshold Check
+        ELSIF v_snap_min > 0 AND v_eligible_subtotal < v_snap_min THEN
+            v_discount_paise := 0;
+        -- Rule 3: Percentage Discount Calculation
+        ELSIF v_snap_type = 'percentage' THEN
+            v_raw_discount := ROUND(v_eligible_subtotal * (v_snap_val / 100.0));
+            IF v_snap_max IS NOT NULL AND v_snap_max > 0 AND v_raw_discount > v_snap_max THEN
+                v_raw_discount := v_snap_max;
+            END IF;
+            v_discount_paise := LEAST(v_raw_discount, v_laundry_charge_paise);
+        -- Rule 4: Fixed Discount Calculation
+        ELSIF v_snap_type = 'fixed' THEN
+            v_discount_paise := LEAST(v_snap_val::integer, v_laundry_charge_paise);
+        ELSE
+            v_discount_paise := 0;
+        END IF;
+
+    ELSIF v_order.coupon_code IS NOT NULL THEN
+        v_discount_paise := LEAST(COALESCE(v_order.discount_paise, 0), v_laundry_charge_paise);
+    ELSE
+        v_discount_paise := 0;
+    END IF;
+
+    v_discount_paise := GREATEST(0, LEAST(v_discount_paise, v_laundry_charge_paise));
+    v_total_amount_paise := GREATEST(0, v_laundry_charge_paise - v_discount_paise + COALESCE(v_order.delivery_charge_paise, 0));
+
+    -- 7. Downward Re-weighing Guard
+    IF v_order.paid_amount_paise > 0 AND v_total_amount_paise < v_order.paid_amount_paise THEN
+        RAISE EXCEPTION 'Downward re-weighing rejected: Recalculated total (₹%) is less than already paid amount (₹%). Modifications below paid amount are not permitted.',
+            (v_total_amount_paise / 100.0)::numeric(10, 2),
+            (v_order.paid_amount_paise / 100.0)::numeric(10, 2);
+    END IF;
+
+    -- 8. Atomic Order Update
+    UPDATE public.orders SET
+        order_status = 'collected',
+        pickup_measured_weight = p_measured_weight,
+        measured_weight = p_measured_weight,
+        billable_weight = v_billable_weight,
+        discount_paise = v_discount_paise,
+        total_amount_paise = v_total_amount_paise,
+        pickup_weighed_at = timezone('utc', now()),
+        pickup_weighed_by = auth.uid(),
+        collected_at = timezone('utc', now()),
+        delivery_notes = COALESCE(p_delivery_notes, v_order.delivery_notes),
+        updated_at = timezone('utc', now())
+    WHERE id = v_order.id;
+
+    -- 9. Audit History Logging with Actor Identity (auth.uid())
+    INSERT INTO public.order_status_history (
+        order_id, previous_status, new_status, notes, changed_by
+    ) VALUES (
+        v_order.id, 'pickup_assigned', 'collected',
+        'Doorstep collected & weighed: ' || p_measured_weight || ' kg',
+        auth.uid()
+    );
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'order_id', v_order.id,
+        'measured_weight', p_measured_weight,
+        'billable_weight', v_billable_weight,
+        'discount_paise', v_discount_paise,
+        'total_amount_paise', v_total_amount_paise,
+        'order_status', 'collected'
+    );
+END;
+$$;
+
+ALTER FUNCTION public.record_courier_pickup_collection(UUID, NUMERIC, TEXT) OWNER TO postgres;
+REVOKE ALL ON FUNCTION public.record_courier_pickup_collection(UUID, NUMERIC, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.record_courier_pickup_collection(UUID, NUMERIC, TEXT) TO authenticated;
+
+COMMIT;

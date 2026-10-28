@@ -1,0 +1,57 @@
+{
+    "SUITE_A":  {
+                    "status":  "PASS",
+                    "assertions_passed":  true,
+                    "name":  "Suite A: Baseline \u0026 Candidate Execution",
+                    "candidate_applied":  true,
+                    "migrations_applied":  20
+                },
+    "SUITE_B":  {
+                    "status":  "PASS",
+                    "name":  "Suite B: Exhaustive Privileges \u0026 Security",
+                    "failed":  0,
+                    "passed":  33
+                },
+    "SUITE_C":  {
+                    "status":  "PASS",
+                    "name":  "Suite C: Booking, Idempotency \u0026 Snapshots",
+                    "failed":  0,
+                    "passed":  9
+                },
+    "SUITE_D":  {
+                    "status":  "PASS",
+                    "name":  "Suite D: Linked Services \u0026 Batch Coupon Sync",
+                    "failed":  0,
+                    "passed":  7
+                },
+    "SUITE_E":  {
+                    "status":  "PASS",
+                    "name":  "Suite E: Payment Ledger \u0026 Financial Invariants",
+                    "failed":  0,
+                    "passed":  7
+                },
+    "SUITE_F":  {
+                    "status":  "PASS",
+                    "name":  "Suite F: Workflow \u0026 Cancellation State Machine",
+                    "failed":  0,
+                    "passed":  9
+                },
+    "SUITE_G":  {
+                    "status":  "PASS",
+                    "name":  "Suite G: Invoice \u0026 Billing Reconciliation",
+                    "failed":  0,
+                    "passed":  4
+                },
+    "SUITE_H":  {
+                    "status":  "PASS",
+                    "name":  "Suite H: Multi-Session Concurrency",
+                    "failed":  0,
+                    "passed":  3
+                },
+    "SUITE_I":  {
+                    "status":  "PASS",
+                    "name":  "Suite I: Randomized Property Regression",
+                    "failed":  0,
+                    "passed":  20
+                }
+}

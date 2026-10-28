@@ -1,0 +1,758 @@
+
+[2026-10-28 11:53:23] =================================================================
+[2026-10-28 11:53:23]   SUPERWASH STAGE 5B - PHASE 2B MASTER TEST RUNNER
+[2026-10-28 11:53:23]   Dedicated Container: superwash-stage5b-pg15-test on 127.0.0.1:54322
+[2026-10-28 11:53:23] =================================================================
+[2026-10-28 11:53:23] 
+>>> [STEP 1] Preflight & Environment Verification...
+[2026-10-28 11:53:23] [PREFLIGHT] Docker is alive: Docker version 29.7.2, build a7dcaa6
+[2026-10-28 11:53:23] [PREFLIGHT] All 20 baseline migrations verified on disk.
+[2026-10-28 11:53:23] [PREFLIGHT] Unsafe migration supabase/migrations/20261028100000_grant_order_discount_paise_update.sql exists but is explicitly quarantined and excluded.
+[2026-10-28 11:53:23] [PREFLIGHT] Candidate SQL verified: docs\review\stage5b_release_candidate\00_stage5b_atomic_release.sql
+[2026-10-28 11:53:23] [PREFLIGHT] Launching disposable container superwash-stage5b-pg15-test bound to 127.0.0.1:54322...
+[2026-10-28 11:53:27] [PREFLIGHT] PostgreSQL 15 is ready and isolated on 127.0.0.1:54322.
+[2026-10-28 11:53:27] 
+>>> [STEP 2 / SUITE A] Applying Compatibility Shim & 20 Baseline Migrations...
+[2026-10-28 11:53:27] [SUITE A] Compatibility shim applied successfully.
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+CREATE FUNCTION
+REVOKE
+GRANT
+ALTER TABLE
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+INSERT 0 1
+INSERT 0 4
+
+ALTER TABLE
+ALTER TABLE
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+INSERT 0 7
+CREATE TABLE
+INSERT 0 1
+ALTER TABLE
+CREATE SEQUENCE
+CREATE FUNCTION
+REVOKE
+GRANT
+DROP TRIGGER
+docker : psql:/workspace/supabase/migrations/20261022_enhanced_schema.sql:94: NOTICE:  trigger 
+"trigger_set_order_number" for relation "public.orders" does not exist, skipping
+At F:\superwash\docs\review\phase2b_artifacts\phase2b_master_test_runner.ps1:158 char:15
++ ...   $migOut = docker exec $ContainerName psql -U postgres -d $DatabaseN ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (psql:/workspace...exist, skipping:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+CREATE TRIGGER
+CREATE FUNCTION
+REVOKE
+DROP TRIGGER
+psql:/workspace/supabase/migrations/20261022_enhanced_schema.sql:127: NOTICE:  trigger "trigger_check_profile_role" 
+for relation "public.profiles" does not exist, skipping
+CREATE TRIGGER
+CREATE FUNCTION
+REVOKE
+psql:/workspace/supabase/migrations/20261022_enhanced_schema.sql:178: NOTICE:  trigger "trigger_sync_payment_summary" 
+for relation "public.payments" does not exist, skipping
+DROP TRIGGER
+CREATE TRIGGER
+ALTER TABLE
+ALTER TABLE
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+DROP POLICY
+psql:/workspace/supabase/migrations/20261022_enhanced_schema.sql:203: NOTICE:  policy "Customers can view payments for 
+own orders" for relation "public.payments" does not exist, skipping
+CREATE POLICY
+psql:/workspace/supabase/migrations/20261022_enhanced_schema.sql:221: NOTICE:  policy "Staff can record payments" for 
+relation "public.payments" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+DO
+ALTER TABLE
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+CREATE POLICY
+
+ALTER TABLE
+ALTER TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE FUNCTION
+REVOKE
+DROP TRIGGER
+docker : psql:/workspace/supabase/migrations/20261022130000_google_oauth_schema.sql:70: NOTICE:  trigger 
+"on_auth_user_created" for relation "auth.users" does not exist, skipping
+At F:\superwash\docs\review\phase2b_artifacts\phase2b_master_test_runner.ps1:158 char:15
++ ...   $migOut = docker exec $ContainerName psql -U postgres -d $DatabaseN ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (psql:/workspace...exist, skipping:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+CREATE TRIGGER
+CREATE FUNCTION
+REVOKE
+GRANT
+DROP POLICY
+DROP POLICY
+psql:/workspace/supabase/migrations/20261022130000_google_oauth_schema.sql:105: NOTICE:  policy "Users can view own 
+profile" for relation "public.profiles" does not exist, skipping
+CREATE POLICY
+DROP POLICY
+CREATE POLICY
+psql:/workspace/supabase/migrations/20261022130000_google_oauth_schema.sql:142: NOTICE:  policy "Users can insert own 
+profile" for relation "public.profiles" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+
+GRANT
+GRANT
+GRANT
+GRANT
+GRANT
+GRANT
+GRANT
+GRANT
+GRANT
+GRANT
+GRANT
+GRANT
+GRANT
+GRANT
+GRANT
+GRANT
+
+ALTER TABLE
+CREATE INDEX
+GRANT
+DROP POLICY
+CREATE POLICY
+DROP POLICY
+CREATE POLICY
+DROP POLICY
+CREATE POLICY
+DROP POLICY
+CREATE POLICY
+DROP POLICY
+CREATE POLICY
+DROP POLICY
+CREATE POLICY
+
+CREATE FUNCTION
+UPDATE 0
+INSERT 0 4
+INSERT 0 4
+DO
+
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+DROP POLICY
+docker : psql:/workspace/supabase/migrations/20261022170000_workflow_audit_lifecycle_and_weight.sql:30: NOTICE:  
+policy "Staff can insert weight change history" for relation "public.weight_change_history" does not exist, skipping
+At F:\superwash\docs\review\phase2b_artifacts\phase2b_master_test_runner.ps1:158 char:15
++ ...   $migOut = docker exec $ContainerName psql -U postgres -d $DatabaseN ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (psql:/workspace...exist, skipping:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+CREATE POLICY
+DROP POLICY
+psql:/workspace/supabase/migrations/20261022170000_workflow_audit_lifecycle_and_weight.sql:43: NOTICE:  policy "Staff 
+can view weight change history" for relation "public.weight_change_history" does not exist, skipping
+CREATE POLICY
+psql:/workspace/supabase/migrations/20261022170000_workflow_audit_lifecycle_and_weight.sql:62: NOTICE:  policy "Store 
+managers can view and manage staff" for relation "public.profiles" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+DO
+
+docker : psql:/workspace/supabase/migrations/20261022180000_database_enforced_workflow_and_security.sql:44: NOTICE:  
+column "pickup_measured_weight" of relation "orders" already exists, skipping
+At F:\superwash\docs\review\phase2b_artifacts\phase2b_master_test_runner.ps1:158 char:15
++ ...   $migOut = docker exec $ContainerName psql -U postgres -d $DatabaseN ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (psql:/workspace...xists, skipping:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+psql:/workspace/supabase/migrations/20261022180000_database_enforced_workflow_and_security.sql:44: NOTICE:  column 
+"pickup_weighed_at" of relation "orders" already exists, skipping
+psql:/workspace/supabase/migrations/20261022180000_database_enforced_workflow_and_security.sql:44: NOTICE:  column 
+"pickup_weighed_by" of relation "orders" already exists, skipping
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+CREATE INDEX
+CREATE INDEX
+DROP TRIGGER
+DROP FUNCTION
+ALTER TABLE
+DROP POLICY
+CREATE POLICY
+DROP POLICY
+CREATE POLICY
+CREATE FUNCTION
+REVOKE
+GRANT
+CREATE FUNCTION
+DROP TRIGGER
+psql:/workspace/supabase/migrations/20261022180000_database_enforced_workflow_and_security.sql:647: NOTICE:  trigger 
+"trigger_enforce_order_workflow" for relation "public.orders" does not exist, skipping
+CREATE TRIGGER
+REVOKE
+GRANT
+GRANT
+REVOKE
+GRANT
+
+CREATE INDEX
+docker : psql:/workspace/supabase/migrations/20261023100000_service_catalogue_enhancements.sql:16: NOTICE:  constraint 
+"services_pricing_unit_check" of relation "services" does not exist, skipping
+At F:\superwash\docs\review\phase2b_artifacts\phase2b_master_test_runner.ps1:158 char:15
++ ...   $migOut = docker exec $ContainerName psql -U postgres -d $DatabaseN ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (psql:/workspace...exist, skipping:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+ALTER TABLE
+ALTER TABLE
+DROP POLICY
+CREATE POLICY
+DROP POLICY
+CREATE POLICY
+CREATE FUNCTION
+DROP TRIGGER
+psql:/workspace/supabase/migrations/20261023100000_service_catalogue_enhancements.sql:52: NOTICE:  trigger 
+"trg_prevent_referenced_service_delete" for relation "public.services" does not exist, skipping
+CREATE TRIGGER
+
+CREATE TABLE
+CREATE INDEX
+ALTER TABLE
+DROP POLICY
+docker : psql:/workspace/supabase/migrations/20261023110000_secure_staff_account_creation.sql:40: NOTICE:  policy 
+"Owner can manage staff pre-registrations" for relation "public.staff_pre_registrations" does not exist, skipping
+At F:\superwash\docs\review\phase2b_artifacts\phase2b_master_test_runner.ps1:158 char:15
++ ...   $migOut = docker exec $ContainerName psql -U postgres -d $DatabaseN ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (psql:/workspace...exist, skipping:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+CREATE POLICY
+DROP POLICY
+psql:/workspace/supabase/migrations/20261023110000_secure_staff_account_creation.sql:47: NOTICE:  policy "Users can 
+read own pre-registration" for relation "public.staff_pre_registrations" does not exist, skipping
+CREATE POLICY
+REVOKE
+GRANT
+CREATE FUNCTION
+REVOKE
+GRANT
+CREATE FUNCTION
+REVOKE
+CREATE FUNCTION
+REVOKE
+GRANT
+
+CREATE FUNCTION
+REVOKE
+GRANT
+DROP POLICY
+docker : psql:/workspace/supabase/migrations/20261023120000_staff_management_enhancements.sql:29: NOTICE:  policy 
+"Owner can update profiles" for relation "public.profiles" does not exist, skipping
+At F:\superwash\docs\review\phase2b_artifacts\phase2b_master_test_runner.ps1:158 char:15
++ ...   $migOut = docker exec $ContainerName psql -U postgres -d $DatabaseN ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (psql:/workspace...exist, skipping:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+CREATE POLICY
+CREATE FUNCTION
+REVOKE
+GRANT
+CREATE FUNCTION
+REVOKE
+GRANT
+
+CREATE FUNCTION
+REVOKE
+GRANT
+CREATE FUNCTION
+docker : psql:/workspace/supabase/migrations/20261023140000_portal_separation_and_role_protection.sql:49: NOTICE:  
+trigger "trg_prevent_self_role_escalation" for relation "public.profiles" does not exist, skipping
+At F:\superwash\docs\review\phase2b_artifacts\phase2b_master_test_runner.ps1:158 char:15
++ ...   $migOut = docker exec $ContainerName psql -U postgres -d $DatabaseN ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (psql:/workspace...exist, skipping:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+DROP TRIGGER
+CREATE TRIGGER
+DROP POLICY
+CREATE POLICY
+CREATE FUNCTION
+REVOKE
+GRANT
+
+UPDATE 1
+ALTER TABLE
+CREATE FUNCTION
+DROP TRIGGER
+CREATE TRIGGER
+UPDATE 0
+UPDATE 0
+CREATE FUNCTION
+DROP TRIGGER
+docker : psql:/workspace/supabase/migrations/20261023160000_primary_owner_transition_and_brand_update.sql:125: NOTICE: 
+ trigger "trg_prevent_primary_owner_deletion" for relation "public.profiles" does not exist, skipping
+At F:\superwash\docs\review\phase2b_artifacts\phase2b_master_test_runner.ps1:158 char:15
++ ...   $migOut = docker exec $ContainerName psql -U postgres -d $DatabaseN ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (psql:/workspace...exist, skipping:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+CREATE TRIGGER
+CREATE FUNCTION
+CREATE FUNCTION
+CREATE FUNCTION
+
+BEGIN
+CREATE SEQUENCE
+docker : psql:/workspace/supabase/migrations/20261024100000_concurrency_safe_order_numbers.sql:34: NOTICE:  relation 
+"order_number_seq" already exists, skipping
+At F:\superwash\docs\review\phase2b_artifacts\phase2b_master_test_runner.ps1:158 char:15
++ ...   $migOut = docker exec $ContainerName psql -U postgres -d $DatabaseN ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (psql:/workspace...xists, skipping:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+DO
+ALTER TABLE
+CREATE FUNCTION
+DROP TRIGGER
+CREATE TRIGGER
+DROP FUNCTION
+psql:/workspace/supabase/migrations/20261024100000_concurrency_safe_order_numbers.sql:107: NOTICE:  function 
+public.get_next_order_number() does not exist, skipping
+REVOKE
+GRANT
+GRANT
+COMMIT
+
+BEGIN
+ALTER TABLE
+CREATE INDEX
+COMMENT
+COMMENT
+CREATE FUNCTION
+REVOKE
+GRANT
+REVOKE
+COMMIT
+
+BEGIN
+GRANT
+CREATE FUNCTION
+REVOKE
+GRANT
+COMMIT
+
+BEGIN
+GRANT
+REVOKE
+GRANT
+ALTER TABLE
+DROP POLICY
+CREATE POLICY
+DROP POLICY
+CREATE POLICY
+COMMIT
+
+BEGIN
+REVOKE
+DROP POLICY
+docker : psql:/workspace/supabase/migrations/20261027130000_fix_staff_profile_deletion_permissions.sql:32: NOTICE:  
+policy "Owner can delete profiles" for relation "public.profiles" does not exist, skipping
+At F:\superwash\docs\review\phase2b_artifacts\phase2b_master_test_runner.ps1:158 char:15
++ ...   $migOut = docker exec $ContainerName psql -U postgres -d $DatabaseN ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (psql:/workspace...exist, skipping:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+CREATE FUNCTION
+CREATE FUNCTION
+REVOKE
+GRANT
+REVOKE
+GRANT
+COMMIT
+
+BEGIN
+CREATE SCHEMA
+REVOKE
+ALTER DEFAULT PRIVILEGES
+ALTER DEFAULT PRIVILEGES
+ALTER DEFAULT PRIVILEGES
+LOCK TABLE
+DO
+SELECT 0
+SELECT 1
+REVOKE
+CREATE TABLE
+REVOKE
+DO
+CREATE TABLE
+CREATE INDEX
+ALTER TABLE
+REVOKE
+GRANT
+GRANT
+DROP POLICY
+docker : psql:/workspace/supabase/migrations/20261027140000_coupons_and_address_dedup.sql:143: NOTICE:  policy "Anyone 
+can view active coupons" for relation "public.coupons" does not exist, skipping
+At F:\superwash\docs\review\phase2b_artifacts\phase2b_master_test_runner.ps1:158 char:15
++ ...   $migOut = docker exec $ContainerName psql -U postgres -d $DatabaseN ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (psql:/workspace...exist, skipping:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+CREATE POLICY
+psql:/workspace/supabase/migrations/20261027140000_coupons_and_address_dedup.sql:150: NOTICE:  policy "Owners can 
+manage coupons" for relation "public.coupons" does not exist, skipping
+DROP POLICY
+CREATE POLICY
+DO
+CREATE FUNCTION
+psql:/workspace/supabase/migrations/20261027140000_coupons_and_address_dedup.sql:203: NOTICE:  trigger 
+"trg_order_coupon_cancellation" for relation "public.orders" does not exist, skipping
+DROP TRIGGER
+CREATE TRIGGER
+INSERT 0 0
+DELETE 0
+CREATE INDEX
+CREATE FUNCTION
+REVOKE
+GRANT
+INSERT 0 2
+DO
+CREATE FUNCTION
+CREATE FUNCTION
+REVOKE
+GRANT
+REVOKE
+GRANT
+COMMIT
+
+[2026-10-28 11:53:31] [SUITE A] All 20 baseline migrations applied cleanly with ON_ERROR_STOP=1.
+[2026-10-28 11:53:31] [SUITE A] Applying Candidate SQL: docs\review\stage5b_release_candidate\00_stage5b_atomic_release.sql...
+BEGIN
+ALTER TABLE
+COMMENT
+CREATE FUNCTION
+ALTER FUNCTION
+REVOKE
+DROP TRIGGER
+docker : psql:/workspace/docs/review/stage5b_release_candidate/00_stage5b_atomic_release.sql:42: NOTICE:  trigger 
+"trigger_enforce_coupon_snapshot_immutability" for relation "public.orders" does not exist, skipping
+At F:\superwash\docs\review\phase2b_artifacts\phase2b_master_test_runner.ps1:170 char:12
++ $candOut = docker exec $ContainerName psql -U postgres -d $DatabaseNa ...
++            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (psql:/workspace...exist, skipping:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+CREATE TRIGGER
+CREATE FUNCTION
+ALTER FUNCTION
+REVOKE
+GRANT
+CREATE FUNCTION
+ALTER FUNCTION
+REVOKE
+GRANT
+CREATE FUNCTION
+ALTER FUNCTION
+REVOKE
+CREATE FUNCTION
+ALTER FUNCTION
+REVOKE
+CREATE FUNCTION
+ALTER FUNCTION
+REVOKE
+GRANT
+CREATE FUNCTION
+ALTER FUNCTION
+REVOKE
+GRANT
+CREATE FUNCTION
+ALTER FUNCTION
+REVOKE
+GRANT
+CREATE FUNCTION
+ALTER FUNCTION
+REVOKE
+GRANT
+CREATE FUNCTION
+ALTER FUNCTION
+REVOKE
+GRANT
+CREATE FUNCTION
+ALTER FUNCTION
+REVOKE
+GRANT
+CREATE FUNCTION
+ALTER FUNCTION
+REVOKE
+DO
+REVOKE
+REVOKE
+REVOKE
+GRANT
+GRANT
+GRANT
+GRANT
+GRANT
+GRANT
+GRANT
+GRANT
+DO
+NOTIFY
+COMMIT
+
+[2026-10-28 11:53:31] [SUITE A] Candidate SQL applied cleanly. Section 15 catalog assertions passed.
+[2026-10-28 11:53:31] 
+>>> [STEP 3 / SUITE B] Executing Suite B: Exhaustive Privileges & Security...
+CREATE TABLE
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+                     test_id                     |  role_tested  |    operation    |  expected_sqlstate  | actual_sqlstate | status |                                                                details                                                                 
+-------------------------------------------------+---------------+-----------------+---------------------+-----------------+--------+----------------------------------------------------------------------------------------------------------------------------------------
+ B10_ATTEMPT_DEL_AUTH                            | authenticated | DELETE          | 42501               | 42501           | PASS   | Permission denied as expected: permission denied for table orders
+ B11_RPC_AUTH_advance_order_workflow_status_3    | authenticated | EXECUTE         | ALLOWED             | ALLOWED         | PASS   | authenticated has EXECUTE on advance_order_workflow_status(uuid,text,text)
+ B11_RPC_AUTH_assign_order_courier_5             | authenticated | EXECUTE         | ALLOWED             | ALLOWED         | PASS   | authenticated has EXECUTE on assign_order_courier(uuid,text,uuid,text,text)
+ B11_RPC_AUTH_cancel_order_with_batch_sync_2     | authenticated | EXECUTE         | ALLOWED             | ALLOWED         | PASS   | authenticated has EXECUTE on cancel_order_with_batch_sync(uuid,text)
+ B11_RPC_AUTH_create_booking_idempotent_12       | authenticated | EXECUTE         | ALLOWED             | ALLOWED         | PASS   | authenticated has EXECUTE on create_booking_idempotent(text,text,text,text,text,text,date,text,uuid,numeric,numeric,text)
+ B11_RPC_AUTH_create_booking_idempotent_14       | authenticated | EXECUTE         | ALLOWED             | ALLOWED         | PASS   | authenticated has EXECUTE on create_booking_idempotent(text,text,text,text,text,text,date,text,uuid,numeric,numeric,text,text,integer)
+ B11_RPC_AUTH_record_courier_pickup_collection_3 | authenticated | EXECUTE         | ALLOWED             | ALLOWED         | PASS   | authenticated has EXECUTE on record_courier_pickup_collection(uuid,numeric,text)
+ B11_RPC_AUTH_record_store_intake_weight_3       | authenticated | EXECUTE         | ALLOWED             | ALLOWED         | PASS   | authenticated has EXECUTE on record_store_intake_weight(uuid,numeric,text)
+ B11_RPC_AUTH_update_order_delivery_notes_2      | authenticated | EXECUTE         | ALLOWED             | ALLOWED         | PASS   | authenticated has EXECUTE on update_order_delivery_notes(uuid,text)
+ B1_TBL_DEL_anon                                 | anon          | DELETE          | NO PRIVILEGE        | NO PRIVILEGE    | PASS   | Table DELETE denied as expected
+ B1_TBL_DEL_authenticated                        | authenticated | DELETE          | NO PRIVILEGE        | NO PRIVILEGE    | PASS   | Table DELETE denied as expected
+ B1_TBL_DEL_service_role                         | service_role  | DELETE          | NO PRIVILEGE        | NO PRIVILEGE    | PASS   | Table DELETE denied as expected
+ B1_TBL_INS_anon                                 | anon          | INSERT          | NO PRIVILEGE        | NO PRIVILEGE    | PASS   | Table INSERT denied as expected
+ B1_TBL_INS_authenticated                        | authenticated | INSERT          | NO PRIVILEGE        | NO PRIVILEGE    | PASS   | Table INSERT denied as expected
+ B1_TBL_INS_service_role                         | service_role  | INSERT          | NO PRIVILEGE        | NO PRIVILEGE    | PASS   | Table INSERT denied as expected
+ B1_TBL_PUBLIC                                   | PUBLIC        | WRITE/TRIGGER   | NO ACL              | CLEAN           | PASS   | PUBLIC has no write/trigger privileges on public.orders
+ B1_TBL_TRIG_anon                                | anon          | TRIGGER         | NO PRIVILEGE        | NO PRIVILEGE    | PASS   | Table TRIGGER denied as expected
+ B1_TBL_TRIG_authenticated                       | authenticated | TRIGGER         | NO PRIVILEGE        | NO PRIVILEGE    | PASS   | Table TRIGGER denied as expected
+ B1_TBL_TRIG_service_role                        | service_role  | TRIGGER         | NO PRIVILEGE        | NO PRIVILEGE    | PASS   | Table TRIGGER denied as expected
+ B1_TBL_TRUNC_anon                               | anon          | TRUNCATE        | NO PRIVILEGE        | NO PRIVILEGE    | PASS   | Table TRUNCATE denied as expected
+ B1_TBL_TRUNC_authenticated                      | authenticated | TRUNCATE        | NO PRIVILEGE        | NO PRIVILEGE    | PASS   | Table TRUNCATE denied as expected
+ B1_TBL_TRUNC_service_role                       | service_role  | TRUNCATE        | NO PRIVILEGE        | NO PRIVILEGE    | PASS   | Table TRUNCATE denied as expected
+ B2_COL_CATALOG                                  | ALL ROLES     | INSERT/UPDATE   | ONLY delivery_notes | MATCH           | PASS   | Direct writes denied across all 47 columns; only delivery_notes granted to authenticated
+ B2_COL_PUBLIC_ACL                               | PUBLIC        | INSERT/UPDATE   | NO ACL              | 0 ACL entries   | PASS   | PUBLIC pseudo-role has no column write grants in pg_attribute
+ B3_ATTEMPT_INS_ANON                             | anon          | INSERT          | 42501               | 42501           | PASS   | Permission denied as expected: permission denied for table orders
+ B4_ATTEMPT_INS_AUTH                             | authenticated | INSERT          | 42501               | 42501           | PASS   | Permission denied as expected: permission denied for table orders
+ B5_ATTEMPT_INS_SRV                              | service_role  | INSERT          | 42501               | 42501           | PASS   | Permission denied as expected: permission denied for table orders
+ B6_ATTEMPT_UPD_DISCOUNT_AUTH                    | authenticated | UPDATE          | 42501               | 42501           | PASS   | Permission denied as expected: permission denied for table orders
+ B7_ATTEMPT_UPD_NOTES_ASSIGNED_COURIER           | authenticated | UPDATE          | 00000 (1 row)       | 00000 (1 row)   | PASS   | Allowed under authenticated RLS policy as expected, 1 row updated
+ B8A_ATTEMPT_UPD_NOTES_CUSTOMER                  | authenticated | UPDATE (0 rows) | 0 rows              | 0 rows          | PASS   | RLS prevented direct customer update (0 rows affected)
+ B8B_ATTEMPT_UPD_NOTES_UNASSIGNED_COURIER        | authenticated | UPDATE (0 rows) | 0 rows              | 0 rows          | PASS   | RLS prevented unassigned courier update (0 rows affected)
+ B8C_ATTEMPT_UPD_NOTES_MANAGER                   | authenticated | UPDATE (1 row)  | 1 row               | 1 row           | PASS   | Manager can update delivery_notes under RLS as expected
+ B9_ATTEMPT_UPD_STATUS_SRV                       | service_role  | UPDATE          | 42501               | 42501           | PASS   | Permission denied as expected: permission denied for table orders
+(33 rows)
+
+[2026-10-28 11:53:32] [SUITE B] Results: 33 PASSED, 0 FAILED
+[2026-10-28 11:53:32] 
+>>> [STEP 4 / SUITE C] Executing Suite C: Booking, Idempotency & Snapshots...
+CREATE TABLE
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+           test_id            |               test_name                | status |                                                                  details                                                                   
+------------------------------+----------------------------------------+--------+--------------------------------------------------------------------------------------------------------------------------------------------
+ C1_NO_COUPON                 | Booking without coupon                 | PASS   | Booking created clean row without coupon
+ C2_FIXED_SNAPSHOT            | Valid fixed coupon snapshot            | PASS   | Accurate fixed snapshot stored
+ C3_PERCENT_SNAPSHOT          | Valid percent coupon snapshot          | PASS   | Accurate percentage snapshot stored
+ C4_REJECT_SUBTOTAL_BELOW_MIN | Reject coupon below min subtotal       | PASS   | Correctly rejected coupon below min order requirement: Minimum order subtotal of Ôé¦200 required for coupon "SNAPPERC20".
+ C5_ROUNDING_PRECISION        | Percentage rounding and precision      | PASS   | Exact percentage discount evaluated at booking
+ C6_SNAPSHOT_IMMUTABILITY     | Snapshot immutability trigger          | PASS   | Trigger blocked snapshot modification: Security violation: coupon_snapshot is immutable and cannot be modified on UPDATE (order #SW-1002).
+ C7_IDEMPOTENT_REPLAY         | Idempotent replay returns existing row | PASS   | Idempotent resubmission returned existing order without creating duplicate
+ C8_REJECT_INVALID_COUPON     | Reject invalid / non-existent coupon   | PASS   | Correctly rejected invalid coupon: Coupon "NONEXISTENT999" is invalid or expired.
+ C9_HISTORICAL_NULL_SNAPSHOT  | Historical order with NULL snapshot    | PASS   | Legacy row safely preserved with NULL snapshot
+(9 rows)
+
+[2026-10-28 11:53:32] [SUITE C] Results: 9 PASSED, 0 FAILED
+[2026-10-28 11:53:32] 
+>>> [STEP 5 / SUITE D] Executing Suite D: Linked Services & Batch Coupon Sync...
+CREATE TABLE
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+           test_id            |                   test_name                   | status |                                                                                                details                                                                                                
+------------------------------+-----------------------------------------------+--------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ D1_WEIGH_SEQUENCE_A          | Weigh S1 then S2 (Seq A)                      | PASS   | Correct atomic pricing after weighing S1 then S2
+ D2_PERMUTATION_INDEPENDENCE  | Weigh S2 then S1 (Seq B)                      | PASS   | Permutation independence confirmed: weighing order does not affect final discount or total
+ D3_3_LINKED_ORDERS           | 3 Linked Orders Synchronization               | PASS   | Authoritative batch sync across 3 orders succeeded
+ D4_THRESHOLD_BOUNDARY        | Threshold boundary below vs exactly at min    | PASS   | Exact threshold boundary evaluation verified
+ D5_FIXED_EXCESS_FORFEITED    | Fixed discount excess forfeited               | PASS   | Excess 2000 paise forfeited without spillover
+ D6_SIBLING_CANCEL_REVOCATION | Sibling cancellation revokes discount         | PASS   | Sibling cancellation cleanly revoked coupon when subtotal dropped below min
+ D7_PAID_AMOUNT_FLOOR         | Prevent downward reweighing below paid amount | PASS   | Paid amount floor protected: Downward re-weighing rejected: Recalculated total (Ôé¦79.00) is less than already paid amount (Ôé¦158.00). Modifications below paid amount require formal refund processing.
+(7 rows)
+
+[2026-10-28 11:53:32] [SUITE D] Results: 7 PASSED, 0 FAILED
+[2026-10-28 11:53:32] 
+>>> [STEP 6 / SUITE E] Executing Suite E: Payment Ledger & Financial Invariants...
+CREATE TABLE
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+             test_id             |                   test_name                    | status |                                                              details                                                               
+---------------------------------+------------------------------------------------+--------+------------------------------------------------------------------------------------------------------------------------------------
+ E1_INITIAL_UNPAID               | Initial unpaid order state                     | PASS   | Clean initial payment state verified
+ E2_PARTIAL_PAYMENT              | Partial payment execution                      | PASS   | Partial payment recorded and status set to partially_paid
+ E3_MULTIPLE_PAYMENTS_TO_FULL    | Multiple payments aggregate to paid status     | PASS   | Multiple ledger entries cleanly aggregated to full paid status
+ E4_OVERPAYMENT_REJECTION        | Prevent payment exceeding order total          | PASS   | Overpayment rejected: Order #SW-PAY-001 is already fully paid (Total: 20000 paise, Paid: 20000 paise).
+ E5_DIRECT_PAYMENT_UPDATE_DENIED | Trigger blocks direct paid_amount modification | PASS   | Trigger blocked direct payment manipulation: Security violation: Paid amount (25000 paise) cannot exceed bill total (20000 paise).
+ E6_DECREASE_PAID_AMOUNT_DENIED  | Trigger blocks decreasing paid_amount          | PASS   | Trigger protected paid amount floor: Security violation: Paid amount on orders cannot decrease (20000 -> 10000).
+ E7_PAYMENT_IDEMPOTENT_REPLAY    | Payment idempotency key replay                 | PASS   | Idempotent replay safely returned original payment without creating duplicate ledger row
+(7 rows)
+
+[2026-10-28 11:53:32] [SUITE E] Results: 7 PASSED, 0 FAILED
+[2026-10-28 11:53:32] 
+>>> [STEP 7 / SUITE F] Executing Suite F: Workflow & Cancellation State Machine...
+CREATE TABLE
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+             test_id              |                   test_name                   | status |                                                                       details                                                                       
+----------------------------------+-----------------------------------------------+--------+-----------------------------------------------------------------------------------------------------------------------------------------------------
+ F1_ASSIGN_PICKUP                 | Pickup courier assignment                     | PASS   | Manager assigned courier Ramesh successfully
+ F2_UNASSIGNED_COURIER_DENIED     | Deny collection by unassigned courier         | PASS   | Unassigned courier rejected: Unauthorized: You are not the assigned pickup associate for order #ORD-F-001.
+ F3_DOORSTEP_COLLECTION           | Doorstep collection by assigned courier       | PASS   | Doorstep collection successfully recorded
+ F4_EARLY_CUSTOMER_CANCEL         | Early customer cancellation permitted         | PASS   | Customer cleanly cancelled early booked order
+ F5_LATE_CUSTOMER_CANCEL_DENIED   | Deny customer cancellation on collected order | PASS   | Late customer cancellation rejected: Order #ORD-F-001 cannot be cancelled by customer after collection has commenced. Please contact store support.
+ F6_STORE_INTAKE_WEIGH            | Store intake weighing transitions to washing  | PASS   | Store intake weighing completed and order moved to washing
+ F7_LIFECYCLE_TO_DELIVERED        | Full lifecycle progression to delivered       | PASS   | Lifecycle transitions cleanly executed to delivered state
+ F8_DELIVERED_TERMINAL_PROTECTION | Prevent reopening delivered order             | PASS   | Terminal state protected on delivered order: Invalid transition: Cannot move to washing from status "delivered". Expected "collected".
+ F9_AUDIT_LOG_VERIFICATION        | Immutable audit log verification              | PASS   | Complete sequential audit history verified in order_status_history
+(9 rows)
+
+[2026-10-28 11:53:33] [SUITE F] Results: 9 PASSED, 0 FAILED
+[2026-10-28 11:53:33] 
+>>> [STEP 8 / SUITE G] Executing Suite G: Invoice & Billing Reconciliation...
+CREATE TABLE
+DO
+DO
+DO
+DO
+DO
+                test_id                |                     test_name                      | status |                                    details                                    
+---------------------------------------+----------------------------------------------------+--------+-------------------------------------------------------------------------------
+ G1_PRICING_UNITS_RECONCILIATION       | Pricing calculation across units                   | PASS   | Accurate pricing evaluated across all units without distortion
+ G2_MIN_WEIGHT_INVARIANT               | Billable weight floor at min_weight                | PASS   | Billable weight correctly clamped to min_weight
+ G3_INVOICE_ARITHMETIC_RECONCILIATION  | Invoice components: subtotal, discount, fee, total | PASS   | All invoice components independently reconciled and mathematically consistent
+ G4_OUTSTANDING_BALANCE_RECONCILIATION | Outstanding balance calculation                    | PASS   | Outstanding invoice balance matches total minus payments
+(4 rows)
+
+[2026-10-28 11:53:33] [SUITE G] Results: 4 PASSED, 0 FAILED
+[2026-10-28 11:53:33] 
+>>> [STEP 9 / SUITE H] Executing Suite H: Multi-Session Concurrency...
+[2026-10-28 11:53:39] [SUITE H] Results: 3 PASSED, 0 FAILED
+[2026-10-28 11:53:39] 
+>>> [STEP 10 / SUITE I] Executing Suite I: Randomized Property Regression...
+[2026-10-28 11:53:46] [SUITE I] Results: 20 PASSED, 0 FAILED
+[2026-10-28 11:53:46] 
+>>> [STEP 11] Saving Durable Progress Checkpoint & JSON Results...
+[2026-10-28 11:53:46] 
+>>> [STEP 12] Teardown: Stopping and removing disposable test container...
+[2026-10-28 11:53:46] [TEARDOWN] Container superwash-stage5b-pg15-test safely destroyed. Environment clean.
+[2026-10-28 11:53:46] 
+=================================================================
+[2026-10-28 11:53:46]   ALL 9 SUITES COMPLETED: 93 PASSED, 0 FAILED
+[2026-10-28 11:53:46]   Recommendation: GO
+[2026-10-28 11:53:46] =================================================================

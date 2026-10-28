@@ -3,7 +3,7 @@ import {
   PickupSlot, Profile, CustomerAddress, Payment, WeightChangeHistory, OrderStatusHistory,
   OrderFeedback, FeedbackStatus, FeedbackSummaryMetrics,
   ServiceArea, LaundryServiceItem, PeriodFilter, DashboardPeriodAnalytics, UserRole,
-  Coupon, CouponValidationResult
+  Coupon, CouponValidationResult, CouponSnapshot
 } from '../types';
 import { supabase, isSupabaseConfigured } from './supabase';
 import { WhatsAppService } from './whatsappService';
@@ -354,22 +354,59 @@ export class LaundryService {
     }
 
     try {
-      const coupons = await this.getCoupons(true);
-      const coupon = coupons.find(
-        c => c.code.trim().toUpperCase() === order.coupon_code!.trim().toUpperCase()
-      );
+      // 1. Prioritize terms snapshotted at booking time to prevent edits to general coupon config from breaking accepted offers
+      let coupon: {
+        code: string;
+        discount_type: 'percentage' | 'fixed';
+        discount_value: number;
+        min_order_paise?: number;
+        max_discount_paise?: number | null;
+        applicable_service_ids?: string[] | null;
+      } | undefined = order.coupon_snapshot || undefined;
+
+      if (!coupon) {
+        const coupons = await this.getCoupons(true);
+        coupon = coupons.find(
+          c => c.code.trim().toUpperCase() === order.coupon_code!.trim().toUpperCase()
+        );
+      }
 
       if (!coupon) {
         return Math.max(0, Math.min(order.discount_paise || 0, laundryChargePaise));
       }
 
-      // Enforce minimum order threshold against actual final laundry subtotal
-      if (coupon.min_order_paise > 0 && laundryChargePaise < coupon.min_order_paise) {
+      // Check if applicable service restrictions apply
+      if (coupon.applicable_service_ids && coupon.applicable_service_ids.length > 0 && order.service_id) {
+        if (!coupon.applicable_service_ids.includes(order.service_id)) {
+          return 0;
+        }
+      }
+
+      // If order belongs to a linked multi-service batch, evaluate min_order_paise against combined non-cancelled batch subtotal
+      let eligibleSubtotalPaise = laundryChargePaise;
+      const batchMatch = order.notes?.match(/\[Linked Batch ([^:\]]+)/);
+      if (batchMatch) {
+        const batchId = batchMatch[1];
+        const allOrders = await this.getOrders();
+        const activeBatchSiblings = allOrders.filter(
+          o => o.id !== order.id && o.notes?.includes(batchId) && o.order_status !== 'cancelled'
+        );
+        const siblingsSubtotal = activeBatchSiblings.reduce((sum, o) => {
+          const sibCharge = o.total_amount_paise !== null && o.total_amount_paise !== undefined
+            ? (o.total_amount_paise + (o.discount_paise || 0) - (o.delivery_charge_paise || 0))
+            : Math.round((o.price_per_kg_paise || 7900) * (o.min_weight_kg || 1.0));
+          return sum + Math.max(0, sibCharge);
+        }, 0);
+        eligibleSubtotalPaise = laundryChargePaise + siblingsSubtotal;
+      }
+
+      // Enforce minimum order threshold against actual final laundry subtotal (or combined batch subtotal)
+      if (coupon.min_order_paise > 0 && eligibleSubtotalPaise < coupon.min_order_paise) {
         return 0;
       }
 
       if (coupon.discount_type === 'percentage') {
-        const rawPctDiscount = Math.round(laundryChargePaise * (coupon.discount_value / 100));
+        const rawPctDiscount = Math.round(eligibleSubtotalPaise * (coupon.discount_value / 100));
         const cappedDiscount = coupon.max_discount_paise
           ? Math.min(rawPctDiscount, coupon.max_discount_paise)
           : rawPctDiscount;
@@ -891,6 +928,7 @@ export class LaundryService {
     client_submission_id?: string;
     coupon_code?: string;
     discount_paise?: number;
+    coupon_snapshot?: CouponSnapshot | null;
   }): Promise<Order> {
     // 0. Ensure request has a submission identity
     if (!data.client_submission_id) {
@@ -948,6 +986,7 @@ export class LaundryService {
       client_submission_id?: string;
       coupon_code?: string;
       discount_paise?: number;
+      coupon_snapshot?: CouponSnapshot | null;
     },
     dedupePhone: string
   ): Promise<Order> {
@@ -1008,6 +1047,24 @@ export class LaundryService {
       }
     }
 
+    // Snapshot promotional terms at booking time so later coupon edits don't change accepted offers
+    let couponSnapshot: CouponSnapshot | null = data.coupon_snapshot || null;
+    if (!couponSnapshot && data.coupon_code) {
+      const cleanCode = data.coupon_code.trim().toUpperCase();
+      const allCoupons = await this.getCoupons(true);
+      const matched = allCoupons.find(c => c.code.trim().toUpperCase() === cleanCode);
+      if (matched) {
+        couponSnapshot = {
+          code: matched.code,
+          discount_type: matched.discount_type,
+          discount_value: matched.discount_value,
+          min_order_paise: matched.min_order_paise,
+          max_discount_paise: matched.max_discount_paise,
+          applicable_service_ids: matched.applicable_service_ids
+        };
+      }
+    }
+
     const newOrder: Order = {
       id: generateUUID(),
       order_number: orderNumber,
@@ -1042,6 +1099,7 @@ export class LaundryService {
       notes: data.notes,
       coupon_code: data.coupon_code || null,
       discount_paise: data.discount_paise || 0,
+      coupon_snapshot: couponSnapshot,
       
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
@@ -1180,51 +1238,73 @@ export class LaundryService {
     }
 
     const previousStatus = order.order_status;
-    order.assigned_pickup_id = staffId;
-    order.assigned_pickup_name = staffName;
-    order.assigned_pickup_phone = staffPhone;
-    order.order_status = 'pickup_assigned';
-    order.updated_at = new Date().toISOString();
+    const pickupBatchMatch = order.notes?.match(/\[Linked Batch ([^:\]]+)/);
 
     if (isLiveMode) {
-      const { data, error } = await supabase
-        .from('orders')
-        .update({
-          assigned_pickup_id: staffId,
-          assigned_pickup_name: staffName,
-          assigned_pickup_phone: staffPhone,
-          order_status: 'pickup_assigned',
-          updated_at: order.updated_at
-        })
-        .eq('id', orderId)
-        .select();
-
-      if (error) {
-        throw new Error(`Failed to persist pickup assignment in database: ${error.message}`);
-      }
-
-      if (!data || data.length === 0) {
-        throw new Error(
-          'Database denied update: 0 rows modified. Your current session does not have Store Manager permissions under Supabase Row-Level Security. Please sign in with an authorized manager account.'
-        );
-      }
-
-      // Authoritative database record
-      const persisted = data[0] as Order;
-      order.assigned_pickup_id = persisted.assigned_pickup_id;
-      order.assigned_pickup_name = persisted.assigned_pickup_name;
-      order.assigned_pickup_phone = persisted.assigned_pickup_phone;
-      order.order_status = persisted.order_status;
-      order.updated_at = persisted.updated_at;
-
-      const auditUuid = isUUID(staffId) ? staffId : null;
-      await supabase.from('order_status_history').insert({
-        order_id: orderId,
-        previous_status: previousStatus,
-        new_status: 'pickup_assigned',
-        notes: `Pickup assigned to ${staffName} (${staffPhone})`,
-        changed_by: auditUuid
+      const { data: rpcData, error: rpcError } = await supabase.rpc('assign_order_courier', {
+        p_order_id: orderId,
+        p_assignment_type: 'pickup',
+        p_courier_id: staffId,
+        p_courier_name: staffName,
+        p_courier_phone: staffPhone
       });
+
+      if (rpcError || !rpcData?.success) {
+        const isRpcMissing =
+          rpcError?.code === '42883' ||
+          rpcError?.code === 'PGRST202' ||
+          rpcError?.message?.includes('assign_order_courier') ||
+          rpcError?.message?.includes('could not find');
+
+        if (isRpcMissing) {
+          throw new Error('The courier assignment service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
+        }
+        throw new Error(rpcError?.message || 'Failed to persist pickup assignment in database');
+      }
+
+      order.assigned_pickup_id = staffId;
+      order.assigned_pickup_name = rpcData.courier_name || staffName;
+      order.assigned_pickup_phone = rpcData.courier_phone || staffPhone;
+      order.order_status = 'pickup_assigned';
+      order.updated_at = new Date().toISOString();
+
+      if (pickupBatchMatch) {
+        const batchId = pickupBatchMatch[1];
+        const siblingOrders = orders.filter(
+          o => o.id !== order.id &&
+               o.notes?.includes(batchId) &&
+               (o.order_status === 'booked' || o.order_status === 'pickup_assigned')
+        );
+        for (const sib of siblingOrders) {
+          sib.assigned_pickup_id = staffId;
+          sib.assigned_pickup_name = order.assigned_pickup_name;
+          sib.assigned_pickup_phone = order.assigned_pickup_phone;
+          sib.order_status = 'pickup_assigned';
+          sib.updated_at = order.updated_at;
+        }
+      }
+    } else {
+      order.assigned_pickup_id = staffId;
+      order.assigned_pickup_name = staffName;
+      order.assigned_pickup_phone = staffPhone;
+      order.order_status = 'pickup_assigned';
+      order.updated_at = new Date().toISOString();
+
+      if (pickupBatchMatch) {
+        const batchId = pickupBatchMatch[1];
+        const siblingOrders = orders.filter(
+          o => o.id !== order.id &&
+               o.notes?.includes(batchId) &&
+               (o.order_status === 'booked' || o.order_status === 'pickup_assigned')
+        );
+        for (const sib of siblingOrders) {
+          sib.assigned_pickup_id = staffId;
+          sib.assigned_pickup_name = staffName;
+          sib.assigned_pickup_phone = staffPhone;
+          sib.order_status = 'pickup_assigned';
+          sib.updated_at = order.updated_at;
+        }
+      }
     }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
@@ -1253,74 +1333,75 @@ export class LaundryService {
       throw new Error(`Order #${order.order_number} has not yet been collected from customer. Assign a pickup associate instead of delivery courier.`);
     }
 
-    const previousStatus = order.order_status;
-    if (order.order_status === 'ready_for_delivery') {
-      order.order_status = 'delivery_assigned';
-    }
-    order.assigned_delivery_id = staffId;
-    order.assigned_delivery_name = staffName;
-    order.assigned_delivery_phone = staffPhone;
-    order.updated_at = new Date().toISOString();
+    const batchMatch = order.notes?.match(/\[Linked Batch ([^:\]]+)/);
 
     if (isLiveMode) {
-      let updatePayload: any = {
-        assigned_delivery_id: staffId,
-        assigned_delivery_name: staffName,
-        assigned_delivery_phone: staffPhone,
-        order_status: order.order_status,
-        updated_at: order.updated_at
-      };
-
-      let { data, error } = await supabase
-        .from('orders')
-        .update(updatePayload)
-        .eq('id', orderId)
-        .select();
-
-      // Graceful fallback if remote schema has not yet applied delivery_assigned constraint
-      if (error && error.message?.includes('orders_order_status_check') && order.order_status === 'delivery_assigned') {
-        order.order_status = 'ready_for_delivery';
-        updatePayload = {
-          assigned_delivery_id: staffId,
-          assigned_delivery_name: staffName,
-          assigned_delivery_phone: staffPhone,
-          updated_at: order.updated_at
-        };
-        const retryResult = await supabase
-          .from('orders')
-          .update(updatePayload)
-          .eq('id', orderId)
-          .select();
-        data = retryResult.data;
-        error = retryResult.error;
-      }
-
-      if (error) {
-        throw new Error(`Failed to persist delivery assignment in database: ${error.message}`);
-      }
-
-      if (!data || data.length === 0) {
-        throw new Error(
-          'Database denied update: 0 rows modified. Your current session does not have Store Manager permissions under Supabase Row-Level Security. Please sign in with an authorized manager account.'
-        );
-      }
-
-      // Synchronize with authoritative database row
-      const persisted = data[0] as Order;
-      order.order_status = persisted.order_status;
-      order.assigned_delivery_id = persisted.assigned_delivery_id;
-      order.assigned_delivery_name = persisted.assigned_delivery_name;
-      order.assigned_delivery_phone = persisted.assigned_delivery_phone;
-      order.updated_at = persisted.updated_at;
-
-      const auditUuid = isUUID(staffId) ? staffId : null;
-      await supabase.from('order_status_history').insert({
-        order_id: orderId,
-        previous_status: previousStatus,
-        new_status: order.order_status,
-        notes: `Delivery courier assigned: ${staffName} (${staffPhone})`,
-        changed_by: auditUuid
+      const { data: rpcData, error: rpcError } = await supabase.rpc('assign_order_courier', {
+        p_order_id: orderId,
+        p_assignment_type: 'delivery',
+        p_courier_id: staffId,
+        p_courier_name: staffName,
+        p_courier_phone: staffPhone
       });
+
+      if (rpcError || !rpcData?.success) {
+        const isRpcMissing =
+          rpcError?.code === '42883' ||
+          rpcError?.code === 'PGRST202' ||
+          rpcError?.message?.includes('assign_order_courier') ||
+          rpcError?.message?.includes('could not find');
+
+        if (isRpcMissing) {
+          throw new Error('The courier assignment service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
+        }
+        throw new Error(rpcError?.message || 'Failed to persist delivery assignment in database');
+      }
+
+      order.order_status = rpcData.order_status || 'delivery_assigned';
+      order.assigned_delivery_id = staffId;
+      order.assigned_delivery_name = rpcData.courier_name || staffName;
+      order.assigned_delivery_phone = rpcData.courier_phone || staffPhone;
+      order.updated_at = new Date().toISOString();
+
+      if (batchMatch) {
+        const batchId = batchMatch[1];
+        const siblingOrders = orders.filter(
+          o => o.id !== order.id &&
+               o.notes?.includes(batchId) &&
+               (o.order_status === 'ready_for_delivery' || o.order_status === 'delivery_assigned')
+        );
+        for (const sib of siblingOrders) {
+          sib.assigned_delivery_id = staffId;
+          sib.assigned_delivery_name = order.assigned_delivery_name;
+          sib.assigned_delivery_phone = order.assigned_delivery_phone;
+          sib.order_status = order.order_status;
+          sib.updated_at = order.updated_at;
+        }
+      }
+    } else {
+      if (order.order_status === 'ready_for_delivery') {
+        order.order_status = 'delivery_assigned';
+      }
+      order.assigned_delivery_id = staffId;
+      order.assigned_delivery_name = staffName;
+      order.assigned_delivery_phone = staffPhone;
+      order.updated_at = new Date().toISOString();
+
+      if (batchMatch) {
+        const batchId = batchMatch[1];
+        const siblingOrders = orders.filter(
+          o => o.id !== order.id &&
+               o.notes?.includes(batchId) &&
+               (o.order_status === 'ready_for_delivery' || o.order_status === 'delivery_assigned')
+        );
+        for (const sib of siblingOrders) {
+          sib.assigned_delivery_id = staffId;
+          sib.assigned_delivery_name = staffName;
+          sib.assigned_delivery_phone = staffPhone;
+          sib.order_status = 'delivery_assigned';
+          sib.updated_at = order.updated_at;
+        }
+      }
     }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
@@ -1374,57 +1455,58 @@ export class LaundryService {
     const deliveryNotes = notes || `Doorstep collection: ${weightKg.toFixed(2)} kg recorded on portable scale by ${staffName}`;
 
     if (isLiveMode) {
-      // Strictly avoid modifying store intake timestamp (weighed_at). Doorstep scale
-      // collection sets pickup_weighed_at and pickup_measured_weight under associate permissions.
-      const updatePayload: any = {
-        order_status: 'collected',
-        pickup_measured_weight: weightKg,
-        pickup_weighed_at: now,
-        pickup_weighed_by: effectiveStaffUuid,
-        measured_weight: weightKg,
-        billable_weight: billableWeightKg,
-        discount_paise: finalDiscountPaise,
-        total_amount_paise: totalAmountPaise,
-        collected_at: now,
-        delivery_notes: deliveryNotes,
-        updated_at: now
-      };
-
-      const { data, error } = await supabase
-        .from('orders')
-        .update(updatePayload)
-        .eq('id', orderId)
-        .select();
-
-      if (error) {
-        throw new Error(`Failed to persist collection and weight in database: ${error.message}`);
-      }
-
-      if (!data || data.length === 0) {
-        throw new Error('Database denied update: 0 rows modified. You are not authorized under Row-Level Security.');
-      }
-
-      // Mutate in-memory order ONLY after database update succeeds
-      const persisted = data[0] as Order;
-      order.order_status = persisted.order_status;
-      order.pickup_measured_weight = persisted.pickup_measured_weight;
-      order.pickup_weighed_at = persisted.pickup_weighed_at;
-      order.pickup_weighed_by = persisted.pickup_weighed_by;
-      order.measured_weight = persisted.measured_weight;
-      order.billable_weight = persisted.billable_weight;
-      order.discount_paise = persisted.discount_paise;
-      order.total_amount_paise = persisted.total_amount_paise;
-      order.collected_at = persisted.collected_at;
-      order.delivery_notes = persisted.delivery_notes;
-      order.updated_at = persisted.updated_at;
-
-      await supabase.from('order_status_history').insert({
-        order_id: orderId,
-        previous_status: previousStatus,
-        new_status: 'collected',
-        notes: `Collected & weighed at doorstep: ${weightKg.toFixed(2)} kg (Bill: ₹${(totalAmountPaise / 100).toFixed(2)}) by ${staffName}`,
-        changed_by: effectiveStaffUuid
+      const { data: rpcData, error: rpcError } = await supabase.rpc('record_courier_pickup_collection', {
+        p_order_id: orderId,
+        p_measured_weight: weightKg,
+        p_delivery_notes: deliveryNotes
       });
+
+      if (rpcError || !rpcData?.success) {
+        const isRpcMissing =
+          rpcError?.code === '42883' ||
+          rpcError?.code === 'PGRST202' ||
+          rpcError?.message?.includes('record_courier_pickup_collection') ||
+          rpcError?.message?.includes('could not find');
+
+        if (isRpcMissing) {
+          throw new Error('The doorstep collection service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
+        }
+        throw new Error(rpcError?.message || 'Failed to record courier pickup collection');
+      }
+
+      order.order_status = rpcData.order_status || 'collected';
+      order.measured_weight = Number(rpcData.measured_weight ?? weightKg);
+      order.billable_weight = Number(rpcData.billable_weight ?? billableWeightKg);
+      order.discount_paise = Number(rpcData.discount_paise ?? finalDiscountPaise);
+      order.total_amount_paise = Number(rpcData.total_amount_paise ?? totalAmountPaise);
+      order.collected_at = now;
+      order.delivery_notes = deliveryNotes;
+      order.pickup_measured_weight = weightKg;
+      order.pickup_weighed_at = now;
+      order.pickup_weighed_by = effectiveStaffUuid || undefined;
+      order.updated_at = now;
+
+      // Synchronize linked batch siblings in local state if batch coupon recalculated in DB
+      const batchMatch = order.notes?.match(/\[Linked Batch ([^:\]]+)/);
+      if (batchMatch) {
+        const batchId = batchMatch[1];
+        try {
+          const { data: refreshedSiblings } = await supabase
+            .from('orders')
+            .select('*')
+            .like('notes', `%[Linked Batch ${batchId}%`);
+          if (refreshedSiblings) {
+            for (const refreshed of refreshedSiblings) {
+              const idx = orders.findIndex(o => o.id === refreshed.id);
+              if (idx !== -1) {
+                orders[idx] = refreshed as Order;
+              }
+            }
+          }
+        } catch (syncErr) {
+          console.warn('Could not refresh linked batch siblings after pickup collection:', syncErr);
+        }
+      }
     } else {
       // Local/demo/offline mode
       order.order_status = 'collected';
@@ -1458,38 +1540,35 @@ export class LaundryService {
     const order = orders.find(o => o.id === orderId);
     if (!order) throw new Error('Order not found');
 
-    const previousStatus = order.order_status;
-    order.order_status = 'collected';
-    order.collected_at = new Date().toISOString();
-    if (notes) {
-      order.delivery_notes = notes;
-    }
-    order.updated_at = new Date().toISOString();
-
     if (isLiveMode) {
-      const { data, error } = await supabase.from('orders').update({
-        order_status: 'collected',
-        collected_at: order.collected_at,
-        delivery_notes: notes || null,
-        updated_at: order.updated_at
-      }).eq('id', orderId).select();
-      if (error) {
-        throw new Error(`Failed to update collected status in database: ${error.message}`);
-      }
-      if (!data || data.length === 0) {
-        throw new Error('Database denied update: 0 rows modified. You are not authorized under Row-Level Security.');
-      }
-      const persisted = data[0] as Order;
-      order.order_status = persisted.order_status;
-      order.collected_at = persisted.collected_at;
-      order.updated_at = persisted.updated_at;
-
-      await supabase.from('order_status_history').insert({
-        order_id: orderId,
-        previous_status: previousStatus,
-        new_status: 'collected',
-        notes: notes || 'Clothes collected from doorstep'
+      const { data: rpcData, error: rpcError } = await supabase.rpc('advance_order_workflow_status', {
+        p_order_id: orderId,
+        p_target_status: 'collected',
+        p_notes: notes || 'Clothes collected from doorstep'
       });
+
+      if (rpcError || !rpcData?.success) {
+        const isRpcMissing =
+          rpcError?.code === '42883' ||
+          rpcError?.code === 'PGRST202' ||
+          rpcError?.message?.includes('advance_order_workflow_status') ||
+          rpcError?.message?.includes('could not find');
+
+        if (isRpcMissing) {
+          throw new Error('The order workflow service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
+        }
+        throw new Error(rpcError?.message || 'Failed to update collected status in database');
+      }
+
+      order.order_status = rpcData.order_status || 'collected';
+      order.collected_at = order.collected_at || new Date().toISOString();
+      if (notes) order.delivery_notes = notes;
+      order.updated_at = new Date().toISOString();
+    } else {
+      order.order_status = 'collected';
+      order.collected_at = new Date().toISOString();
+      if (notes) order.delivery_notes = notes;
+      order.updated_at = new Date().toISOString();
     }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
@@ -1513,38 +1592,39 @@ export class LaundryService {
       throw new Error(`Order #${order.order_number} must be in 'out_for_delivery' status to complete delivery (current status: '${order.order_status}').`);
     }
 
-    const previousStatus = order.order_status;
-    order.order_status = 'delivered';
-    order.delivered_at = new Date().toISOString();
-    if (notes) {
-      order.delivery_notes = notes;
-    }
-    order.updated_at = new Date().toISOString();
-
     if (isLiveMode) {
-      const { data, error } = await supabase.from('orders').update({
-        order_status: 'delivered',
-        delivered_at: order.delivered_at,
-        delivery_notes: notes || null,
-        updated_at: order.updated_at
-      }).eq('id', orderId).select();
-      if (error) {
-        throw new Error(`Failed to update delivered status in database: ${error.message}`);
-      }
-      if (!data || data.length === 0) {
-        throw new Error('Database denied update: 0 rows modified. You are not authorized under Row-Level Security.');
-      }
-      const persisted = data[0] as Order;
-      order.order_status = persisted.order_status;
-      order.delivered_at = persisted.delivered_at;
-      order.updated_at = persisted.updated_at;
-
-      await supabase.from('order_status_history').insert({
-        order_id: orderId,
-        previous_status: previousStatus,
-        new_status: 'delivered',
-        notes: notes || 'Clean clothes delivered to customer'
+      const { data: rpcData, error: rpcError } = await supabase.rpc('advance_order_workflow_status', {
+        p_order_id: orderId,
+        p_target_status: 'delivered',
+        p_notes: notes || 'Clean clothes delivered to customer'
       });
+
+      if (rpcError || !rpcData?.success) {
+        const isRpcMissing =
+          rpcError?.code === '42883' ||
+          rpcError?.code === 'PGRST202' ||
+          rpcError?.message?.includes('advance_order_workflow_status') ||
+          rpcError?.message?.includes('could not find');
+
+        if (isRpcMissing) {
+          throw new Error('The order workflow service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
+        }
+        throw new Error(rpcError?.message || 'Failed to update delivered status in database');
+      }
+
+      order.order_status = rpcData.order_status || 'delivered';
+      order.delivered_at = order.delivered_at || new Date().toISOString();
+      if (notes) {
+        order.delivery_notes = notes;
+      }
+      order.updated_at = new Date().toISOString();
+    } else {
+      order.order_status = 'delivered';
+      order.delivered_at = new Date().toISOString();
+      if (notes) {
+        order.delivery_notes = notes;
+      }
+      order.updated_at = new Date().toISOString();
     }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
@@ -1601,75 +1681,79 @@ export class LaundryService {
       authoritativeDiscountPaise
     );
 
-    order.measured_weight = measuredWeightKg;
-    order.billable_weight = billableWeightKg;
-    order.discount_paise = finalDiscountPaise;
-    order.total_amount_paise = totalAmountPaise;
-    order.weighed_at = new Date().toISOString();
-    order.updated_at = new Date().toISOString();
-
-    // Auto-advance from collected to washing if freshly weighed
-    if (order.order_status === 'collected') {
-      order.order_status = 'washing';
-    }
-
-    // Save weight change history audit
-    const weightHistory: WeightChangeHistory = {
-      id: generateUUID(),
-      order_id: order.id,
-      old_weight: oldWeight,
-      new_weight: measuredWeightKg,
-      old_amount_paise: oldAmount,
-      new_amount_paise: totalAmountPaise,
-      reason: correctionReason || (oldWeight ? 'Weight correction by manager' : 'Initial intake weight'),
-      changed_by: changedByUserName,
-      created_at: new Date().toISOString()
-    };
-    const prevHistory = JSON.parse(localStorage.getItem(STORAGE_KEYS.WEIGHT_HISTORY) || '[]');
-    localStorage.setItem(STORAGE_KEYS.WEIGHT_HISTORY, JSON.stringify([weightHistory, ...prevHistory]));
-
     if (isLiveMode) {
-      const { data, error } = await supabase.from('orders').update({
-        measured_weight: measuredWeightKg,
-        billable_weight: billableWeightKg,
-        discount_paise: finalDiscountPaise,
-        total_amount_paise: totalAmountPaise,
-        weighed_at: order.weighed_at,
-        order_status: order.order_status,
-        updated_at: order.updated_at
-      }).eq('id', order.id).select();
-      if (error) {
-        throw new Error(`Failed to persist measured weight in database: ${error.message}`);
-      }
-      if (!data || data.length === 0) {
-        throw new Error(
-          'Database denied weight update: 0 rows modified. Your current session does not have Store Manager permissions under Row-Level Security.'
-        );
-      }
-      const persisted = data[0] as Order;
-      order.measured_weight = persisted.measured_weight;
-      order.billable_weight = persisted.billable_weight;
-      order.discount_paise = persisted.discount_paise;
-      order.total_amount_paise = persisted.total_amount_paise;
-      order.weighed_at = persisted.weighed_at;
-      order.order_status = persisted.order_status;
-      order.updated_at = persisted.updated_at;
+      const { data: rpcData, error: rpcError } = await supabase.rpc('record_store_intake_weight', {
+        p_order_id: order.id,
+        p_measured_weight: measuredWeightKg,
+        p_correction_reason: correctionReason || null
+      });
 
-      await supabase.from('weight_change_history').insert({
+      if (rpcError || !rpcData?.success) {
+        const isRpcMissing =
+          rpcError?.code === '42883' ||
+          rpcError?.code === 'PGRST202' ||
+          rpcError?.message?.includes('record_store_intake_weight') ||
+          rpcError?.message?.includes('could not find');
+
+        if (isRpcMissing) {
+          throw new Error('The store intake scale service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
+        }
+        throw new Error(rpcError?.message || 'Failed to record store intake weight');
+      }
+
+      order.measured_weight = Number(rpcData.measured_weight ?? measuredWeightKg);
+      order.billable_weight = Number(rpcData.billable_weight ?? billableWeightKg);
+      order.discount_paise = Number(rpcData.discount_paise ?? finalDiscountPaise);
+      order.total_amount_paise = Number(rpcData.total_amount_paise ?? totalAmountPaise);
+      order.order_status = rpcData.order_status || order.order_status;
+      order.weighed_at = order.weighed_at || new Date().toISOString();
+      order.updated_at = new Date().toISOString();
+
+      // Synchronize linked batch siblings after intake weighing & batch coupon recalculation
+      const batchMatch = order.notes?.match(/\[Linked Batch ([^:\]]+)/);
+      if (batchMatch) {
+        const batchId = batchMatch[1];
+        try {
+          const { data: refreshedSiblings } = await supabase
+            .from('orders')
+            .select('*')
+            .like('notes', `%[Linked Batch ${batchId}%`);
+          if (refreshedSiblings) {
+            for (const refreshed of refreshedSiblings) {
+              const idx = orders.findIndex(o => o.id === refreshed.id);
+              if (idx !== -1) {
+                orders[idx] = refreshed as Order;
+              }
+            }
+          }
+        } catch (syncErr) {
+          console.warn('Could not refresh linked batch siblings after intake weighing:', syncErr);
+        }
+      }
+    } else {
+      order.measured_weight = measuredWeightKg;
+      order.billable_weight = billableWeightKg;
+      order.discount_paise = finalDiscountPaise;
+      order.total_amount_paise = totalAmountPaise;
+      order.weighed_at = new Date().toISOString();
+      if (order.order_status === 'collected') {
+        order.order_status = 'washing';
+      }
+      order.updated_at = new Date().toISOString();
+
+      const weightHistory: WeightChangeHistory = {
+        id: generateUUID(),
         order_id: order.id,
         old_weight: oldWeight,
         new_weight: measuredWeightKg,
         old_amount_paise: oldAmount,
         new_amount_paise: totalAmountPaise,
-        reason: correctionReason || (oldWeight ? 'Weight correction by manager' : 'Initial intake weight')
-      });
-
-      await supabase.from('order_status_history').insert({
-        order_id: order.id,
-        previous_status: 'collected',
-        new_status: order.order_status,
-        notes: `Weighed: ${measuredWeightKg.toFixed(2)} kg (Billable: ${billableWeightKg.toFixed(2)} kg @ ₹${order.price_per_kg_paise / 100}/kg = ₹${totalAmountPaise / 100})`
-      });
+        reason: correctionReason || (oldWeight ? 'Weight correction by manager' : 'Initial intake weight'),
+        changed_by: changedByUserName,
+        created_at: new Date().toISOString()
+      };
+      const prevHistory = JSON.parse(localStorage.getItem(STORAGE_KEYS.WEIGHT_HISTORY) || '[]');
+      localStorage.setItem(STORAGE_KEYS.WEIGHT_HISTORY, JSON.stringify([weightHistory, ...prevHistory]));
     }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
@@ -1720,61 +1804,109 @@ export class LaundryService {
     }
 
     const previousStatus = order.order_status;
-    order.order_status = newStatus;
-    if (newStatus === 'cancelled' && cancellationReason) {
-      order.cancellation_reason = cancellationReason;
-    }
-    if (notes) {
-      order.notes = notes;
-    }
-    order.updated_at = new Date().toISOString();
-
-    // Status change history audit
-    const statusHistory: OrderStatusHistory = {
-      id: `sh-${Date.now()}`,
-      order_id: order.id,
-      previous_status: previousStatus,
-      new_status: newStatus,
-      notes,
-      created_at: new Date().toISOString()
-    };
-    const prevStatusHistory = JSON.parse(localStorage.getItem(STORAGE_KEYS.STATUS_HISTORY) || '[]');
-    localStorage.setItem(STORAGE_KEYS.STATUS_HISTORY, JSON.stringify([statusHistory, ...prevStatusHistory]));
 
     if (isLiveMode) {
-      try {
-        const updates: any = {
-          order_status: newStatus,
-          updated_at: order.updated_at
-        };
-        if (newStatus === 'cancelled' && cancellationReason) updates.cancellation_reason = cancellationReason;
-        if (notes) updates.notes = notes;
-        if (newStatus === 'delivered') updates.delivered_at = new Date().toISOString();
-
-        const { data, error } = await supabase.from('orders').update(updates).eq('id', order.id).select();
-        if (error) {
-          console.error('Could not persist status transition to Supabase:', error.message);
-          throw new Error(`Failed to persist status transition in database: ${error.message}`);
-        }
-        if (!data || data.length === 0) {
-          throw new Error(
-            'Database denied status update: 0 rows modified. Your current session does not have permission under Row-Level Security.'
-          );
-        }
-        const persisted = data[0] as Order;
-        order.order_status = persisted.order_status;
-        order.updated_at = persisted.updated_at;
-
-        await supabase.from('order_status_history').insert({
-          order_id: order.id,
-          previous_status: previousStatus,
-          new_status: newStatus,
-          notes
+      if (newStatus === 'cancelled') {
+        const reason = cancellationReason || notes || 'Order cancelled';
+        const { data: rpcData, error: rpcError } = await supabase.rpc('cancel_order_with_batch_sync', {
+          p_order_id: order.id,
+          p_cancellation_reason: reason
         });
-      } catch (err: any) {
-        console.error('Notice updating status transition in Supabase:', err.message);
-        throw err;
+
+        if (rpcError || !rpcData?.success) {
+          const isRpcMissing =
+            rpcError?.code === '42883' ||
+            rpcError?.code === 'PGRST202' ||
+            rpcError?.message?.includes('cancel_order_with_batch_sync') ||
+            rpcError?.message?.includes('could not find');
+
+          if (isRpcMissing) {
+            throw new Error('The order cancellation service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
+          }
+          throw new Error(rpcError?.message || 'Failed to cancel order in database');
+        }
+
+        order.order_status = 'cancelled';
+        order.cancellation_reason = rpcData.cancellation_reason || reason;
+        order.updated_at = new Date().toISOString();
+
+        // Refresh linked siblings in local memory as batch coupons are recalculated in DB
+        const batchMatch = order.notes?.match(/\[Linked Batch ([^:\]]+)/);
+        if (batchMatch) {
+          const batchId = batchMatch[1];
+          try {
+            const { data: refreshedSiblings } = await supabase
+              .from('orders')
+              .select('*')
+              .like('notes', `%[Linked Batch ${batchId}%`);
+            if (refreshedSiblings) {
+              for (const refreshed of refreshedSiblings) {
+                const idx = orders.findIndex(o => o.id === refreshed.id);
+                if (idx !== -1) {
+                  orders[idx] = refreshed as Order;
+                }
+              }
+            }
+          } catch (syncErr) {
+            console.warn('Could not refresh linked batch siblings after cancellation:', syncErr);
+          }
+        }
+      } else if (
+        newStatus === 'collected' ||
+        newStatus === 'washing' ||
+        newStatus === 'ready_for_delivery' ||
+        newStatus === 'out_for_delivery' ||
+        newStatus === 'delivered'
+      ) {
+        const { data: rpcData, error: rpcError } = await supabase.rpc('advance_order_workflow_status', {
+          p_order_id: order.id,
+          p_target_status: newStatus,
+          p_notes: notes || null
+        });
+
+        if (rpcError || !rpcData?.success) {
+          const isRpcMissing =
+            rpcError?.code === '42883' ||
+            rpcError?.code === 'PGRST202' ||
+            rpcError?.message?.includes('advance_order_workflow_status') ||
+            rpcError?.message?.includes('could not find');
+
+          if (isRpcMissing) {
+            throw new Error('The order workflow service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
+          }
+          throw new Error(rpcError?.message || 'Failed to advance order status in database');
+        }
+
+        order.order_status = rpcData.order_status || newStatus;
+        if (newStatus === 'collected') order.collected_at = order.collected_at || new Date().toISOString();
+        if (newStatus === 'delivered') order.delivered_at = order.delivered_at || new Date().toISOString();
+        order.updated_at = new Date().toISOString();
+      } else {
+        throw new Error(`Direct transition to status '${newStatus}' is not supported in live mode. Use the designated workflow or courier assignment service.`);
       }
+    } else {
+      order.order_status = newStatus;
+      if (newStatus === 'cancelled' && cancellationReason) {
+        order.cancellation_reason = cancellationReason;
+      }
+      if (notes) {
+        order.notes = notes;
+      }
+      if (newStatus === 'delivered') {
+        order.delivered_at = new Date().toISOString();
+      }
+      order.updated_at = new Date().toISOString();
+
+      const statusHistory: OrderStatusHistory = {
+        id: `sh-${Date.now()}`,
+        order_id: order.id,
+        previous_status: previousStatus,
+        new_status: newStatus,
+        notes,
+        created_at: new Date().toISOString()
+      };
+      const prevStatusHistory = JSON.parse(localStorage.getItem(STORAGE_KEYS.STATUS_HISTORY) || '[]');
+      localStorage.setItem(STORAGE_KEYS.STATUS_HISTORY, JSON.stringify([statusHistory, ...prevStatusHistory]));
     }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
@@ -1786,6 +1918,23 @@ export class LaundryService {
         'ready_for_delivery',
         `Great news! Order #${order.order_number} is clean, steam-ironed, and ready for delivery. Our delivery executive will arrive shortly. Amount due: ₹${((order.total_amount_paise || 0) - order.paid_amount_paise) / 100}.`,
         order.id
+      );
+    }
+
+    // Customer communication on delivery completion with optional next-order retention promotion
+    if (newStatus === 'delivered') {
+      let retentionPromoCode: string | undefined;
+      try {
+        const coupons = await this.getCoupons(false);
+        const promo = coupons.find(c => !c.first_time_only && c.is_active);
+        if (promo) retentionPromoCode = promo.code;
+      } catch {}
+
+      await WhatsAppService.notifyDelivered(
+        order.order_number,
+        order.customer_phone,
+        order.id,
+        retentionPromoCode
       );
     }
 
@@ -1961,76 +2110,26 @@ export class LaundryService {
         p_idempotency_key: effectiveIdempotencyKey || null
       });
 
-      if (!rpcError && rpcData) {
-        if (rpcData.payment_id) {
-          payment.id = rpcData.payment_id;
-        }
-        order.paid_amount_paise = rpcData.paid_amount_paise ?? (order.paid_amount_paise + amountPaise);
-        order.payment_status = rpcData.payment_status ?? ((order.paid_amount_paise >= totalDue) ? 'paid' : 'partially_paid');
-        order.payment_method = paymentMethod;
-        order.updated_at = new Date().toISOString();
-      } else {
-        const isRpcMissing = rpcError?.code === '42883' || rpcError?.message?.includes('record_order_payment');
+      if (rpcError || !rpcData) {
+        const isRpcMissing =
+          rpcError?.code === '42883' ||
+          rpcError?.code === 'PGRST202' ||
+          rpcError?.message?.includes('record_order_payment') ||
+          rpcError?.message?.includes('could not find');
+
         if (isRpcMissing) {
-          console.warn('Database RPC record_order_payment is pending remote migration; executing fallback payment update.');
-          const dbPaymentPayload = {
-            id: payment.id,
-            order_id: payment.order_id,
-            amount_paise: payment.amount_paise,
-            payment_method: payment.payment_method,
-            transaction_reference: payment.transaction_reference || null,
-            notes: payment.notes || null,
-            recorded_by: recordedByUuid || null,
-            idempotency_key: effectiveIdempotencyKey || null,
-            created_at: payment.created_at
-          };
-
-          const { data: insertedPayment, error: payError } = await supabase
-            .from('payments')
-            .insert(dbPaymentPayload)
-            .select();
-
-          if (payError) {
-            throw new Error(`Failed to record payment in database ledger: ${payError.message}`);
-          }
-
-          if (insertedPayment && insertedPayment.length > 0) {
-            payment.id = insertedPayment[0].id;
-            payment.created_at = insertedPayment[0].created_at;
-          }
-
-          const newPaidAmount = order.paid_amount_paise + amountPaise;
-          order.paid_amount_paise = newPaidAmount;
-          order.payment_method = paymentMethod;
-          order.payment_status = (totalDue > 0 && newPaidAmount >= totalDue) ? 'paid' : 'partially_paid';
-          order.updated_at = new Date().toISOString();
-
-          const { data: updatedOrders, error: orderError } = await supabase
-            .from('orders')
-            .update({
-              paid_amount_paise: order.paid_amount_paise,
-              payment_status: order.payment_status,
-              payment_method: order.payment_method,
-              updated_at: order.updated_at
-            })
-            .eq('id', order.id)
-            .select();
-
-          if (orderError) {
-            throw new Error(`Failed to update order payment balance: ${orderError.message}`);
-          }
-
-          if (updatedOrders && updatedOrders.length > 0) {
-            const persistedOrder = updatedOrders[0] as Order;
-            order.paid_amount_paise = persistedOrder.paid_amount_paise;
-            order.payment_status = persistedOrder.payment_status;
-            order.payment_method = persistedOrder.payment_method;
-            order.updated_at = persistedOrder.updated_at;
-          }
-        } else {
-          throw new Error(rpcError?.message || 'Payment transaction failed in database RPC.');
+          throw new Error('The payment processing service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
         }
+        throw new Error(rpcError?.message || 'Payment transaction failed in database RPC.');
       }
+
+      if (rpcData.payment_id) {
+        payment.id = rpcData.payment_id;
+      }
+      order.paid_amount_paise = rpcData.paid_amount_paise ?? (order.paid_amount_paise + amountPaise);
+      order.payment_status = rpcData.payment_status ?? ((order.paid_amount_paise >= totalDue) ? 'paid' : 'partially_paid');
+      order.payment_method = paymentMethod;
+      order.updated_at = new Date().toISOString();
     } else {
       const newPaidAmount = order.paid_amount_paise + amountPaise;
       order.paid_amount_paise = newPaidAmount;
@@ -2234,6 +2333,7 @@ export class LaundryService {
     client_submission_id?: string;
     coupon_code?: string;
     discount_paise?: number;
+    coupon_snapshot?: CouponSnapshot | null;
   }): Promise<Order> {
     return this.createBooking(data);
   }
@@ -2367,6 +2467,66 @@ export class LaundryService {
 
   static async markOrderDelivered(orderId: string, _staffName?: string, notes?: string): Promise<Order> {
     return this.markAsDelivered(orderId, notes);
+  }
+
+  static async cancelOrder(orderId: string, cancellationReason: string): Promise<Order> {
+    return this.updateOrderStatus(orderId, 'cancelled', undefined, cancellationReason);
+  }
+
+  static async updateDeliveryNotes(orderId: string, deliveryNotes: string): Promise<Order> {
+    const orders = await this.getOrders();
+    const order = orders.find(o => o.id === orderId);
+    if (!order) throw new Error('Order not found');
+
+    order.delivery_notes = deliveryNotes;
+    order.updated_at = new Date().toISOString();
+
+    if (isLiveMode) {
+      let rpcHandled = false;
+      const { data: rpcData, error: rpcError } = await supabase.rpc('update_order_delivery_notes', {
+        p_order_id: orderId,
+        p_delivery_notes: deliveryNotes
+      });
+
+      if (!rpcError && rpcData?.success) {
+        rpcHandled = true;
+        order.delivery_notes = rpcData.delivery_notes || deliveryNotes;
+        order.updated_at = new Date().toISOString();
+      } else {
+        const isRpcMissing =
+          rpcError?.code === '42883' ||
+          rpcError?.code === 'PGRST202' ||
+          rpcError?.message?.includes('update_order_delivery_notes') ||
+          rpcError?.message?.includes('could not find');
+
+        if (isRpcMissing) {
+          console.warn('Database RPC update_order_delivery_notes is pending remote migration; executing fallback update.');
+          const { data, error } = await supabase
+            .from('orders')
+            .update({
+              delivery_notes: deliveryNotes,
+              updated_at: order.updated_at
+            })
+            .eq('id', orderId)
+            .select();
+
+          if (error) {
+            throw new Error(`Failed to update delivery notes: ${error.message}`);
+          }
+          if (!data || data.length === 0) {
+            throw new Error('Database denied update: 0 rows modified under Row-Level Security.');
+          }
+          const persisted = data[0] as Order;
+          order.delivery_notes = persisted.delivery_notes;
+          order.updated_at = persisted.updated_at;
+        } else {
+          throw new Error(rpcError?.message || 'Failed to update delivery notes');
+        }
+      }
+    }
+
+    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
+    return order;
   }
 
   static async getStaffProfiles(includeInactive: boolean = true): Promise<Profile[]> {

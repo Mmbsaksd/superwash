@@ -205,12 +205,22 @@ export interface Order {
   delivered_at?: string;
   coupon_code?: string | null;
   discount_paise?: number; // Coupon discount in paise
+  coupon_snapshot?: CouponSnapshot | null; // Promotional terms snapshot locked at booking
   client_submission_id?: string;
   created_at: string;
   updated_at: string;
 }
 
 export type CouponDiscountType = 'percentage' | 'fixed';
+
+export interface CouponSnapshot {
+  code: string;
+  discount_type: CouponDiscountType;
+  discount_value: number;
+  min_order_paise?: number;
+  max_discount_paise?: number | null;
+  applicable_service_ids?: string[] | null;
+}
 
 export interface Coupon {
   id: string;

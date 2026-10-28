@@ -80,6 +80,12 @@ export class WhatsAppService {
       // Ignore DB logging failure to avoid breaking critical UI path
     }
 
+    try {
+      const existingLogs = JSON.parse(localStorage.getItem('superwash_notifications') || '[]');
+      existingLogs.unshift(log);
+      localStorage.setItem('superwash_notifications', JSON.stringify(existingLogs.slice(0, 100)));
+    } catch {}
+
     console.info(`[WhatsApp Notification Logged]: To ${cleanPhone} [${eventType}]: ${message}`);
     return log;
   }
@@ -105,8 +111,11 @@ export class WhatsAppService {
     return this.sendNotification(phone, 'ready_for_delivery', msg, orderId);
   }
 
-  static async notifyDelivered(orderNumber: string, phone: string, orderId?: string) {
-    const msg = `SuperWash: Order #${orderNumber} has been delivered! Thank you for choosing SuperWash Exprez. Rate your wash: https://superwash.in`;
+  static async notifyDelivered(orderNumber: string, phone: string, orderId?: string, nextOrderPromoCode?: string) {
+    const promoSuffix = nextOrderPromoCode
+      ? ` As a thank you, enjoy a discount on your next booking with code ${nextOrderPromoCode}!`
+      : '';
+    const msg = `SuperWash: Order #${orderNumber} has been delivered! Thank you for choosing SuperWash Exprez.${promoSuffix} Rate your wash: https://superwash.in`;
     return this.sendNotification(phone, 'delivered', msg, orderId);
   }
 

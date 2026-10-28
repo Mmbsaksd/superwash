@@ -7,10 +7,11 @@ import { supabase } from '../../services/supabase';
 import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
 import { WeightEntryModal } from '../../components/WeightEntryModal';
 import { AssignStaffModal } from '../../components/AssignStaffModal';
+import { InvoiceModal } from '../../components/InvoiceModal';
 import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
 import {
   Scale, RefreshCw, Sparkles, CheckCircle, Package,
-  Truck, ArrowRight, UserPlus, Search, Phone, Calendar, LogOut, AlertCircle, ShieldCheck, X
+  Truck, ArrowRight, UserPlus, Search, Phone, Calendar, LogOut, AlertCircle, ShieldCheck, X, FileText
 } from 'lucide-react';
 
 export const ManagerDashboard: React.FC = () => {
@@ -29,6 +30,7 @@ export const ManagerDashboard: React.FC = () => {
   const [weighingOrder, setWeighingOrder] = useState<Order | null>(null);
   const [assigningOrder, setAssigningOrder] = useState<Order | null>(null);
   const [assignmentType, setAssignmentType] = useState<'pickup' | 'delivery'>('pickup');
+  const [invoiceOrder, setInvoiceOrder] = useState<Order | null>(null);
 
   useEffect(() => {
     loadData();
@@ -430,7 +432,16 @@ export const ManagerDashboard: React.FC = () => {
                             <span className="font-bold text-slate-800 text-sm block">{order.customer_name}</span>
                             <span className="text-slate-500 block text-[11px] mt-0.5">📞 {order.customer_phone}</span>
                           </div>
-                          <StatusBadge status={order.order_status} size="sm" />
+                          <div className="flex items-center gap-1.5">
+                            <StatusBadge status={order.order_status} size="sm" />
+                            <button
+                              onClick={() => setInvoiceOrder(order)}
+                              className="p-1.5 rounded-lg text-slate-500 hover:text-purple-700 hover:bg-purple-50 border border-slate-200 hover:border-purple-200 transition"
+                              title="View / Print Bill"
+                            >
+                              <FileText className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
 
                         <div className="flex items-center gap-1.5 text-slate-500 text-[11px]">
@@ -584,7 +595,16 @@ export const ManagerDashboard: React.FC = () => {
                           <span className="font-bold text-slate-800 text-sm">{order.customer_name}</span>
                           <span className="text-[11px] text-slate-500 block">📞 {order.customer_phone}</span>
                         </div>
-                        <StatusBadge status={order.order_status} size="sm" />
+                        <div className="flex items-center gap-1.5">
+                          <StatusBadge status={order.order_status} size="sm" />
+                          <button
+                            onClick={() => setInvoiceOrder(order)}
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-purple-700 hover:bg-purple-50 border border-slate-200 hover:border-purple-200 transition"
+                            title="View / Print Bill"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
 
                       <div className="p-3 bg-cyan-50 border border-cyan-200 rounded-2xl flex justify-between items-center text-cyan-900">
@@ -642,7 +662,16 @@ export const ManagerDashboard: React.FC = () => {
                           <span className="font-bold text-slate-800 text-sm">{order.customer_name}</span>
                           <span className="text-[11px] text-slate-500 block truncate">📍 {order.pickup_address}</span>
                         </div>
-                        <StatusBadge status={order.order_status} size="sm" />
+                        <div className="flex items-center gap-1.5">
+                          <StatusBadge status={order.order_status} size="sm" />
+                          <button
+                            onClick={() => setInvoiceOrder(order)}
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-purple-700 hover:bg-purple-50 border border-slate-200 hover:border-purple-200 transition"
+                            title="View / Print Bill"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
 
                       <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 flex justify-between items-center">
@@ -713,7 +742,16 @@ export const ManagerDashboard: React.FC = () => {
                           <span className="font-bold text-slate-800 text-sm">{order.customer_name}</span>
                           <span className="text-[11px] text-slate-500 block truncate">📍 {order.pickup_address}</span>
                         </div>
-                        <StatusBadge status={order.order_status} size="sm" />
+                        <div className="flex items-center gap-1.5">
+                          <StatusBadge status={order.order_status} size="sm" />
+                          <button
+                            onClick={() => setInvoiceOrder(order)}
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-purple-700 hover:bg-purple-50 border border-slate-200 hover:border-purple-200 transition"
+                            title="View / Print Bill"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
 
                       <div className="p-3 bg-blue-50 border border-blue-200 rounded-2xl flex justify-between items-center text-blue-900">
@@ -777,7 +815,16 @@ export const ManagerDashboard: React.FC = () => {
                           <span className="font-bold text-slate-800 text-sm">{order.customer_name}</span>
                           <span className="text-[11px] text-slate-500 block truncate">📍 {order.pickup_address}</span>
                         </div>
-                        <StatusBadge status={order.order_status} size="sm" />
+                        <div className="flex items-center gap-1.5">
+                          <StatusBadge status={order.order_status} size="sm" />
+                          <button
+                            onClick={() => setInvoiceOrder(order)}
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-purple-700 hover:bg-purple-50 border border-slate-200 hover:border-purple-200 transition"
+                            title="View / Print Bill"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
 
                       <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-1 text-[11px] text-emerald-950">
@@ -834,6 +881,22 @@ export const ManagerDashboard: React.FC = () => {
           }}
           assignedByName={currentUser?.full_name || 'Store Manager'}
           assignmentType={assignmentType}
+        />
+      )}
+
+      {/* Invoice Modal */}
+      {invoiceOrder && (
+        <InvoiceModal
+          order={invoiceOrder}
+          isOpen={!!invoiceOrder}
+          onClose={() => setInvoiceOrder(null)}
+          linkedOrders={(() => {
+            const batchMatch = invoiceOrder.notes?.match(/\[Linked Batch ([^:\]]+)/);
+            const batchId = batchMatch ? batchMatch[1] : null;
+            return batchId ? orders.filter((o) => o.notes?.includes(batchId)) : [invoiceOrder];
+          })()}
+          settings={settings}
+          currentUser={currentUser}
         />
       )}
     </div>
