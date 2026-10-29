@@ -10,6 +10,9 @@ import { FeedbackModal } from '../../components/FeedbackModal';
 import { InvoiceModal } from '../../components/InvoiceModal';
 import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
 import { MapLocationPicker } from '../../components/MapLocationPicker';
+import { CustomerBottomNav } from '../../components/CustomerBottomNav';
+import { CustomerTopNav } from '../../components/CustomerTopNav';
+import { CustomerOrderTracker } from '../../components/CustomerOrderTracker';
 import { formatCustomerError } from '../../utils/errorHandling';
 import {
   getPendingBooking,
@@ -27,7 +30,7 @@ import {
   QrCode, ArrowRight, User, Star, MessageSquareHeart,
   ShieldCheck, RefreshCw, LogOut, X, Truck, Scale, Package, Lock,
   AlertTriangle, Loader2, Edit2, Trash2, Navigation,
-  TicketPercent, Tag, Printer, FileText
+  TicketPercent, Tag, Printer, FileText, CreditCard, ChevronLeft, ChevronRight, Check, Settings
 } from 'lucide-react';
 
 const CONFIRMED_ORDER_KEY = 'superwash_last_confirmed_order';
@@ -37,10 +40,33 @@ export const CustomerHome: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get('tab');
-  const validTabs: Array<'book' | 'current' | 'history' | 'addresses' | 'contact'> = ['book', 'current', 'history', 'addresses', 'contact'];
-  const [activeTab, setActiveTab] = useState<'book' | 'current' | 'history' | 'addresses' | 'contact'>(
+  const validTabs: Array<'book' | 'current' | 'history' | 'addresses' | 'profile' | 'settings' | 'contact'> = [
+    'book', 'current', 'history', 'addresses', 'profile', 'settings', 'contact'
+  ];
+  const [activeTab, setActiveTab] = useState<'book' | 'current' | 'history' | 'addresses' | 'profile' | 'settings' | 'contact'>(
     tabParam && validTabs.includes(tabParam as any) ? (tabParam as any) : 'book'
   );
+
+  // Synchronize activeTab with URL tab query parameter on direct navigation
+  useEffect(() => {
+    if (tabParam && validTabs.includes(tabParam as any)) {
+      setActiveTab(tabParam as any);
+    }
+  }, [tabParam]);
+
+  // Guided Sequential Booking Flow State (Steps 1 to 5)
+  const [bookingStep, setBookingStep] = useState<number>(1);
+  const [bookingStepError, setBookingStepError] = useState<string | null>(null);
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<'cash' | 'upi_manual'>('cash');
+
+  // Customer Profile & Settings State
+  const [profilePhoneInput, setProfilePhoneInput] = useState<string>(currentUser?.phone || '');
+  const [profileFullNameInput, setProfileFullNameInput] = useState<string>(currentUser?.full_name || '');
+  const [profileUpdateSuccess, setProfileUpdateSuccess] = useState<string | null>(null);
+  const [profileUpdateError, setProfileUpdateError] = useState<string | null>(null);
+  const [isUpdatingProfile, setIsUpdatingProfile] = useState<boolean>(false);
+  const [whatsappNotifications, setWhatsappNotifications] = useState<boolean>(true);
+  const [smsNotifications, setSmsNotifications] = useState<boolean>(true);
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [services, setServices] = useState<LaundryServiceItem[]>([]);
   const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
@@ -133,7 +159,7 @@ export const CustomerHome: React.FC = () => {
   } | null>(null);
 
   const [pickupDate, setPickupDate] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [selectedSlotName, setSelectedSlotName] = useState<string>('');
+  const [selectedSlotName, setSelectedSlotName] = useState<string>('Morning (08:00 AM - 11:00 AM)');
   const [customerPhone, setCustomerPhone] = useState<string>(currentUser?.phone || '');
   const [customerName, setCustomerName] = useState<string>(currentUser?.full_name || 'Customer');
   
@@ -245,13 +271,14 @@ export const CustomerHome: React.FC = () => {
   const [selectedFeedbackOrder, setSelectedFeedbackOrder] = useState<Order | null>(null);
   const [selectedInvoiceOrder, setSelectedInvoiceOrder] = useState<Order | null>(null);
 
-  const handleTabChange = (tab: 'book' | 'current' | 'history' | 'addresses' | 'contact') => {
+  const handleTabChange = (tab: 'book' | 'current' | 'history' | 'addresses' | 'profile' | 'settings' | 'contact') => {
     if (tab === 'book') {
       setSubmissionId(
         typeof crypto !== 'undefined' && crypto.randomUUID
           ? crypto.randomUUID()
           : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
       );
+      setBookingStep(1);
     }
     setActiveTab(tab);
     setSearchParams(
@@ -262,6 +289,123 @@ export const CustomerHome: React.FC = () => {
       },
       { replace: true }
     );
+  };
+
+  // Step advancement logic for 5-step guided booking flow:
+  // Step 1: Schedule (Services & Pickup Schedule)
+  // Step 2: Contact (Contact & Mobile Number)
+  // Step 3: Address (Pickup Address & Map Pin)
+  // Step 4: Review (Order Summary & Promotional Coupon)
+  // Step 5: Payment (Payment Method & Final Submission)
+  const handleNextStep = (current: number) => {
+    setBookingStepError(null);
+    setBookingError(null);
+
+    if (current === 1) {
+      if (!pickupDate) {
+        setBookingStepError('Please select a pickup date.');
+        return;
+      }
+      if (selectedServiceIds.length === 0 && services.length > 0) {
+        setSelectedServiceIds([services[0].id]);
+      }
+      if (!selectedSlotName) {
+        setSelectedSlotName('Morning (08:00 AM - 11:00 AM)');
+      }
+      setBookingStep(2);
+    } else if (current === 2) {
+      const cleanPhone = (customerPhone || currentUser?.phone || '').replace(/[^0-9]/g, '');
+      if (!cleanPhone || cleanPhone.length < 10) {
+        setBookingStepError('Please enter a valid 10-digit Indian mobile number.');
+        return;
+      }
+      if (!customerName.trim()) {
+        setBookingStepError('Please enter your full name.');
+        return;
+      }
+      setBookingStep(3);
+    } else if (current === 3) {
+      if (isEnteringNewAddress || addresses.length === 0) {
+        if (!newAddressLine.trim()) {
+          setBookingStepError('Please enter your complete pickup address.');
+          return;
+        }
+        if (!newPincode.trim() || newPincode.trim().length !== 6) {
+          setBookingStepError('Please enter a valid 6-digit Bangalore PIN code.');
+          return;
+        }
+      } else {
+        const chosen = addresses.find((a) => a.id === selectedAddressId);
+        if (!chosen) {
+          setBookingStepError('Please select a saved pickup address or enter a new one.');
+          return;
+        }
+      }
+      setBookingStep(4);
+    } else if (current === 4) {
+      setBookingStep(5);
+    }
+  };
+
+  const handlePrevStep = () => {
+    setBookingStepError(null);
+    setBookingError(null);
+    setBookingStep((prev) => Math.max(1, prev - 1));
+  };
+
+  const handleStepIndicatorClick = (targetStep: number) => {
+    setBookingStepError(null);
+    if (targetStep > bookingStep) {
+      if (bookingStep === 1 && (selectedServiceIds.length === 0 || !pickupDate || !selectedSlotName)) {
+        setBookingStepError('Please select a service, date, and pickup slot before proceeding.');
+        return;
+      }
+      if (targetStep >= 3) {
+        const cleanPhone = (customerPhone || currentUser?.phone || '').replace(/[^0-9]/g, '');
+        if (!cleanPhone || cleanPhone.length < 10 || !customerName.trim()) {
+          setBookingStepError('Please enter your full name and 10-digit mobile number first.');
+          return;
+        }
+      }
+      if (targetStep >= 4 && !selectedAddressId && (!newAddressLine.trim() || newPincode.trim().length !== 6)) {
+        setBookingStepError('Please complete your pickup address first.');
+        return;
+      }
+    }
+    setBookingStep(targetStep);
+  };
+
+  const handleUpdateCustomerProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser) return;
+    setIsUpdatingProfile(true);
+    setProfileUpdateError(null);
+    setProfileUpdateSuccess(null);
+
+    const cleanPhone = profilePhoneInput.replace(/[^0-9]/g, '');
+    if (cleanPhone && cleanPhone.length < 10) {
+      setProfileUpdateError('Please enter a valid 10-digit mobile number.');
+      setIsUpdatingProfile(false);
+      return;
+    }
+
+    try {
+      const res = await updateProfile({
+        phone: cleanPhone || undefined,
+        full_name: profileFullNameInput.trim() || undefined
+      });
+      if (res.success) {
+        setProfileUpdateSuccess('Profile updated successfully.');
+        setCustomerPhone(cleanPhone);
+        setCustomerName(profileFullNameInput.trim());
+      } else {
+        setProfileUpdateError(res.message || 'Failed to update profile.');
+      }
+    } catch (err: any) {
+      setProfileUpdateError(err.message || 'Error updating profile.');
+    } finally {
+      setIsUpdatingProfile(false);
+    }
   };
 
   const handleDismissConfirmation = () => {
@@ -1292,6 +1436,14 @@ export const CustomerHome: React.FC = () => {
     setCouponError(null);
   };
 
+  // Auto-apply coupon from URL if present (e.g. from promotional banner carousel)
+  const couponQueryParam = searchParams.get('coupon');
+  useEffect(() => {
+    if (couponQueryParam && !appliedCoupon) {
+      handleApplyCoupon(couponQueryParam);
+    }
+  }, [couponQueryParam]);
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-24">
       {/* PWA Installation Banner */}
@@ -1401,13 +1553,24 @@ export const CustomerHome: React.FC = () => {
 
           <button
             onClick={() => handleTabChange('addresses')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${
-              activeTab === 'addresses'
+            className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition flex items-center gap-1.5 ${
+              activeTab === 'addresses' || activeTab === 'profile'
                 ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25'
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
             }`}
           >
-            My Addresses
+            <User className="w-4 h-4" /> My Profile & Addresses
+          </button>
+
+          <button
+            onClick={() => handleTabChange('settings')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition flex items-center gap-1.5 ${
+              activeTab === 'settings'
+                ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            }`}
+          >
+            <Settings className="w-4 h-4" /> Settings
           </button>
 
           <button
@@ -1587,84 +1750,301 @@ export const CustomerHome: React.FC = () => {
                 </div>
               )}
 
-              <form onSubmit={handleCreateBooking} className="bg-white rounded-3xl border border-slate-200 p-6 space-y-5 shadow-sm">
-                <h2 className="font-black text-slate-900 text-base flex items-center gap-2">
-                  <Calendar className="w-5 h-5 text-brand-600" /> Schedule Home Pickup
-                </h2>
+              <form onSubmit={handleCreateBooking} className="bg-white rounded-3xl border border-slate-200 p-6 space-y-6 shadow-sm">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100">
+                  <h2 className="font-black text-slate-900 text-base flex items-center gap-2">
+                    <Calendar className="w-5 h-5 text-brand-600" /> Schedule Home Pickup
+                  </h2>
+                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                    Step {bookingStep} of 5
+                  </span>
+                </div>
 
-                {/* 0. Service Selection */}
-                {services.length > 0 && (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                        <Sparkles className="w-4 h-4 text-brand-600" /> Select Laundry Service(s)
-                      </label>
-                      {activeSelectedServices.length > 1 && (
-                        <span className="text-[11px] font-bold text-brand-700 bg-brand-50 px-2.5 py-0.5 rounded-full border border-brand-200">
-                          {activeSelectedServices.length} Services Selected (Linked Pickup)
-                        </span>
-                      )}
+                {/* Visible Step Indicator (Steps 1 to 5) */}
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 sm:p-4 shadow-2xs select-none">
+                  <div className="flex items-center justify-between">
+                    {[
+                      { num: 1, label: 'Schedule', icon: Calendar },
+                      { num: 2, label: 'Contact', icon: Phone },
+                      { num: 3, label: 'Address', icon: MapPin },
+                      { num: 4, label: 'Review', icon: CheckCircle2 },
+                      { num: 5, label: 'Payment', icon: CreditCard }
+                    ].map((s, idx) => {
+                      const isCompleted = bookingStep > s.num;
+                      const isCurrent = bookingStep === s.num;
+                      return (
+                        <React.Fragment key={s.num}>
+                          {idx > 0 && (
+                            <div className={`flex-1 h-0.5 mx-1 sm:mx-2 transition-colors ${
+                              isCompleted ? 'bg-emerald-500' : 'bg-slate-200'
+                            }`} />
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleStepIndicatorClick(s.num)}
+                            className="flex flex-col items-center group cursor-pointer focus:outline-none"
+                            title={`Step ${s.num}: ${s.label}`}
+                          >
+                            <div
+                              className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center font-bold text-xs transition ${
+                                isCompleted
+                                  ? 'bg-emerald-600 text-white shadow-2xs'
+                                  : isCurrent
+                                  ? 'bg-brand-600 text-white ring-4 ring-brand-100 shadow-sm'
+                                  : 'bg-white border border-slate-300 text-slate-500 hover:border-slate-400'
+                              }`}
+                            >
+                              {isCompleted ? <Check className="w-3.5 h-3.5" /> : s.num}
+                            </div>
+                            <span
+                              className={`text-[10px] font-bold mt-1 hidden sm:block ${
+                                isCurrent ? 'text-brand-700' : isCompleted ? 'text-emerald-700' : 'text-slate-500'
+                              }`}
+                            >
+                              {s.label}
+                            </span>
+                          </button>
+                        </React.Fragment>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {bookingStepError && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-700 text-xs flex items-center gap-2 animate-fade-in">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{bookingStepError}</span>
+                  </div>
+                )}
+
+                {/* ================= STEP 1: SERVICES & SCHEDULE ================= */}
+                <div className={bookingStep === 1 ? 'space-y-5 animate-fade-in' : 'hidden'} data-step="1">
+                  {/* Service Selection */}
+                  {services.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                          <Sparkles className="w-4 h-4 text-brand-600" /> Select Laundry Service(s)
+                        </label>
+                        {activeSelectedServices.length > 1 && (
+                          <span className="text-[11px] font-bold text-brand-700 bg-brand-50 px-2.5 py-0.5 rounded-full border border-brand-200">
+                            {activeSelectedServices.length} Services Selected (Linked Pickup)
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-500">
+                        Select one or more services for this pickup. Distinct services are weighed and processed in separate batches.
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        {services.map((srv) => {
+                          const isSelected = selectedServiceIds.includes(srv.id);
+                          return (
+                            <label
+                              key={srv.id}
+                              className={`flex items-start gap-2.5 p-3 rounded-2xl border cursor-pointer transition select-none ${
+                                isSelected
+                                  ? 'border-brand-600 bg-brand-50/70 text-slate-900 ring-2 ring-brand-500/20 shadow-sm'
+                                  : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                name="selectedService"
+                                value={srv.id}
+                                checked={isSelected}
+                                onChange={() => handleToggleService(srv.id)}
+                                className="mt-1 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer"
+                              />
+                              <div className="text-xs flex-1">
+                                <div className="flex items-center justify-between">
+                                  <span className="font-bold text-slate-900">{srv.name}</span>
+                                  <span className="font-black text-brand-700">
+                                    ₹{(((srv.unit_price_paise || srv.price_paise || 7900) / 100)).toFixed(0)}
+                                    <span className="text-[10px] text-slate-400 font-normal">/{srv.pricing_unit === 'per_kg' ? 'kg' : srv.pricing_unit.replace('per_', '')}</span>
+                                  </span>
+                                </div>
+                                {srv.description && (
+                                  <span className="text-slate-500 text-[11px] block mt-0.5 line-clamp-1">{srv.description}</span>
+                                )}
+                                {srv.pricing_unit === 'per_kg' && srv.min_weight_kg > 0 && (
+                                  <span className="text-[10px] text-slate-400 font-mono mt-0.5 block">Min. {srv.min_weight_kg} kg</span>
+                                )}
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
                     </div>
-                    <p className="text-[11px] text-slate-500">
-                      Select one or more services for this pickup. Distinct services are weighed and processed in separate batches.
-                    </p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      {services.map((srv) => {
-                        const isSelected = selectedServiceIds.includes(srv.id);
+                  )}
+
+                  {/* Pickup Date */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-2 flex items-center gap-1.5">
+                      <Calendar className="w-4 h-4 text-brand-600" /> Step 1: Choose Pickup Date
+                    </label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[0, 1, 2].map((offset) => {
+                        const d = new Date();
+                        d.setDate(d.getDate() + offset);
+                        const isoDate = d.toISOString().split('T')[0];
+                        const label = offset === 0 ? 'Today' : offset === 1 ? 'Tomorrow' : d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+                        const isSelected = pickupDate === isoDate;
                         return (
-                          <label
-                            key={srv.id}
-                            className={`flex items-start gap-2.5 p-3 rounded-2xl border cursor-pointer transition select-none ${
+                          <button
+                            type="button"
+                            key={isoDate}
+                            onClick={() => setPickupDate(isoDate)}
+                            className={`py-2.5 px-2 rounded-xl border text-center transition cursor-pointer ${
                               isSelected
-                                ? 'border-brand-600 bg-brand-50/70 text-slate-900 ring-2 ring-brand-500/20 shadow-sm'
-                                : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+                                ? 'border-brand-600 bg-brand-50 text-brand-700 font-bold ring-2 ring-brand-500/20'
+                                : 'border-slate-200 text-slate-700 hover:bg-slate-50 font-medium'
                             }`}
                           >
-                            <input
-                              type="checkbox"
-                              name="selectedService"
-                              value={srv.id}
-                              checked={isSelected}
-                              onChange={() => handleToggleService(srv.id)}
-                              className="mt-1 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer"
-                            />
-                            <div className="text-xs flex-1">
-                              <div className="flex items-center justify-between">
-                                <span className="font-bold text-slate-900">{srv.name}</span>
-                                <span className="font-black text-brand-700">
-                                  ₹{(((srv.unit_price_paise || srv.price_paise || 7900) / 100)).toFixed(0)}
-                                  <span className="text-[10px] text-slate-400 font-normal">/{srv.pricing_unit === 'per_kg' ? 'kg' : srv.pricing_unit.replace('per_', '')}</span>
-                                </span>
-                              </div>
-                              {srv.description && (
-                                <span className="text-slate-500 text-[11px] block mt-0.5 line-clamp-1">{srv.description}</span>
-                              )}
-                              {srv.pricing_unit === 'per_kg' && srv.min_weight_kg > 0 && (
-                                <span className="text-[10px] text-slate-400 font-mono mt-0.5 block">Min. {srv.min_weight_kg} kg</span>
-                              )}
-                            </div>
-                          </label>
+                            <span className="block text-xs">{label}</span>
+                            <span className="block text-[10px] text-slate-500">{isoDate.split('-').reverse().slice(0, 2).join('/')}</span>
+                          </button>
                         );
                       })}
                     </div>
                   </div>
-                )}
 
-                {/* 1. Address Section */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                      <MapPin className="w-4 h-4 text-brand-600" /> Pickup Address
+                  {/* Time Slot */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-2 flex items-center gap-1.5">
+                      <Clock className="w-4 h-4 text-brand-600" /> Select 3-Hour Time Window
                     </label>
-                    {addresses.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setIsEnteringNewAddress(!isEnteringNewAddress)}
-                        className="text-xs font-bold text-brand-600 hover:underline"
-                      >
-                        {isEnteringNewAddress ? 'Choose Saved Address' : '+ New Address'}
-                      </button>
-                    )}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {(slots.length > 0 ? slots : [
+                        { id: 'slot-1', name: 'Morning (08:00 AM - 11:00 AM)' },
+                        { id: 'slot-2', name: 'Noon (11:00 AM - 02:00 PM)' },
+                        { id: 'slot-3', name: 'Afternoon (02:00 PM - 05:00 PM)' },
+                        { id: 'slot-4', name: 'Evening (05:00 PM - 08:00 PM)' }
+                      ]).map((s) => (
+                        <label
+                          key={s.id}
+                          className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition text-xs ${
+                            selectedSlotName === s.name
+                              ? 'border-brand-600 bg-brand-50 text-brand-900 font-bold ring-2 ring-brand-500/20'
+                              : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="radio"
+                              name="timeSlot"
+                              value={s.name}
+                              checked={selectedSlotName === s.name}
+                              onChange={() => setSelectedSlotName(s.name)}
+                              className="text-brand-600 focus:ring-brand-500 cursor-pointer"
+                            />
+                            <span>{s.name}</span>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="pt-3 border-t border-slate-100 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => handleNextStep(1)}
+                      className="py-3 px-6 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <span>Continue to Contact Info</span>
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* ================= STEP 2: CONTACT DETAILS ================= */}
+                <div className={bookingStep === 2 ? 'space-y-5 animate-fade-in' : 'hidden'} data-step="2">
+                  <div className="space-y-1">
+                    <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                      <Phone className="w-4 h-4 text-brand-600" /> Step 2: Contact & Mobile Number
+                    </h3>
+                    <p className="text-[11px] text-slate-500">
+                      Our pickup executive will call this phone number when arriving at your doorstep.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <label className="block text-slate-700 font-bold mb-1">Your Full Name</label>
+                      <input
+                        type="text"
+                        value={customerName}
+                        onChange={(e) => setCustomerName(e.target.value)}
+                        placeholder="e.g. Priya Patel"
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 bg-white font-medium"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-700 font-bold mb-1">10-Digit Mobile Number</label>
+                      <div className="relative">
+                        <span className="absolute left-3 top-2.5 text-slate-400 font-bold font-mono text-xs">+91</span>
+                        <input
+                          type="tel"
+                          maxLength={10}
+                          value={customerPhone}
+                          onChange={(e) => setCustomerPhone(e.target.value.replace(/[^0-9]/g, ''))}
+                          placeholder="9876543210"
+                          className="w-full pl-12 pr-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono text-xs bg-white font-medium"
+                          required
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl text-[11px] text-slate-600 flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>Real-time booking and dispatch notifications will be sent to this mobile number.</span>
+                  </div>
+
+                  <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
+                    <button
+                      type="button"
+                      onClick={handlePrevStep}
+                      className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition flex items-center gap-1 cursor-pointer"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                      <span>Back to Schedule</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleNextStep(2)}
+                      className="py-3 px-6 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <span>Continue to Pickup Address</span>
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* ================= STEP 3: PICKUP ADDRESS ================= */}
+                <div className={bookingStep === 3 ? 'space-y-5 animate-fade-in' : 'hidden'} data-step="3">
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                        <MapPin className="w-4 h-4 text-brand-600" /> Step 3: Pickup Address
+                      </h3>
+                      {addresses.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsEnteringNewAddress(!isEnteringNewAddress);
+                            setBookingStep(3);
+                          }}
+                          className="text-xs font-bold text-brand-600 hover:underline cursor-pointer"
+                        >
+                          {isEnteringNewAddress ? 'Choose Saved Address' : '+ New Address'}
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      Select a saved address from your address book or enter a new pickup location.
+                    </p>
                   </div>
 
                   {!isEnteringNewAddress && addresses.length > 0 ? (
@@ -1815,7 +2195,7 @@ export const CustomerHome: React.FC = () => {
                         placeholder="House / Flat No., Apartment, Street name"
                         value={newAddressLine}
                         onChange={(e) => setNewAddressLine(e.target.value)}
-                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-medium"
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-medium bg-white"
                         required
                       />
                       <div className="space-y-1.5 pt-0.5">
@@ -1881,187 +2261,166 @@ export const CustomerHome: React.FC = () => {
                           placeholder="Landmark (e.g. Near Metro)"
                           value={newLandmark}
                           onChange={(e) => setNewLandmark(e.target.value)}
-                          className="w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500"
+                          className="w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 bg-white"
                         />
                         <input
                           type="text"
                           placeholder="PIN Code (e.g. 560103)"
                           value={newPincode}
                           onChange={(e) => setNewPincode(e.target.value)}
-                          className="w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono"
+                          className="w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono bg-white"
                           required
                         />
                       </div>
                     </div>
                   )}
-                </div>
 
-                {/* 2. Date Selection */}
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-2 flex items-center gap-1.5">
-                    <Calendar className="w-4 h-4 text-brand-600" /> Pickup Date
-                  </label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {[0, 1, 2].map((offset) => {
-                      const d = new Date();
-                      d.setDate(d.getDate() + offset);
-                      const isoDate = d.toISOString().split('T')[0];
-                      const label = offset === 0 ? 'Today' : offset === 1 ? 'Tomorrow' : d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
-                      const isSelected = pickupDate === isoDate;
-                      return (
-                        <button
-                          type="button"
-                          key={isoDate}
-                          onClick={() => setPickupDate(isoDate)}
-                          className={`py-2.5 px-2 rounded-xl border text-center transition ${
-                            isSelected
-                              ? 'border-brand-600 bg-brand-50 text-brand-700 font-bold ring-2 ring-brand-500/20'
-                              : 'border-slate-200 text-slate-700 hover:bg-slate-50 font-medium'
-                          }`}
-                        >
-                          <span className="block text-xs">{label}</span>
-                          <span className="block text-[10px] text-slate-500">{isoDate.split('-').reverse().slice(0, 2).join('/')}</span>
-                        </button>
-                      );
-                    })}
+                  <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
+                    <button
+                      type="button"
+                      onClick={handlePrevStep}
+                      className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition flex items-center gap-1 cursor-pointer"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                      <span>Back to Contact</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleNextStep(3)}
+                      className="py-3 px-6 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <span>Continue to Order Review</span>
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
                   </div>
                 </div>
 
-                {/* 3. Slot Selection */}
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-2 flex items-center gap-1.5">
-                    <Clock className="w-4 h-4 text-brand-600" /> Time Slot
-                  </label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {(slots.length > 0 ? slots : [
-                      { id: 'slot-1', name: 'Morning (08:00 AM - 11:00 AM)' },
-                      { id: 'slot-2', name: 'Noon (11:00 AM - 02:00 PM)' },
-                      { id: 'slot-3', name: 'Afternoon (02:00 PM - 05:00 PM)' },
-                      { id: 'slot-4', name: 'Evening (05:00 PM - 08:00 PM)' }
-                    ]).map((s) => (
-                      <label
-                        key={s.id}
-                        className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition text-xs ${
-                          selectedSlotName === s.name
-                            ? 'border-brand-600 bg-brand-50 text-brand-900 font-bold ring-2 ring-brand-500/20'
-                            : 'border-slate-200 hover:bg-slate-50 text-slate-700'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="radio"
-                            name="timeSlot"
-                            value={s.name}
-                            checked={selectedSlotName === s.name}
-                            onChange={() => setSelectedSlotName(s.name)}
-                            className="text-brand-600 focus:ring-brand-500"
-                          />
-                          <span>{s.name}</span>
-                        </div>
-                      </label>
-                    ))}
+                {/* ================= STEP 4: REVIEW & OFFERS ================= */}
+                <div className={bookingStep === 4 ? 'space-y-5 animate-fade-in' : 'hidden'} data-step="4">
+                  <div className="space-y-1">
+                    <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-brand-600" /> Step 4: Review Booking Details & Offers
+                    </h3>
+                    <p className="text-[11px] text-slate-500">
+                      Verify your laundry pickup schedule, contact details, address, and apply promotional coupons.
+                    </p>
                   </div>
-                </div>
 
-                {/* 4. Contact Confirmation */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                  <div>
-                    <label className="block text-slate-600 font-bold mb-1">Your Name</label>
-                    <input
-                      type="text"
-                      value={customerName}
-                      onChange={(e) => setCustomerName(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500"
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-600 font-bold mb-1">Mobile Number</label>
-                    <input
-                      type="tel"
-                      value={customerPhone}
-                      onChange={(e) => setCustomerPhone(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono"
-                      required
-                    />
-                  </div>
-                </div>
-
-                {/* 5. Promotional Offers & Coupon Section */}
-                <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3 text-xs">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                      <TicketPercent className="w-4 h-4 text-brand-600" /> Promotional Offers & Coupons
-                    </label>
-                    {appliedCoupon ? (
-                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
-                        Offer Attached
+                  {/* Summary Cards */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 space-y-1">
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
+                        Scheduled Pickup
                       </span>
-                    ) : (
-                      <span className="text-[10px] font-semibold text-slate-400">
-                        Pre-Booking Only
+                      <p className="font-bold text-slate-900 text-xs">
+                        {pickupDate} • {selectedSlotName}
+                      </p>
+                      <span className="text-[11px] text-slate-500 block">
+                        Service(s): {activeSelectedServices.map((s) => s.name).join(', ') || 'Wash & Fold'}
                       </span>
-                    )}
-                  </div>
-
-                  {appliedCoupon ? (
-                    <div className="bg-white border border-emerald-300 rounded-2xl p-3.5 space-y-2 shadow-xs">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-start gap-2.5">
-                          <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0 mt-0.5">
-                            <Tag className="w-4 h-4" />
-                          </div>
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <span className="font-mono font-black text-slate-900 text-sm tracking-wider">
-                                {appliedCoupon.code}
-                              </span>
-                              <span className="text-[10px] bg-emerald-100 text-emerald-800 font-black px-2 py-0.5 rounded-full">
-                                {appliedCoupon.discount_type === 'percentage'
-                                  ? `${appliedCoupon.discount_value}% OFF`
-                                  : `₹${(appliedCoupon.discount_paise / 100).toFixed(0)} OFF`}
-                              </span>
-                            </div>
-                            <p className="text-[11px] text-slate-600 mt-1 font-medium">
-                              Estimated Savings: <span className="font-bold text-emerald-700">Up to ₹{(appliedCoupon.discount_paise / 100).toFixed(0)}</span>
-                            </p>
-                            <p className="text-[10px] text-amber-700 font-medium mt-0.5 flex items-center gap-1">
-                              <span>⏳</span> Final savings verified upon digital scale weighing at intake hub.
-                            </p>
-                            {appliedCoupon.min_order_paise ? (
-                              <p className="text-[10px] text-slate-500 mt-0.5">
-                                Condition: Requires final measured subtotal of min. ₹{(appliedCoupon.min_order_paise / 100).toFixed(0)}.
-                              </p>
-                            ) : null}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={handleRemoveCoupon}
-                          className="text-xs font-bold text-rose-600 hover:text-rose-700 px-2.5 py-1 rounded-lg hover:bg-rose-50 transition cursor-pointer"
-                        >
-                          Remove
-                        </button>
-                      </div>
-                      <div className="text-[10px] text-slate-500 bg-slate-50 p-2 rounded-xl border border-slate-100">
-                        🔒 Offer locked for this order. As per our pre-booking promotion policy, terms are snapshotted and will be applied at weighing.
-                      </div>
                     </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {/* Active Advertised Offers for 1-Tap Application */}
-                      {availablePromotions.length > 0 && (
-                        <div className="space-y-2">
-                          <span className="text-[11px] font-bold text-slate-600 block">
-                            Featured Offers Available:
-                          </span>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            {availablePromotions.map((promo) => {
-                              const isEligible = !promo.min_order_paise || combinedEstimatedSubtotalPaise >= promo.min_order_paise;
-                              return (
+
+                    <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 space-y-1">
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
+                        Contact Details
+                      </span>
+                      <p className="font-bold text-slate-900 text-xs">
+                        {customerName || 'Customer'}
+                      </p>
+                      <span className="text-[11px] text-slate-500 block font-mono">
+                        +91 {customerPhone}
+                      </span>
+                    </div>
+
+                    <div className="sm:col-span-2 p-3.5 rounded-2xl bg-slate-50 border border-slate-200 space-y-1">
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
+                        Pickup Address
+                      </span>
+                      <p className="font-medium text-slate-900 text-xs">
+                        Address: {isEnteringNewAddress || addresses.length === 0
+                          ? newAddressLine
+                          : (isRefiningAddress ? refinedAddressLine : addresses.find((a) => a.id === selectedAddressId)?.address_line)}
+                      </p>
+                      <span className="text-[11px] text-slate-500">
+                        PIN: {isEnteringNewAddress || addresses.length === 0 ? newPincode : (isRefiningAddress ? refinedPincode : addresses.find((a) => a.id === selectedAddressId)?.pincode)}
+                        {(newLandmark || refinedLandmark || addresses.find((a) => a.id === selectedAddressId)?.landmark) ? ` • Landmark: ${newLandmark || refinedLandmark || addresses.find((a) => a.id === selectedAddressId)?.landmark}` : ''}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Promotional Offers & Coupon Section in Review */}
+                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3 text-xs">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                        <TicketPercent className="w-4 h-4 text-brand-600" /> Promotional Coupon
+                      </label>
+                      {appliedCoupon ? (
+                        <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+                          Coupon Attached
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-semibold text-slate-400">
+                          Optional
+                        </span>
+                      )}
+                    </div>
+
+                    {appliedCoupon ? (
+                      <div className="bg-white border border-emerald-300 rounded-2xl p-3.5 space-y-2 shadow-2xs">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-start gap-2.5">
+                            <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0 mt-0.5">
+                              <Tag className="w-4 h-4" />
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono font-black text-slate-900 text-sm tracking-wider">
+                                  {appliedCoupon.code}
+                                </span>
+                                <span className="text-[10px] bg-emerald-100 text-emerald-800 font-black px-2 py-0.5 rounded-full">
+                                  {appliedCoupon.discount_type === 'percentage'
+                                    ? `${appliedCoupon.discount_value}% OFF`
+                                    : `₹${(appliedCoupon.discount_paise / 100).toFixed(0)} OFF`}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-600 mt-1 font-medium">
+                                Estimated Discount: <span className="font-bold text-emerald-700">Up to ₹{(appliedCoupon.discount_paise / 100).toFixed(0)}</span>
+                              </p>
+                              <p className="text-[10px] text-amber-700 font-medium mt-0.5 flex items-center gap-1">
+                                <span>⏳</span> Final savings verified upon digital scale weighing at intake hub.
+                              </p>
+                              {appliedCoupon.min_order_paise ? (
+                                <p className="text-[10px] text-slate-500 mt-0.5">
+                                  Condition: Requires final measured subtotal of min. ₹{(appliedCoupon.min_order_paise / 100).toFixed(0)}.
+                                </p>
+                              ) : null}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleRemoveCoupon}
+                            className="text-xs font-bold text-rose-600 hover:text-rose-700 px-2.5 py-1 rounded-lg hover:bg-rose-50 transition cursor-pointer"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <div className="text-[10px] text-slate-500 bg-slate-50 p-2 rounded-xl border border-slate-100">
+                          🔒 Offer locked for this order. As per our pre-booking promotion policy, terms are snapshotted and will be applied at weighing.
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {availablePromotions.length > 0 && (
+                          <div className="space-y-2">
+                            <span className="text-[11px] font-bold text-slate-600 block">
+                              Featured Offers Available:
+                            </span>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              {availablePromotions.map((promo) => (
                                 <div
                                   key={promo.id}
-                                  className="bg-white border border-slate-200 hover:border-brand-300 rounded-xl p-2.5 flex items-center justify-between gap-2 transition shadow-xs"
+                                  className="bg-white border border-slate-200 hover:border-brand-300 rounded-xl p-2.5 flex items-center justify-between gap-2 transition shadow-2xs"
                                 >
                                   <div className="min-w-0">
                                     <div className="flex items-center gap-1.5">
@@ -2077,11 +2436,6 @@ export const CustomerHome: React.FC = () => {
                                     <p className="text-[10px] text-slate-500 mt-1 truncate" title={promo.description}>
                                       {promo.description || 'Promotional discount'}
                                     </p>
-                                    {promo.min_order_paise ? (
-                                      <p className="text-[9px] text-amber-700 font-medium">
-                                        Min. ₹{(promo.min_order_paise / 100).toFixed(0)} (pending weighing)
-                                      </p>
-                                    ) : null}
                                   </div>
                                   <button
                                     type="button"
@@ -2092,80 +2446,199 @@ export const CustomerHome: React.FC = () => {
                                     Apply
                                   </button>
                                 </div>
-                              );
-                            })}
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Manual Code Input Field */}
+                        <div className="pt-1 border-t border-slate-200/60 space-y-1.5">
+                          <span className="text-[11px] text-slate-500 block">
+                            Have another promo code?
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={couponCodeInput}
+                              onChange={(e) => setCouponCodeInput(e.target.value.toUpperCase())}
+                              placeholder="Enter code (e.g. WELCOME50)"
+                              className="flex-1 px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono uppercase text-xs bg-white"
+                              data-testid="coupon-code-input"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleApplyCoupon()}
+                              disabled={couponValidationLoading || !couponCodeInput.trim()}
+                              className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-sm transition cursor-pointer disabled:opacity-50"
+                              data-testid="apply-coupon-btn"
+                            >
+                              {couponValidationLoading ? 'Applying...' : 'Apply'}
+                            </button>
                           </div>
                         </div>
-                      )}
 
-                      {/* Manual Code Input Field */}
-                      <div className="pt-1 border-t border-slate-200/60 space-y-1.5">
-                        <span className="text-[11px] text-slate-500 block">
-                          Have another promo code?
-                        </span>
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="text"
-                            value={couponCodeInput}
-                            onChange={(e) => setCouponCodeInput(e.target.value.toUpperCase())}
-                            placeholder="Enter code (e.g. WELCOME50)"
-                            className="flex-1 px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono uppercase text-xs bg-white"
-                            data-testid="coupon-code-input"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => handleApplyCoupon()}
-                            disabled={couponValidationLoading || !couponCodeInput.trim()}
-                            className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-sm transition cursor-pointer disabled:opacity-50"
-                            data-testid="apply-coupon-btn"
-                          >
-                            {couponValidationLoading ? 'Applying...' : 'Apply'}
-                          </button>
-                        </div>
+                        {couponError && (
+                          <p className="text-[11px] text-rose-600 font-semibold" data-testid="coupon-error-msg">
+                            {couponError}
+                          </p>
+                        )}
+                        {couponSuccessMessage && (
+                          <p className="text-[11px] text-emerald-600 font-semibold" data-testid="coupon-success-msg">
+                            {couponSuccessMessage}
+                          </p>
+                        )}
                       </div>
+                    )}
+                  </div>
 
-                      {couponError && (
-                        <p className="text-[11px] text-rose-600 font-semibold" data-testid="coupon-error-msg">
-                          {couponError}
-                        </p>
-                      )}
-                      {couponSuccessMessage && (
-                        <p className="text-[11px] text-emerald-600 font-semibold" data-testid="coupon-success-msg">
-                          {couponSuccessMessage}
-                        </p>
-                      )}
+                  {/* Step 4 Actions (Back & Forward) */}
+                  <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
+                    <button
+                      type="button"
+                      onClick={handlePrevStep}
+                      className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition flex items-center gap-1 cursor-pointer"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                      <span>Back to Address</span>
+                    </button>
 
-                      <p className="text-[10px] text-slate-400 italic">
-                        ℹ️ Pre-booking policy: Coupons must be applied before confirming pickup. Once confirmed, promotions cannot be added or changed.
-                      </p>
-                    </div>
-                  )}
+                    <button
+                      type="button"
+                      onClick={() => handleNextStep(4)}
+                      className="py-3 px-6 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <span>Continue to Payment & Confirmation</span>
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
 
-                {/* Submit button on mobile */}
-                <div className="block lg:hidden pt-2">
-                  <button
-                    type="submit"
-                    disabled={isBookingSubmitting}
-                    className="w-full py-3.5 bg-brand-600 hover:bg-brand-700 text-white font-black text-sm rounded-2xl shadow-lg transition flex items-center justify-center gap-2 disabled:opacity-50"
-                  >
-                    {pendingRecovery?.status === 'uncertain_timeout' ? (
-                      <>
-                        <RefreshCw className="w-5 h-5" />
-                        <span>Verify Unconfirmed Booking First</span>
-                      </>
-                    ) : currentUser ? (
-                      <>
-                        <CheckCircle2 className="w-5 h-5" />
-                        <span>Confirm Pickup Booking</span>
-                      </>
-                    ) : (
-                      <>
-                        <Lock className="w-5 h-5" />
-                        <span>Sign In to Book Pickup</span>
-                      </>
+                {/* ================= STEP 5: PAYMENT OPTION & FINAL CONFIRMATION ================= */}
+                <div className={bookingStep === 5 ? 'space-y-5 animate-fade-in' : 'hidden'} data-step="5">
+                  <div className="space-y-1">
+                    <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                      <CreditCard className="w-4 h-4 text-brand-600" /> Step 5: Payment Option & Confirmation
+                    </h3>
+                    <p className="text-[11px] text-slate-500">
+                      Choose your preferred payment method upon doorstep delivery. No advance payment is charged now.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <label
+                      className={`p-4 rounded-2xl border cursor-pointer transition flex items-start gap-3 ${
+                        selectedPaymentMethod === 'cash'
+                          ? 'border-brand-600 bg-brand-50/70 text-slate-900 ring-2 ring-brand-500/20 shadow-2xs'
+                          : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="paymentMethod"
+                        value="cash"
+                        checked={selectedPaymentMethod === 'cash'}
+                        onChange={() => setSelectedPaymentMethod('cash')}
+                        className="mt-1 text-brand-600 focus:ring-brand-500 cursor-pointer"
+                      />
+                      <div className="text-xs space-y-1">
+                        <span className="font-bold text-slate-900 block text-sm">Cash on Delivery</span>
+                        <p className="text-[11px] text-slate-500 leading-snug">
+                          Pay cash to the delivery associate when clean, folded clothes are delivered to your doorstep.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`p-4 rounded-2xl border cursor-pointer transition flex items-start gap-3 ${
+                        selectedPaymentMethod === 'upi_manual'
+                          ? 'border-brand-600 bg-brand-50/70 text-slate-900 ring-2 ring-brand-500/20 shadow-2xs'
+                          : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="paymentMethod"
+                        value="upi_manual"
+                        checked={selectedPaymentMethod === 'upi_manual'}
+                        onChange={() => setSelectedPaymentMethod('upi_manual')}
+                        className="mt-1 text-brand-600 focus:ring-brand-500 cursor-pointer"
+                      />
+                      <div className="text-xs space-y-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-slate-900 text-sm">UPI on Delivery</span>
+                          <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-cyan-100 text-cyan-800">GPay/PhonePe</span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 leading-snug">
+                          Scan the delivery associate's QR code or transfer via UPI when receiving your fresh clothes.
+                        </p>
+                      </div>
+                    </label>
+                  </div>
+
+                  <div className="p-3.5 bg-brand-50/80 rounded-2xl border border-brand-200 text-xs text-brand-900 space-y-1">
+                    <span className="font-bold flex items-center gap-1.5 text-xs text-brand-900">
+                      <Scale className="w-4 h-4 text-brand-600" />
+                      Zero Advance Charge
+                    </span>
+                    <p className="text-[11px] text-brand-800 leading-relaxed">
+                      Actual laundry weight and exact bill will be verified on calibrated digital scales at store intake. You pay only for actual measured weight!
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs space-y-1.5">
+                    <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
+                      Booking Summary
+                    </span>
+                    <div className="flex justify-between items-center text-slate-600">
+                      <span>Pickup:</span>
+                      <span className="font-bold text-slate-900">{pickupDate} ({selectedSlotName})</span>
+                    </div>
+                    <div className="flex justify-between items-center text-slate-600">
+                      <span>Contact:</span>
+                      <span className="font-bold text-slate-900">{customerName} (+91 {customerPhone})</span>
+                    </div>
+                    {appliedCoupon && (
+                      <div className="flex justify-between items-center text-emerald-700 font-medium">
+                        <span>Coupon Attached:</span>
+                        <span className="font-bold font-mono">{appliedCoupon.code}</span>
+                      </div>
                     )}
-                  </button>
+                  </div>
+
+                  {/* Step 5 Actions (Back & Submit) */}
+                  <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row justify-between items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={handlePrevStep}
+                      className="w-full sm:w-auto py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                      <span>Back to Review</span>
+                    </button>
+
+                    <button
+                      type="submit"
+                      disabled={isBookingSubmitting}
+                      className="w-full sm:w-auto py-3.5 px-8 bg-brand-600 hover:bg-brand-700 text-white font-black text-sm rounded-xl shadow-lg transition flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                    >
+                      {pendingRecovery?.status === 'uncertain_timeout' ? (
+                        <>
+                          <RefreshCw className="w-4 h-4" />
+                          <span>Verify Unconfirmed Booking First</span>
+                        </>
+                      ) : currentUser ? (
+                        <>
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Confirm Pickup Booking</span>
+                        </>
+                      ) : (
+                        <>
+                          <Lock className="w-4 h-4" />
+                          <span>Sign In to Book Pickup</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
               </form>
             </div>
@@ -2399,12 +2872,12 @@ export const CustomerHome: React.FC = () => {
                   </div>
                 </div>
 
-                {/* 7-Stage Live Progression Timeline */}
+                {/* 6-Stage Customer-Friendly Live Progression Timeline */}
                 <div className="py-2 space-y-3">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-slate-700">Order Progress Timeline</span>
                     <span className="text-[11px] font-semibold text-slate-500">
-                      7 Stages • Doorstep to Doorstep
+                      6 Stages • Doorstep to Doorstep
                     </span>
                   </div>
 
@@ -2417,48 +2890,35 @@ export const CustomerHome: React.FC = () => {
                       </div>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
                       {[
                         {
                           num: 1,
-                          key: 'booking_confirmed',
-                          label: '1. Booking Confirmed',
+                          key: 'order_placed',
+                          label: '1. Order Placed',
                           state: 'completed' as const,
                           desc: `${currentActiveOrder.pickup_date} (${currentActiveOrder.pickup_slot.split('(')[0].trim()})`
                         },
                         {
                           num: 2,
                           key: 'pickup_in_progress',
-                          label: '2. Pickup in Progress',
-                          state: ['collected', 'washing', 'ready_for_delivery', 'out_for_delivery', 'delivered'].includes(currentActiveOrder.order_status)
+                          label: '2. Pickup & Collection',
+                          state: ['washing', 'ready_for_delivery', 'delivery_assigned', 'out_for_delivery', 'delivered'].includes(currentActiveOrder.order_status)
                             ? ('completed' as const)
-                            : (currentActiveOrder.order_status === 'pickup_assigned' || currentActiveOrder.assigned_pickup_id)
+                            : (['pickup_assigned', 'collected', 'weighed'].includes(currentActiveOrder.order_status) || currentActiveOrder.assigned_pickup_id)
                               ? ('current' as const)
                               : ('pending' as const),
-                          desc: currentActiveOrder.assigned_pickup_name
-                            ? `Agent: ${currentActiveOrder.assigned_pickup_name}`
-                            : 'Awaiting assignment'
+                          desc: (currentActiveOrder.measured_weight || currentActiveOrder.doorstep_scale_weight_kg)
+                            ? `Weighed: ${(currentActiveOrder.measured_weight || currentActiveOrder.doorstep_scale_weight_kg)?.toFixed(2)} kg`
+                            : currentActiveOrder.assigned_pickup_name
+                              ? `Agent: ${currentActiveOrder.assigned_pickup_name}`
+                              : 'Awaiting assignment'
                         },
                         {
                           num: 3,
-                          key: 'picked_up_weighed',
-                          label: '3. Picked Up & Weighed',
-                          state: ['washing', 'ready_for_delivery', 'out_for_delivery', 'delivered'].includes(currentActiveOrder.order_status)
-                            ? ('completed' as const)
-                            : (currentActiveOrder.order_status === 'collected' || (currentActiveOrder.measured_weight !== null && currentActiveOrder.measured_weight !== undefined))
-                              ? ('current' as const)
-                              : ('pending' as const),
-                          desc: currentActiveOrder.measured_weight
-                            ? `${currentActiveOrder.measured_weight.toFixed(2)} kg (₹${((currentActiveOrder.total_amount_paise || 0) / 100).toFixed(0)})`
-                            : currentActiveOrder.order_status === 'collected'
-                              ? 'At store intake'
-                              : 'Pending weight'
-                        },
-                        {
-                          num: 4,
                           key: 'washing',
-                          label: '4. Washing & Processing',
-                          state: ['ready_for_delivery', 'out_for_delivery', 'delivered'].includes(currentActiveOrder.order_status)
+                          label: '3. Washing & Care',
+                          state: ['ready_for_delivery', 'delivery_assigned', 'out_for_delivery', 'delivered'].includes(currentActiveOrder.order_status)
                             ? ('completed' as const)
                             : currentActiveOrder.order_status === 'washing'
                               ? ('current' as const)
@@ -2466,20 +2926,20 @@ export const CustomerHome: React.FC = () => {
                           desc: currentActiveOrder.order_status === 'washing' ? 'In batch machines' : 'Steam & hygienic wash'
                         },
                         {
-                          num: 5,
-                          key: 'ready_for_delivery',
-                          label: '5. Ready for Delivery',
+                          num: 4,
+                          key: 'packaging',
+                          label: '4. Packaging & Press',
                           state: ['out_for_delivery', 'delivered'].includes(currentActiveOrder.order_status)
                             ? ('completed' as const)
-                            : currentActiveOrder.order_status === 'ready_for_delivery'
+                            : ['ready_for_delivery', 'delivery_assigned'].includes(currentActiveOrder.order_status)
                               ? ('current' as const)
                               : ('pending' as const),
-                          desc: 'Steam-ironed & packed'
+                          desc: 'Steam-ironed & quality packed'
                         },
                         {
-                          num: 6,
+                          num: 5,
                           key: 'out_for_delivery',
-                          label: '6. Out for Delivery',
+                          label: '5. Out for Delivery',
                           state: currentActiveOrder.order_status === 'delivered'
                             ? ('completed' as const)
                             : currentActiveOrder.order_status === 'out_for_delivery'
@@ -2490,9 +2950,9 @@ export const CustomerHome: React.FC = () => {
                             : 'Dispatch staging'
                         },
                         {
-                          num: 7,
+                          num: 6,
                           key: 'delivered',
-                          label: '7. Delivered',
+                          label: '6. Delivered',
                           state: currentActiveOrder.order_status === 'delivered'
                             ? ('completed' as const)
                             : ('pending' as const),
@@ -2981,6 +3441,191 @@ export const CustomerHome: React.FC = () => {
                 <span className="text-slate-500 block text-[11px] pt-1">Open 7 days a week: 8:00 AM – 9:00 PM</span>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* ================= 6. PROFILE TAB ================= */}
+        {activeTab === 'profile' && (
+          <div className="space-y-6 max-w-2xl">
+            <div className="bg-white rounded-3xl border border-slate-200 p-6 sm:p-8 space-y-5 shadow-sm">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                    Customer Account
+                  </span>
+                  <h2 className="font-black text-slate-900 text-xl">My Profile Details</h2>
+                </div>
+                <span className="px-3 py-1 rounded-full text-xs font-bold bg-brand-50 text-brand-700 border border-brand-200 capitalize">
+                  {currentUser?.role || 'Customer'}
+                </span>
+              </div>
+
+              {profileUpdateSuccess && (
+                <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-800 text-xs flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{profileUpdateSuccess}</span>
+                </div>
+              )}
+
+              {profileUpdateError && (
+                <div className="p-3.5 bg-red-50 border border-red-200 rounded-2xl text-red-700 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                  <span>{profileUpdateError}</span>
+                </div>
+              )}
+
+              <form onSubmit={handleUpdateCustomerProfile} className="space-y-4 text-xs">
+                <div>
+                  <label className="block text-slate-700 font-bold mb-1">Full Name</label>
+                  <input
+                    type="text"
+                    value={profileFullNameInput}
+                    onChange={(e) => setProfileFullNameInput(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-medium bg-white"
+                    placeholder="Your name"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-slate-700 font-bold mb-1">Mobile Number</label>
+                  <div className="relative">
+                    <span className="absolute left-3.5 top-2.5 text-slate-400 font-mono font-bold">+91</span>
+                    <input
+                      type="tel"
+                      maxLength={10}
+                      value={profilePhoneInput}
+                      onChange={(e) => setProfilePhoneInput(e.target.value.replace(/[^0-9]/g, ''))}
+                      className="w-full pl-12 pr-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono font-medium bg-white"
+                      placeholder="10-digit number"
+                    />
+                  </div>
+                  <span className="text-[11px] text-slate-400 mt-1 block">
+                    Used for pickup notifications, order updates, and driver contact.
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block text-slate-700 font-bold mb-1">Email Address</label>
+                  <input
+                    type="email"
+                    value={currentUser?.email || ''}
+                    disabled
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-500 font-mono cursor-not-allowed"
+                  />
+                  <span className="text-[10px] text-slate-400 mt-1 block">
+                    Managed by Google SSO / Auth Provider.
+                  </span>
+                </div>
+
+                <div className="pt-2 flex justify-between items-center">
+                  <button
+                    type="button"
+                    onClick={() => handleTabChange('addresses')}
+                    className="text-xs font-bold text-brand-600 hover:text-brand-700 underline cursor-pointer"
+                  >
+                    Manage Saved Addresses ({addresses.length}) →
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={isUpdatingProfile}
+                    className="py-2.5 px-5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-sm transition disabled:opacity-50 cursor-pointer"
+                  >
+                    {isUpdatingProfile ? 'Saving...' : 'Save Profile Changes'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* ================= 7. SETTINGS TAB ================= */}
+        {activeTab === 'settings' && (
+          <div className="space-y-6 max-w-2xl text-xs">
+            {/* Preferences */}
+            <div className="bg-white rounded-3xl border border-slate-200 p-6 sm:p-8 space-y-4 shadow-sm">
+              <div className="flex items-center gap-2.5 pb-3 border-b border-slate-100">
+                <Settings className="w-5 h-5 text-brand-600" />
+                <h2 className="font-black text-slate-900 text-base">Application Settings & Preferences</h2>
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between p-3.5 bg-slate-50 rounded-2xl border border-slate-200">
+                  <div>
+                    <span className="font-bold text-slate-900 block text-xs">WhatsApp Order Notifications</span>
+                    <span className="text-[11px] text-slate-500">
+                      Receive live pickup updates and digital scale receipts on WhatsApp.
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={whatsappNotifications}
+                    onChange={(e) => setWhatsappNotifications(e.target.checked)}
+                    className="h-5 w-5 rounded text-brand-600 focus:ring-brand-500 cursor-pointer"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between p-3.5 bg-slate-50 rounded-2xl border border-slate-200">
+                  <div>
+                    <span className="font-bold text-slate-900 block text-xs">SMS Dispatch Alerts</span>
+                    <span className="text-[11px] text-slate-500">
+                      Receive SMS alert when the courier is out for delivery.
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={smsNotifications}
+                    onChange={(e) => setSmsNotifications(e.target.checked)}
+                    className="h-5 w-5 rounded text-brand-600 focus:ring-brand-500 cursor-pointer"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Store Information & Support */}
+            <div className="bg-white rounded-3xl border border-slate-200 p-6 sm:p-8 space-y-4 shadow-sm">
+              <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
+                Support & Contact
+              </span>
+              <div className="space-y-2 text-slate-700">
+                <div className="flex items-start gap-2.5">
+                  <MapPin className="w-4 h-4 text-brand-600 shrink-0 mt-0.5" />
+                  <span>{settings?.business_address || DEFAULT_SETTINGS.business_address}</span>
+                </div>
+                <div className="flex items-center gap-2.5">
+                  <Phone className="w-4 h-4 text-brand-600 shrink-0" />
+                  <span>{settings?.business_phone || DEFAULT_SETTINGS.business_phone}</span>
+                </div>
+                <div className="flex items-center gap-2.5">
+                  <Clock className="w-4 h-4 text-brand-600 shrink-0" />
+                  <span>Hours: Monday – Sunday, 8:00 AM – 9:00 PM</span>
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 flex flex-wrap gap-4 text-[11px] text-slate-500">
+                <Link to="/privacy" className="hover:text-brand-600 underline">Privacy Policy</Link>
+                <Link to="/terms" className="hover:text-brand-600 underline">Terms of Service</Link>
+                <Link to="/contact" className="hover:text-brand-600 underline">Help Desk</Link>
+              </div>
+            </div>
+
+            {/* Session Management */}
+            {currentUser && (
+              <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm flex items-center justify-between">
+                <div>
+                  <span className="font-bold text-slate-900 block">Signed in as {currentUser.full_name}</span>
+                  <span className="text-[11px] text-slate-500">{currentUser.email || currentUser.phone}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="py-2 px-4 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Sign Out</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -3508,6 +4153,12 @@ export const CustomerHome: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Fixed Mobile Bottom Navigation */}
+      <CustomerBottomNav
+        activeTab={activeTab}
+        hasActiveOrder={Boolean(currentActiveOrder && currentActiveOrder.order_status !== 'delivered' && currentActiveOrder.order_status !== 'cancelled')}
+      />
     </div>
   );
 };

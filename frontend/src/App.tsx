@@ -111,6 +111,11 @@ export const App: React.FC = () => {
             <Route path="/book" element={<Navigate to="/customer?tab=book" replace />} />
             <Route path="/services" element={<Navigate to="/customer?tab=book" replace />} />
             <Route path="/track" element={<Navigate to="/customer?tab=current" replace />} />
+            <Route path="/orders" element={<Navigate to="/customer?tab=current" replace />} />
+            <Route path="/my-orders" element={<Navigate to="/customer?tab=current" replace />} />
+            <Route path="/profile" element={<Navigate to="/customer?tab=addresses" replace />} />
+            <Route path="/my-profile" element={<Navigate to="/customer?tab=addresses" replace />} />
+            <Route path="/settings" element={<Navigate to="/customer?tab=settings" replace />} />
             <Route path="/customer/orders" element={<Navigate to="/customer?tab=current" replace />} />
             <Route path="/register" element={<Navigate to="/login" replace />} />
 

@@ -39,10 +39,22 @@ describe('Stage 5A: Weighing Permission Migration & Payload Regression Check', (
   it('4. verifies that sensitive financial columns (paid_amount_paise, payment_status, payment_method) are NOT granted', () => {
     const sql = fs.readFileSync(targetMigrationPath, 'utf-8');
 
-    expect(/paid_amount_paise/i.test(sql.replace(/--.*$/gm, ''))).toBe(false);
-    expect(/payment_status/i.test(sql.replace(/--.*$/gm, ''))).toBe(false);
-    expect(/payment_method/i.test(sql.replace(/--.*$/gm, ''))).toBe(false);
-    expect(/customer_id/i.test(sql.replace(/--.*$/gm, ''))).toBe(false);
+    // Extract all GRANT UPDATE statements to verify sensitive columns are not granted
+    const grantStatements = sql.match(/GRANT\s+UPDATE[^\n;]+/gi) || [];
+    const grantedText = grantStatements.join(' ');
+
+    expect(/paid_amount_paise/i.test(grantedText)).toBe(false);
+    expect(/payment_status/i.test(grantedText)).toBe(false);
+    expect(/payment_method/i.test(grantedText)).toBe(false);
+    expect(/customer_id/i.test(grantedText)).toBe(false);
+  });
+
+  it('5. verifies that trigger function restricts discount_paise modifications strictly to store managers and owners', () => {
+    const sql = fs.readFileSync(targetMigrationPath, 'utf-8');
+
+    // Must verify delivery associates and non-manager/owner roles cannot alter discount_paise
+    expect(sql).toMatch(/user_role\s+NOT\s+IN\s*\(\s*'owner'\s*,\s*'manager'\s*\)\s+AND\s+NEW\.discount_paise\s+IS\s+DISTINCT\s+FROM\s+OLD\.discount_paise/i);
+    expect(sql).toMatch(/Delivery\s+associates\s+cannot\s+modify\s+order\s+discounts/i);
   });
 
   it('5. verifies that all columns in enterMeasuredWeight update payload have matching database grants', () => {

@@ -925,8 +925,8 @@ describe('Phase 1: Real Live-Mode Mocked Idempotency & Failure Resilience', () =
     const bookingPayload = {
       customer_name: 'RPC Missing Tester',
       customer_phone: '9876543299',
-      pickup_address: '100 Feet Road, Indiranagar',
-      pickup_pincode: '560038',
+      pickup_address: 'Kadarenahalli Park, Banashankari',
+      pickup_pincode: '560070',
       pickup_date: '2026-10-31',
       pickup_slot: 'Morning (08:00 AM - 11:00 AM)',
       client_submission_id: 'sub-missing-rpc-1'
@@ -957,7 +957,7 @@ describe('Phase 1: Real Live-Mode Mocked Idempotency & Failure Resilience', () =
     const pendingRecord = getPendingBooking('user-live-1');
     expect(pendingRecord).not.toBeNull();
     expect(pendingRecord?.clientSubmissionId).toBe('sub-missing-rpc-1');
-    expect(pendingRecord?.payload.pickup_address).toBe('100 Feet Road, Indiranagar');
+    expect(pendingRecord?.payload.pickup_address).toBe('Kadarenahalli Park, Banashankari');
   });
 
   it('preserves the exact submission ID and payload across an ambiguous network timeout in live mode', async () => {
@@ -972,8 +972,8 @@ describe('Phase 1: Real Live-Mode Mocked Idempotency & Failure Resilience', () =
     const payload = {
       customer_name: 'Network Timeout User',
       customer_phone: '9876543298',
-      pickup_address: '42 Ring Road, Bellandur',
-      pickup_pincode: '560103',
+      pickup_address: 'Kadarenahalli Park, Banashankari',
+      pickup_pincode: '560070',
       pickup_date: '2026-10-31',
       pickup_slot: 'Noon (11:00 AM - 02:00 PM)'
     };
@@ -1014,15 +1014,15 @@ describe('Phase 1: Real Live-Mode Mocked Idempotency & Failure Resilience', () =
       customer_id: 'user-live-3',
       customer_name: 'Retry Customer',
       customer_phone: '9876543297',
-      pickup_address: '100 Feet Road, Indiranagar',
-      pickup_pincode: '560038',
+      pickup_address: 'Kadarenahalli Park, Banashankari',
+      pickup_pincode: '560070',
       pickup_date: '2026-10-31',
       pickup_slot: 'Morning (08:00 AM - 11:00 AM)',
       service_id: null,
       service_name: 'Wash & Fold (Normal)',
       pricing_unit: 'per_kg',
-      price_per_kg_paise: 8000,
-      min_weight_kg: 3,
+      price_per_kg_paise: 7900,
+      min_weight_kg: 1,
       delivery_charge_paise: 0,
       total_amount_paise: null,
       paid_amount_paise: 0,
@@ -1042,8 +1042,8 @@ describe('Phase 1: Real Live-Mode Mocked Idempotency & Failure Resilience', () =
     const payload = {
       customer_name: 'Retry Customer',
       customer_phone: '9876543297',
-      pickup_address: '100 Feet Road, Indiranagar',
-      pickup_pincode: '560038',
+      pickup_address: 'Kadarenahalli Park, Banashankari',
+      pickup_pincode: '560070',
       pickup_date: '2026-10-31',
       pickup_slot: 'Morning (08:00 AM - 11:00 AM)',
       client_submission_id: 'sub-live-retry-exact-1'
@@ -1079,8 +1079,8 @@ describe('Phase 1: Real Live-Mode Mocked Idempotency & Failure Resilience', () =
       customer_id: 'user-live-4',
       customer_name: 'Multi Intent Customer',
       customer_phone: '9876543296',
-      pickup_address: '77 Brigade Road',
-      pickup_pincode: '560001',
+      pickup_address: 'Kumaraswamy Layout',
+      pickup_pincode: '560111',
       pickup_date: '2026-10-31',
       pickup_slot: 'Morning (08:00 AM - 11:00 AM)',
       order_status: 'booked',
@@ -1093,8 +1093,8 @@ describe('Phase 1: Real Live-Mode Mocked Idempotency & Failure Resilience', () =
       customer_id: 'user-live-4',
       customer_name: 'Multi Intent Customer',
       customer_phone: '9876543296',
-      pickup_address: '77 Brigade Road',
-      pickup_pincode: '560001',
+      pickup_address: 'Kumaraswamy Layout',
+      pickup_pincode: '560111',
       pickup_date: '2026-10-31',
       pickup_slot: 'Morning (08:00 AM - 11:00 AM)',
       order_status: 'booked',
@@ -1114,8 +1114,8 @@ describe('Phase 1: Real Live-Mode Mocked Idempotency & Failure Resilience', () =
     const basePayload = {
       customer_name: 'Multi Intent Customer',
       customer_phone: '9876543296',
-      pickup_address: '77 Brigade Road',
-      pickup_pincode: '560001',
+      pickup_address: 'Kumaraswamy Layout',
+      pickup_pincode: '560111',
       pickup_date: '2026-10-31',
       pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
     };
@@ -1276,7 +1276,7 @@ describe('Phase 1: Real Live-Mode Mocked Idempotency & Failure Resilience', () =
         customer_name: 'Slot Tester',
         customer_phone: '9876543210',
         pickup_address: '123 Test St',
-        pickup_pincode: '560038',
+        pickup_pincode: '560070',
         pickup_date: '2026-10-31',
         pickup_slot: 'Night (09:00 PM - 12:00 AM)',
         client_submission_id: 'sub-invalid-slot-1'
@@ -1310,7 +1310,7 @@ describe('Phase 1: Real Live-Mode Mocked Idempotency & Failure Resilience', () =
         customer_name: 'Slot Exhausted Tester',
         customer_phone: '9876543210',
         pickup_address: '123 Test St',
-        pickup_pincode: '560038',
+        pickup_pincode: '560070',
         pickup_date: '2026-10-31',
         pickup_slot: 'Morning (08:00 AM - 11:00 AM)',
         client_submission_id: 'sub-exhausted-slot-1'
@@ -1344,7 +1344,7 @@ describe('Phase 1: Real Live-Mode Mocked Idempotency & Failure Resilience', () =
         customer_name: 'Attacker Impersonator',
         customer_phone: '9876543219',
         pickup_address: 'Malicious Address',
-        pickup_pincode: '560038',
+        pickup_pincode: '560070',
         pickup_date: '2026-10-31',
         pickup_slot: 'Morning (08:00 AM - 11:00 AM)',
         client_submission_id: 'sub-stolen-victim-id'
@@ -1378,7 +1378,7 @@ describe('Phase 1: Real Live-Mode Mocked Idempotency & Failure Resilience', () =
         customer_name: 'Payload Tamperer',
         customer_phone: '9876543210',
         pickup_address: 'Different Address Changed',
-        pickup_pincode: '560038',
+        pickup_pincode: '560070',
         pickup_date: '2026-10-31',
         pickup_slot: 'Morning (08:00 AM - 11:00 AM)',
         client_submission_id: 'sub-reused-changed-payload'

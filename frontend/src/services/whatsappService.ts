@@ -1,5 +1,5 @@
 import { NotificationLog } from '../types';
-import { supabase } from './supabase';
+import { supabase, isSupabaseConfigured } from './supabase';
 
 export type WhatsAppEventType =
   | 'booking_confirmed'
@@ -37,47 +37,53 @@ export class WhatsAppService {
       created_at: new Date().toISOString()
     };
 
-    try {
-      // Attempt to invoke server-side Supabase Edge Function without exposing secrets to frontend
-      const { data, error } = await supabase.functions.invoke('send-whatsapp', {
-        body: {
-          recipient_phone: cleanPhone,
-          event_type: eventType,
-          message,
-          order_id: orderId
-        }
-      });
+    const isLive = isSupabaseConfigured && import.meta.env.VITE_DEMO_MODE !== 'true';
 
-      if (!error && data?.success) {
-        log.status = 'sent';
-      } else if (error) {
-        // Edge function may not be deployed in local/test setup
+    if (isLive) {
+      try {
+        // Attempt to invoke server-side Supabase Edge Function without exposing secrets to frontend
+        const { data, error } = await supabase.functions.invoke('send-whatsapp', {
+          body: {
+            recipient_phone: cleanPhone,
+            event_type: eventType,
+            message,
+            order_id: orderId
+          }
+        });
+
+        if (!error && data?.success) {
+          log.status = 'sent';
+        } else if (error) {
+          // Edge function may not be deployed in local/test setup
+          log.status = 'logged';
+          log.error_message = error.message || 'WhatsApp edge function not reachable';
+        }
+      } catch {
+        // Non-blocking fallback
         log.status = 'logged';
-        log.error_message = error.message || 'WhatsApp edge function not reachable';
+        log.error_message = 'WhatsApp provider not configured locally; message logged to database.';
       }
-    } catch {
-      // Non-blocking fallback
-      log.status = 'logged';
-      log.error_message = 'WhatsApp provider not configured locally; message logged to database.';
-    }
 
-    // Persist to notification_logs table in Supabase if live
-    try {
-      await supabase.from('notification_logs').insert([
-        {
-          id: log.id,
-          order_id: log.order_id || null,
-          channel: log.channel,
-          recipient_phone: log.recipient_phone,
-          event_type: log.event_type,
-          message: log.message,
-          status: log.status,
-          error_message: log.error_message || null,
-          created_at: log.created_at
-        }
-      ]);
-    } catch {
-      // Ignore DB logging failure to avoid breaking critical UI path
+      // Persist to notification_logs table in Supabase if live
+      try {
+        await supabase.from('notification_logs').insert([
+          {
+            id: log.id,
+            order_id: log.order_id || null,
+            channel: log.channel,
+            recipient_phone: log.recipient_phone,
+            event_type: log.event_type,
+            message: log.message,
+            status: log.status,
+            error_message: log.error_message || null,
+            created_at: log.created_at
+          }
+        ]);
+      } catch {
+        // Ignore DB logging failure to avoid breaking critical UI path
+      }
+    } else {
+      log.status = 'sent';
     }
 
     try {

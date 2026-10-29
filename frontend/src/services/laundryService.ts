@@ -33,15 +33,15 @@ export const isUUID = (str?: string | null): boolean => {
 // Default Business Settings
 export const DEFAULT_SETTINGS: BusinessSettings = {
   business_name: 'SuperWash Exprez',
-  business_phone: '+91 98765 43210',
-  business_address: 'Shop #14, Metro Pillar 78, Indiranagar, Bengaluru 560038',
+  business_phone: '+91 8217541193',
+  business_address: 'SuperWash Exprez, 13th Main Rd, Kadarenahalli Park, Yarab Nagar, Banashankari 2nd Stage, Banashankari, Bengaluru, Karnataka 560070',
   price_per_kg_paise: 7900, // ₹79.00 / kg
-  min_weight_kg: 3.00,      // 3.00 kg minimum
+  min_weight_kg: 1.00,      // 1.00 kg minimum
   delivery_charge_paise: 0, // Free pickup & delivery
   upi_id: 'superwash@upi',
   allow_delivery_payment_recording: true,
   whatsapp_enabled: false,
-  serviceable_pincodes: ['560038', '560008', '560103', '560075', '560001', '560066', '560037']
+  serviceable_pincodes: ['560111', '560070']
 };
 
 const DEFAULT_SLOTS: PickupSlot[] = [
@@ -206,7 +206,7 @@ export const DEFAULT_COUPONS: Coupon[] = [
   }
 ];
 
-// Initial Sample Orders
+// Initial Sample Orders (Demo mode baseline strictly aligned with ₹79/kg rate)
 const INITIAL_SAMPLE_ORDERS: Order[] = [
   {
     id: '00000000-0000-4000-b000-000000000101',
@@ -227,15 +227,15 @@ const INITIAL_SAMPLE_ORDERS: Order[] = [
     assigned_delivery_phone: '9876543216',
     measured_weight: 4.5,
     billable_weight: 4.5,
-    price_per_kg_paise: 8000,
-    min_weight_kg: 3.0,
+    price_per_kg_paise: 7900,
+    min_weight_kg: 1.0,
     delivery_charge_paise: 0,
-    total_amount_paise: 36000, // 4.5 * 8000 = ₹360.00
+    total_amount_paise: 35550, // 4.5 * 7900 = ₹355.50
     paid_amount_paise: 0,
     payment_status: 'pending',
     payment_method: 'cash',
     order_status: 'washing',
-    notes: 'Please separate delicate whites',
+    notes: 'DEMO SAMPLE ORDER: Please separate delicate whites',
     created_at: new Date(Date.now() - 3600000 * 5).toISOString(),
     updated_at: new Date().toISOString()
   },
@@ -256,15 +256,15 @@ const INITIAL_SAMPLE_ORDERS: Order[] = [
     assigned_delivery_id: null,
     measured_weight: null,
     billable_weight: null,
-    price_per_kg_paise: 8000,
-    min_weight_kg: 3.0,
+    price_per_kg_paise: 7900,
+    min_weight_kg: 1.0,
     delivery_charge_paise: 0,
     total_amount_paise: null, // Pending weight
     paid_amount_paise: 0,
     payment_status: 'pending',
     payment_method: 'cash',
     order_status: 'collected',
-    notes: 'Heavy winter blankets included',
+    notes: 'DEMO SAMPLE ORDER: Heavy winter blankets included',
     created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
     updated_at: new Date().toISOString()
   }

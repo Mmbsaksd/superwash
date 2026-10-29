@@ -184,6 +184,14 @@ export interface Order {
   pickup_measured_weight?: number | null; // Doorstep portable scale weight
   pickup_weighed_at?: string;
   pickup_weighed_by?: string;
+  doorstep_scale_weight_kg?: number | null; // Doorstep measured weight
+  doorstep_scale_weighed_at?: string | null;
+  doorstep_scale_weighed_by?: string | null;
+  store_scale_weight_kg?: number | null; // Store intake scale weight
+  store_scale_weighed_at?: string | null;
+  store_scale_weighed_by?: string | null;
+  delivery_staff_id?: string;
+  pickup_staff_id?: string;
   measured_weight?: number | null; // Store intake scale weight / authoritative measured kg
   billable_weight?: number | null; // e.g. MAX(measured_weight, min_weight_kg)
   price_per_kg_paise: number;
