@@ -326,13 +326,53 @@ git push origin main
 
 ---
 
-## 9. Final Recommendation: GO / NO-GO
+## 9. Final Release Execution Record
 
-# **FINAL RECOMMENDATION: GO**
-### **(APPROVED FOR RELEASE REVIEW & OWNER DEPLOYMENT)**
+### 9.1 Database Migration Execution (Applied & Verified)
+- **Target Project:** `ierbhbfgqleobjepamrx` (`superwash-express`, `ap-northeast-1`)
+- **Applied Migration:** `supabase/migrations/20261028100000_grant_order_discount_paise_update.sql`
+- **Pre-Migration Backup:** Saved in `supabase/backups/pre_release_remote_trigger.sql`
+- **Post-Migration Verification:**
+  - `GRANT UPDATE (discount_paise) ON TABLE public.orders TO authenticated;` — Verified active.
+  - Trigger `trigger_enforce_order_workflow` on `public.orders` — Verified active (`BEFORE UPDATE`).
+  - Function `public.enforce_order_workflow_integrity()` — Verified with:
+    - Role guard: `has_discount_guard: true`
+    - Formula consistency guard: `has_formula_guard: true`
+    - Preserved customer self-cancellation: `NEW.order_status = 'cancelled' AND OLD.customer_id = auth.uid()`
+    - Preserved linked-batch grouping integrity: `[Linked Batch ...]`
+  - Migration History: Verified via `supabase migration list` (21 of 21 migrations applied).
 
-- **Security & Authorization:** 100% certified. PostgreSQL 3-valued logic vulnerability eliminated. Unauthenticated callers, customers, and delivery associates are strictly blocked from mutating discounts.
-- **Financial & Formula Consistency:** 100% certified. Discount-only updates atomically recalculate totals; inconsistent totals are rejected; discounts larger than bills clamp to 0; delivery fees are preserved; bill totals cannot drop below paid amounts.
-- **Automated Test Quality:** 16/16 isolated PostgreSQL integration tests passed; 282/282 Vitest tests passed across 13 test suites; production build verified cleanly.
-- **Environment & Secrets Integrity:** `.env.local` discrepancy resolved and restored to original baseline. Confirmed zero secrets in tracked files or release bundle.
-- **Working Tree Integrity:** All uncommitted changes are strictly preserved. Zero production mutations, staging, or pushes were performed.
+### 9.2 Git Release Commit and Push
+- **Release Commit:** `e7dce00`
+- **Commit Message:** `feat(release): customer UX redesign, order discount security hardening, and settings synchronization`
+- **Branch:** `main`
+- **Pushed Upstream:** `https://github.com/Mmbsaksd/superwash.git` (`04cf150..e7dce00`, fast-forward, 0 conflicts).
+
+### 9.3 Cloudflare Pages Production Deployment & Verification
+- **Production URL:** `https://superwash.pages.dev`
+- **Deployment Status:** **LIVE & HEALTHY (HTTP 200 OK)**
+- **Automated Smoke Test Results:**
+  - Landing Page: Loads cleanly with page title `"SuperWash Exprez | Laundry Pickup & Delivery"`.
+  - Pricing Baseline: Authoritative ₹79/kg rate baseline confirmed displayed.
+  - Contact Details: Banashankari 2nd Stage address and phone `+91 8217541193` confirmed rendered.
+  - Pincode Coverage: `560070` confirmed serviceable.
+  - Customer Login Page: `/login` loads cleanly with Google OAuth and email options.
+  - Customer Portal: `/customer` loads cleanly.
+  - Demo Controls: Confirmed completely absent in production (demo persona switcher and simulated login are inactive).
+  - Browser Console: 0 application crashes or unhandled exceptions.
+  - Network Traffic: 0 unexpected 4xx or 5xx application network failures.
+
+### 9.4 Remaining External Prerequisites (Owner Dashboard Verification)
+- **Cloudflare Pages Environment Variable:** Verify `VITE_DEMO_MODE=false` in the Cloudflare Pages Project Settings dashboard to guarantee future automated builds maintain live production connections.
+- **Google Cloud Console OAuth:** Confirm `https://ierbhbfgqleobjepamrx.supabase.co/auth/v1/callback` and `https://superwash.pages.dev` are authorized redirect URIs in Google Cloud Console.
+
+---
+
+## 10. Final Release Status
+
+# **RELEASE STATUS: SUCCESSFULLY RELEASED TO PRODUCTION**
+
+- **Remote Database Migration:** Successfully applied and verified on project `ierbhbfgqleobjepamrx`.
+- **Git Repository:** Release commit `e7dce00` pushed to `origin/main`.
+- **Live Production Application:** Actively serving live traffic at `https://superwash.pages.dev`.
+- **Security & Integrity:** All workflow, role authorization, and financial invariants verified operational in production.
