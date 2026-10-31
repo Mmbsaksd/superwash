@@ -166,10 +166,10 @@ export const PromotionalCarousel: React.FC<PromotionalCarouselProps> = ({
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
-      className={`relative overflow-hidden rounded-3xl shadow-xl transition-all select-none outline-none focus:ring-2 focus:ring-brand-500 ${className}`}
+      className={`relative overflow-hidden rounded-3xl shadow-xl transition-all select-none outline-none focus:ring-2 focus:ring-brand-500 touch-pan-y ${className}`}
     >
       {/* Banner Slides */}
-      <div className="relative min-h-[340px] sm:min-h-[290px] md:min-h-[280px]">
+      <div className="relative min-h-[420px] xs:min-h-[390px] sm:min-h-[310px] md:min-h-[290px]">
         {banners.map((banner, index) => {
           const isActive = index === currentSlide;
           return (
@@ -179,41 +179,41 @@ export const PromotionalCarousel: React.FC<PromotionalCarouselProps> = ({
               aria-roledescription="slide"
               aria-label={`${index + 1} of ${totalSlides}: ${banner.title}`}
               aria-hidden={!isActive}
-              className={`absolute inset-0 bg-gradient-to-r ${banner.gradientClass} text-white p-6 sm:p-8 md:p-10 flex flex-col justify-between transition-opacity duration-500 ease-in-out ${
+              className={`absolute inset-0 bg-gradient-to-r ${banner.gradientClass} text-white p-5 sm:p-8 md:p-10 pb-12 sm:pb-10 flex flex-col justify-between transition-opacity duration-500 ease-in-out ${
                 isActive ? 'opacity-100 z-10 pointer-events-auto' : 'opacity-0 z-0 pointer-events-none'
               }`}
             >
               {/* Header / Badges */}
-              <div className="space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 backdrop-blur-xs text-[11px] font-bold text-cyan-200 border border-white/15">
-                    <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>{banner.tagline}</span>
+              <div className="space-y-2.5 sm:space-y-3">
+                <div className="flex flex-wrap items-center gap-2 max-w-[calc(100%-85px)] sm:max-w-none">
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 backdrop-blur-xs text-[11px] font-bold text-cyan-200 border border-white/15 max-w-full min-w-0">
+                    <Sparkles className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                    <span className="truncate">{banner.tagline}</span>
                   </div>
 
                   {banner.badge && (
                     <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-400/20 text-emerald-300 border border-emerald-400/40 text-[11px] font-mono font-bold tracking-wider">
-                      <Tag className="w-3 h-3" />
+                      <Tag className="w-3 h-3 shrink-0" />
                       <span>CODE: {banner.badge}</span>
                     </div>
                   )}
                 </div>
 
-                <h3 className="text-2xl sm:text-3xl md:text-4xl font-black tracking-tight leading-tight max-w-2xl text-white">
+                <h3 className="text-xl sm:text-3xl md:text-4xl font-black tracking-tight leading-tight max-w-2xl text-white">
                   {banner.title}
                 </h3>
 
-                <p className="text-xs sm:text-sm text-slate-300 max-w-2xl leading-relaxed">
+                <p className="text-xs sm:text-sm text-slate-200 max-w-2xl leading-relaxed">
                   {banner.description}
                 </p>
               </div>
 
               {/* Bottom Feature Pills & Action Button */}
-              <div className="pt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-t border-white/10">
-                <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-300 font-medium">
+              <div className="pt-3 sm:pt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 border-t border-white/10">
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-[11px] text-slate-300 font-medium">
                   {banner.features.map((feature, fIdx) => (
                     <div key={fIdx} className="flex items-center gap-1.5">
-                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                      <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                       <span>{feature}</span>
                     </div>
                   ))}
@@ -223,11 +223,11 @@ export const PromotionalCarousel: React.FC<PromotionalCarouselProps> = ({
                   <button
                     type="button"
                     onClick={() => handleCtaClick(banner)}
-                    className={`py-3 px-6 rounded-2xl font-black text-xs sm:text-sm shadow-lg transition-transform active:scale-95 flex items-center gap-2 cursor-pointer ${banner.accentClass}`}
+                    className={`w-full sm:w-auto py-2.5 sm:py-3 px-5 sm:px-6 rounded-2xl font-black text-xs sm:text-sm shadow-lg transition-transform active:scale-95 flex items-center justify-center gap-2 cursor-pointer ${banner.accentClass}`}
                   >
-                    <CalendarCheck className="w-4 h-4" />
+                    <CalendarCheck className="w-4 h-4 shrink-0" />
                     <span>{banner.ctaText}</span>
-                    <ArrowRight className="w-4 h-4" />
+                    <ArrowRight className="w-4 h-4 shrink-0" />
                   </button>
                 </div>
               </div>
@@ -237,7 +237,7 @@ export const PromotionalCarousel: React.FC<PromotionalCarouselProps> = ({
       </div>
 
       {/* Manual Controls (Prev / Next Buttons & Pause Toggle) */}
-      <div className="absolute top-4 right-4 z-20 flex items-center gap-1.5">
+      <div className="absolute top-3.5 sm:top-4 right-3.5 sm:right-4 z-20 flex items-center gap-1 sm:gap-1.5">
         <button
           type="button"
           onClick={() => setIsPaused((prev) => !prev)}
@@ -268,7 +268,7 @@ export const PromotionalCarousel: React.FC<PromotionalCarouselProps> = ({
       </div>
 
       {/* Slide Indicator Dots */}
-      <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2">
+      <div className="absolute bottom-2.5 sm:bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2">
         {banners.map((b, idx) => (
           <button
             key={b.id}

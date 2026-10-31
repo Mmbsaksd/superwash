@@ -79,8 +79,8 @@ export const CustomerBottomNav: React.FC<CustomerBottomNavProps> = ({
   return (
     <nav
       aria-label="Mobile Bottom Navigation"
-      className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200 px-2 py-1.5 shadow-lg select-none"
-      style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}
+      className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/90 px-2 py-1 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] select-none"
+      style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom, 0px))' }}
     >
       <div className="max-w-md mx-auto flex items-center justify-around">
         {navItems.map((item) => {
@@ -93,7 +93,7 @@ export const CustomerBottomNav: React.FC<CustomerBottomNavProps> = ({
                 type="button"
                 onClick={item.action}
                 aria-label="Book a Home Pickup"
-                className="flex flex-col items-center justify-center -mt-5 group cursor-pointer focus:outline-none"
+                className="flex flex-col items-center justify-center -mt-5 group cursor-pointer focus:outline-none touch-manipulation"
               >
                 <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-brand-600 to-cyan-500 text-white flex items-center justify-center shadow-lg shadow-brand-500/30 group-active:scale-95 transition-transform border-2 border-white">
                   <Plus className="w-6 h-6 stroke-[2.5]" />
@@ -116,7 +116,7 @@ export const CustomerBottomNav: React.FC<CustomerBottomNavProps> = ({
               key={item.id}
               type="button"
               onClick={item.action}
-              className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl transition-colors cursor-pointer relative ${
+              className={`flex flex-col items-center justify-center py-1 px-2 rounded-xl transition-all min-w-[48px] min-h-[44px] cursor-pointer relative active:scale-95 touch-manipulation ${
                 isItemActive
                   ? 'text-brand-600 font-bold'
                   : 'text-slate-500 hover:text-slate-800 font-medium'
@@ -128,7 +128,7 @@ export const CustomerBottomNav: React.FC<CustomerBottomNavProps> = ({
                   <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-500 rounded-full border-2 border-white animate-pulse" />
                 )}
               </div>
-              <span className="text-[10px] mt-0.5 tracking-tight truncate">
+              <span className="text-[10px] mt-0.5 tracking-tight truncate max-w-[64px]">
                 {item.label}
               </span>
             </button>

@@ -1445,7 +1445,7 @@ export const CustomerHome: React.FC = () => {
   }, [couponQueryParam]);
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-24">
+    <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-28 sm:pb-24 md:pb-12">
       {/* PWA Installation Banner */}
       <PwaInstallPrompt variant="customer-banner" />
 
