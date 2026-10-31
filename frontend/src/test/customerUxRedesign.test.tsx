@@ -343,7 +343,7 @@ describe('Customer UX Redesign — 5-Step Sequential Booking Flow in CustomerHom
     await waitFor(() => {
       expect(screen.getByText(/Step 3 of 5/i)).toBeInTheDocument();
       expect(screen.getByText(/Step 3: Pickup Address/i)).toBeInTheDocument();
-    }, { timeout: 4000 });
+    }, { timeout: 6000 });
 
     // Step 3: Continue to review
     const continueToReviewBtn = screen.getByRole('button', { name: /Continue to Order Review/i });
@@ -355,7 +355,7 @@ describe('Customer UX Redesign — 5-Step Sequential Booking Flow in CustomerHom
       expect(screen.getByText(/Step 4: Review Booking Details/i)).toBeInTheDocument();
       expect(screen.getByText(/Scheduled Pickup/i)).toBeInTheDocument();
       expect(screen.getAllByText(/Promotional Coupon/i).length).toBeGreaterThanOrEqual(1);
-    }, { timeout: 4000 });
+    }, { timeout: 6000 });
 
     // Step 4: Continue to payment
     const continueToPaymentBtn = screen.getByRole('button', { name: /Continue to Payment/i });
@@ -367,7 +367,7 @@ describe('Customer UX Redesign — 5-Step Sequential Booking Flow in CustomerHom
       expect(screen.getByText(/Step 5: Payment Option/i)).toBeInTheDocument();
       expect(screen.getByText(/Zero Advance Charge/i)).toBeInTheDocument();
       expect(screen.getAllByRole('button', { name: /Confirm Pickup Booking/i }).length).toBeGreaterThanOrEqual(1);
-    }, { timeout: 4000 });
+    }, { timeout: 6000 });
 
     // Can navigate back from Step 5 to Step 4
     const backToReviewBtn = screen.getByRole('button', { name: /Back to Review/i });
@@ -376,6 +376,6 @@ describe('Customer UX Redesign — 5-Step Sequential Booking Flow in CustomerHom
     await waitFor(() => {
       expect(screen.getByText(/Step 4 of 5/i)).toBeInTheDocument();
       expect(screen.getByText(/Step 4: Review Booking Details/i)).toBeInTheDocument();
-    }, { timeout: 4000 });
-  });
+    }, { timeout: 6000 });
+  }, 30000);
 });

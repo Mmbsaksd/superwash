@@ -186,8 +186,10 @@ describe('Stage 5B: Frontend Secure RPC Integration & Fail-Closed Security Verif
       error: null
     } as any);
 
-    const updated = await LaundryService.cancelOrder(
+    const updated = await LaundryService.updateOrderStatus(
       baseOrder.id,
+      'cancelled',
+      undefined,
       'Customer travelling out of city'
     );
 
@@ -215,7 +217,7 @@ describe('Stage 5B: Frontend Secure RPC Integration & Fail-Closed Security Verif
     } as any);
 
     await expect(
-      LaundryService.cancelOrder(baseOrder.id, 'Customer cancellation')
+      LaundryService.updateOrderStatus(baseOrder.id, 'cancelled', undefined, 'Customer cancellation')
     ).rejects.toThrow('The order cancellation service is temporarily unavailable while database upgrades are pending.');
 
     expect(updateSpy).not.toHaveBeenCalled();

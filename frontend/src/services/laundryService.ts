@@ -3,7 +3,7 @@ import {
   PickupSlot, Profile, CustomerAddress, Payment, WeightChangeHistory, OrderStatusHistory,
   OrderFeedback, FeedbackStatus, FeedbackSummaryMetrics,
   ServiceArea, LaundryServiceItem, PeriodFilter, DashboardPeriodAnalytics, UserRole,
-  Coupon, CouponValidationResult, CouponSnapshot
+  Coupon, CouponValidationResult, CouponSnapshot, PublicPromotion
 } from '../types';
 import { supabase, isSupabaseConfigured } from './supabase';
 import { WhatsAppService } from './whatsappService';
@@ -288,6 +288,46 @@ export class LaundryService {
     return `Unable to ${action}: ${msg}`;
   }
 
+  /**
+   * Internal helper to load local cache fallback or seed defaults when offline or unconfigured.
+   */
+  private static getLocalFallback<T>(storageKey: string, defaultData: T): T {
+    if (typeof localStorage === 'undefined') return defaultData;
+    const saved = localStorage.getItem(storageKey);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(defaultData) ? Array.isArray(parsed) && parsed.length > 0 : parsed) {
+          return parsed as T;
+        }
+      } catch {}
+    }
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(defaultData));
+    } catch {}
+    return defaultData;
+  }
+
+  /**
+   * Internal security assertion verifying that caller possesses the authorized 'owner' role.
+   */
+  private static assertOwnerRole(callerRole?: UserRole, actionDescription: string = 'manage coupons'): UserRole | undefined {
+    const currentProfileStr = typeof localStorage !== 'undefined' ? localStorage.getItem('superwash_auth_profile') : null;
+    let storedRole: UserRole | undefined;
+    if (currentProfileStr) {
+      try {
+        const parsed = JSON.parse(currentProfileStr);
+        storedRole = parsed?.role;
+      } catch {}
+    }
+    const effectiveRole = callerRole || storedRole;
+    if (effectiveRole && effectiveRole !== 'owner') {
+      const actionText = actionDescription.includes(' ') ? actionDescription : `${actionDescription} coupons`;
+      throw new Error(`Unauthorized: Only business owners can ${actionText}. Current role: '${effectiveRole}'.`);
+    }
+    return effectiveRole;
+  }
+
   // ----------------------------------------------------
   // Helpers & Financial Calculations
   // ----------------------------------------------------
@@ -425,12 +465,6 @@ export class LaundryService {
   // Settings Management
   // ----------------------------------------------------
   static async getSettings(): Promise<BusinessSettings> {
-    const saved = localStorage.getItem(STORAGE_KEYS.SETTINGS);
-    let localSettings: BusinessSettings | null = null;
-    if (saved) {
-      try { localSettings = JSON.parse(saved); } catch {}
-    }
-
     if (isLiveMode && import.meta.env.MODE !== 'test') {
       try {
         const { data, error } = await supabase.from('business_settings').select('*').limit(1).single();
@@ -443,9 +477,7 @@ export class LaundryService {
       }
     }
 
-    if (localSettings) return localSettings;
-    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(DEFAULT_SETTINGS));
-    return DEFAULT_SETTINGS;
+    return this.getLocalFallback(STORAGE_KEYS.SETTINGS, DEFAULT_SETTINGS);
   }
 
   static async updateSettings(newSettings: Partial<BusinessSettings>): Promise<BusinessSettings> {
@@ -476,15 +508,7 @@ export class LaundryService {
       }
     }
 
-    const saved = localStorage.getItem(STORAGE_KEYS.SLOTS);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      } catch {}
-    }
-    localStorage.setItem(STORAGE_KEYS.SLOTS, JSON.stringify(DEFAULT_SLOTS));
-    return DEFAULT_SLOTS;
+    return this.getLocalFallback(STORAGE_KEYS.SLOTS, DEFAULT_SLOTS);
   }
 
   // ----------------------------------------------------
@@ -830,6 +854,19 @@ export class LaundryService {
   private static inFlightBookings = new Map<string, Promise<Order>>();
   private static submissionRegistry = new Map<string, { order: Order; timestamp: number }>();
   private static localSequenceCounter: number = 0;
+
+  private static isRpcMissing(
+    error: { code?: string; message?: string } | null | undefined,
+    rpcName: string
+  ): boolean {
+    if (!error) return false;
+    return (
+      error.code === '42883' ||
+      error.code === 'PGRST202' ||
+      (error.message?.includes(rpcName) ?? false) ||
+      (error.message?.includes('could not find') ?? false)
+    );
+  }
 
   static resetOrderSequence(): void {
     this.localSequenceCounter = 0;
@@ -1250,13 +1287,7 @@ export class LaundryService {
       });
 
       if (rpcError || !rpcData?.success) {
-        const isRpcMissing =
-          rpcError?.code === '42883' ||
-          rpcError?.code === 'PGRST202' ||
-          rpcError?.message?.includes('assign_order_courier') ||
-          rpcError?.message?.includes('could not find');
-
-        if (isRpcMissing) {
+        if (this.isRpcMissing(rpcError, 'assign_order_courier')) {
           throw new Error('The courier assignment service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
         }
         throw new Error(rpcError?.message || 'Failed to persist pickup assignment in database');
@@ -1345,13 +1376,7 @@ export class LaundryService {
       });
 
       if (rpcError || !rpcData?.success) {
-        const isRpcMissing =
-          rpcError?.code === '42883' ||
-          rpcError?.code === 'PGRST202' ||
-          rpcError?.message?.includes('assign_order_courier') ||
-          rpcError?.message?.includes('could not find');
-
-        if (isRpcMissing) {
+        if (this.isRpcMissing(rpcError, 'assign_order_courier')) {
           throw new Error('The courier assignment service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
         }
         throw new Error(rpcError?.message || 'Failed to persist delivery assignment in database');
@@ -1462,13 +1487,7 @@ export class LaundryService {
       });
 
       if (rpcError || !rpcData?.success) {
-        const isRpcMissing =
-          rpcError?.code === '42883' ||
-          rpcError?.code === 'PGRST202' ||
-          rpcError?.message?.includes('record_courier_pickup_collection') ||
-          rpcError?.message?.includes('could not find');
-
-        if (isRpcMissing) {
+        if (this.isRpcMissing(rpcError, 'record_courier_pickup_collection')) {
           throw new Error('The doorstep collection service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
         }
         throw new Error(rpcError?.message || 'Failed to record courier pickup collection');
@@ -1536,51 +1555,7 @@ export class LaundryService {
   }
 
   static async markAsCollected(orderId: string, notes?: string): Promise<Order> {
-    const orders = await this.getOrders();
-    const order = orders.find(o => o.id === orderId);
-    if (!order) throw new Error('Order not found');
-
-    if (isLiveMode) {
-      const { data: rpcData, error: rpcError } = await supabase.rpc('advance_order_workflow_status', {
-        p_order_id: orderId,
-        p_target_status: 'collected',
-        p_notes: notes || 'Clothes collected from doorstep'
-      });
-
-      if (rpcError || !rpcData?.success) {
-        const isRpcMissing =
-          rpcError?.code === '42883' ||
-          rpcError?.code === 'PGRST202' ||
-          rpcError?.message?.includes('advance_order_workflow_status') ||
-          rpcError?.message?.includes('could not find');
-
-        if (isRpcMissing) {
-          throw new Error('The order workflow service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
-        }
-        throw new Error(rpcError?.message || 'Failed to update collected status in database');
-      }
-
-      order.order_status = rpcData.order_status || 'collected';
-      order.collected_at = order.collected_at || new Date().toISOString();
-      if (notes) order.delivery_notes = notes;
-      order.updated_at = new Date().toISOString();
-    } else {
-      order.order_status = 'collected';
-      order.collected_at = new Date().toISOString();
-      if (notes) order.delivery_notes = notes;
-      order.updated_at = new Date().toISOString();
-    }
-
-    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
-
-    await WhatsAppService.sendNotification(
-      order.customer_phone,
-      'clothes_collected',
-      `Hello ${order.customer_name}, our delivery executive has collected your clothes (Order #${order.order_number}). They are now on their way to the store for weighing and washing.`,
-      order.id
-    );
-
-    return order;
+    return this.updateOrderStatus(orderId, 'collected', notes);
   }
 
   static async markAsDelivered(orderId: string, notes?: string): Promise<Order> {
@@ -1592,51 +1567,7 @@ export class LaundryService {
       throw new Error(`Order #${order.order_number} must be in 'out_for_delivery' status to complete delivery (current status: '${order.order_status}').`);
     }
 
-    if (isLiveMode) {
-      const { data: rpcData, error: rpcError } = await supabase.rpc('advance_order_workflow_status', {
-        p_order_id: orderId,
-        p_target_status: 'delivered',
-        p_notes: notes || 'Clean clothes delivered to customer'
-      });
-
-      if (rpcError || !rpcData?.success) {
-        const isRpcMissing =
-          rpcError?.code === '42883' ||
-          rpcError?.code === 'PGRST202' ||
-          rpcError?.message?.includes('advance_order_workflow_status') ||
-          rpcError?.message?.includes('could not find');
-
-        if (isRpcMissing) {
-          throw new Error('The order workflow service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
-        }
-        throw new Error(rpcError?.message || 'Failed to update delivered status in database');
-      }
-
-      order.order_status = rpcData.order_status || 'delivered';
-      order.delivered_at = order.delivered_at || new Date().toISOString();
-      if (notes) {
-        order.delivery_notes = notes;
-      }
-      order.updated_at = new Date().toISOString();
-    } else {
-      order.order_status = 'delivered';
-      order.delivered_at = new Date().toISOString();
-      if (notes) {
-        order.delivery_notes = notes;
-      }
-      order.updated_at = new Date().toISOString();
-    }
-
-    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
-
-    await WhatsAppService.sendNotification(
-      order.customer_phone,
-      'order_delivered',
-      `Namaste ${order.customer_name}! Your clean clothes for order #${order.order_number} have been delivered. Thank you for choosing SuperWash!`,
-      order.id
-    );
-
-    return order;
+    return this.updateOrderStatus(orderId, 'delivered', notes);
   }
 
   // ----------------------------------------------------
@@ -1689,13 +1620,7 @@ export class LaundryService {
       });
 
       if (rpcError || !rpcData?.success) {
-        const isRpcMissing =
-          rpcError?.code === '42883' ||
-          rpcError?.code === 'PGRST202' ||
-          rpcError?.message?.includes('record_store_intake_weight') ||
-          rpcError?.message?.includes('could not find');
-
-        if (isRpcMissing) {
+        if (this.isRpcMissing(rpcError, 'record_store_intake_weight')) {
           throw new Error('The store intake scale service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
         }
         throw new Error(rpcError?.message || 'Failed to record store intake weight');
@@ -1814,13 +1739,7 @@ export class LaundryService {
         });
 
         if (rpcError || !rpcData?.success) {
-          const isRpcMissing =
-            rpcError?.code === '42883' ||
-            rpcError?.code === 'PGRST202' ||
-            rpcError?.message?.includes('cancel_order_with_batch_sync') ||
-            rpcError?.message?.includes('could not find');
-
-          if (isRpcMissing) {
+          if (this.isRpcMissing(rpcError, 'cancel_order_with_batch_sync')) {
             throw new Error('The order cancellation service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
           }
           throw new Error(rpcError?.message || 'Failed to cancel order in database');
@@ -1865,13 +1784,7 @@ export class LaundryService {
         });
 
         if (rpcError || !rpcData?.success) {
-          const isRpcMissing =
-            rpcError?.code === '42883' ||
-            rpcError?.code === 'PGRST202' ||
-            rpcError?.message?.includes('advance_order_workflow_status') ||
-            rpcError?.message?.includes('could not find');
-
-          if (isRpcMissing) {
+          if (this.isRpcMissing(rpcError, 'advance_order_workflow_status')) {
             throw new Error('The order workflow service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
           }
           throw new Error(rpcError?.message || 'Failed to advance order status in database');
@@ -1880,6 +1793,9 @@ export class LaundryService {
         order.order_status = rpcData.order_status || newStatus;
         if (newStatus === 'collected') order.collected_at = order.collected_at || new Date().toISOString();
         if (newStatus === 'delivered') order.delivered_at = order.delivered_at || new Date().toISOString();
+        if (notes && (newStatus === 'collected' || newStatus === 'delivered')) {
+          order.delivery_notes = notes;
+        }
         order.updated_at = new Date().toISOString();
       } else {
         throw new Error(`Direct transition to status '${newStatus}' is not supported in live mode. Use the designated workflow or courier assignment service.`);
@@ -1891,6 +1807,12 @@ export class LaundryService {
       }
       if (notes) {
         order.notes = notes;
+        if (newStatus === 'collected' || newStatus === 'delivered') {
+          order.delivery_notes = notes;
+        }
+      }
+      if (newStatus === 'collected') {
+        order.collected_at = new Date().toISOString();
       }
       if (newStatus === 'delivered') {
         order.delivered_at = new Date().toISOString();
@@ -1910,6 +1832,16 @@ export class LaundryService {
     }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
+
+    // Notification for clothes collected
+    if (newStatus === 'collected') {
+      await WhatsAppService.sendNotification(
+        order.customer_phone,
+        'clothes_collected',
+        `Hello ${order.customer_name}, our delivery executive has collected your clothes (Order #${order.order_number}). They are now on their way to the store for weighing and washing.`,
+        order.id
+      );
+    }
 
     // Notification for ready for delivery
     if (newStatus === 'ready_for_delivery') {
@@ -1941,9 +1873,6 @@ export class LaundryService {
     return order;
   }
 
-  // ----------------------------------------------------
-  // Maps & Navigation URL Helper
-  // ----------------------------------------------------
   // ----------------------------------------------------
   // Maps & Navigation URL Helper
   // ----------------------------------------------------
@@ -2111,13 +2040,7 @@ export class LaundryService {
       });
 
       if (rpcError || !rpcData) {
-        const isRpcMissing =
-          rpcError?.code === '42883' ||
-          rpcError?.code === 'PGRST202' ||
-          rpcError?.message?.includes('record_order_payment') ||
-          rpcError?.message?.includes('could not find');
-
-        if (isRpcMissing) {
+        if (this.isRpcMissing(rpcError, 'record_order_payment')) {
           throw new Error('The payment processing service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
         }
         throw new Error(rpcError?.message || 'Payment transaction failed in database RPC.');
@@ -2149,72 +2072,6 @@ export class LaundryService {
     );
 
     return Object.assign(order, { payment });
-  }
-
-  // ----------------------------------------------------
-  // Role-Specific Filtered Order Queries
-  // ----------------------------------------------------
-  static async getOrdersForCustomer(phone: string): Promise<Order[]> {
-    const all = await this.getOrders();
-    const cleanPhone = phone.replace(/[^0-9]/g, '').slice(-10);
-    return all.filter(o => o.customer_phone.replace(/[^0-9]/g, '').slice(-10) === cleanPhone);
-  }
-
-  static async getOrdersForDelivery(staffId: string): Promise<{
-    pickups: Order[];
-    deliveries: Order[];
-    completedDeliveries: Order[];
-    pickupHistory: Order[];
-    completed: Order[];
-  }> {
-    const all = await this.getOrders();
-
-    // 1. Pickups: Strictly assigned for pickup to this staff member and awaiting collection
-    const pickups = all.filter(o => {
-      return o.assigned_pickup_id === staffId && o.order_status === 'pickup_assigned';
-    });
-
-    // 2. Deliveries: Strictly assigned for delivery to this staff member at ready, delivery_assigned, or out_for_delivery stage
-    const deliveries = all.filter(o => {
-      return o.assigned_delivery_id === staffId && (
-        o.order_status === 'ready_for_delivery' ||
-        o.order_status === 'delivery_assigned' ||
-        o.order_status === 'out_for_delivery'
-      );
-    });
-
-    // 3. Completed Deliveries: STRICTLY delivered orders completed by this delivery associate
-    const completedDeliveries = all.filter(o => {
-      return o.assigned_delivery_id === staffId && o.order_status === 'delivered';
-    });
-
-    // 4. Pickup History: Orders collected by this pickup associate (doorstep scale measurements)
-    const pickupHistory = all.filter(o => {
-      return o.assigned_pickup_id === staffId && [
-        'collected', 'washing', 'ready_for_delivery', 'delivery_assigned', 'out_for_delivery', 'delivered'
-      ].includes(o.order_status);
-    });
-
-    return {
-      pickups,
-      deliveries,
-      completedDeliveries,
-      pickupHistory,
-      completed: completedDeliveries // backwards-compatibility: strictly delivered orders only
-    };
-  }
-
-  static async getOrdersForManager(): Promise<{
-    newCollected: Order[];
-    washing: Order[];
-    readyForDelivery: Order[];
-  }> {
-    const all = await this.getOrders();
-    return {
-      newCollected: all.filter(o => o.order_status === 'collected' || (o.order_status === 'booked' && !o.measured_weight)),
-      washing: all.filter(o => o.order_status === 'washing'),
-      readyForDelivery: all.filter(o => o.order_status === 'ready_for_delivery' || o.order_status === 'delivery_assigned')
-    };
   }
 
   // ----------------------------------------------------
@@ -2315,47 +2172,6 @@ export class LaundryService {
 
     Object.assign(order, fields);
     return order;
-  }
-
-  static async createOrder(data: {
-    customer_id?: string;
-    customer_name: string;
-    customer_phone: string;
-    pickup_address: string;
-    pickup_landmark?: string;
-    pickup_pincode: string;
-    pickup_date: string;
-    pickup_slot: string;
-    pickup_latitude?: number | null;
-    pickup_longitude?: number | null;
-    service_id?: string;
-    notes?: string;
-    client_submission_id?: string;
-    coupon_code?: string;
-    discount_paise?: number;
-    coupon_snapshot?: CouponSnapshot | null;
-  }): Promise<Order> {
-    return this.createBooking(data);
-  }
-
-  static async getPickupSlots(): Promise<PickupSlot[]> {
-    return this.getSlots();
-  }
-
-  static async getCustomerAddresses(userId: string): Promise<CustomerAddress[]> {
-    return this.getAddresses(userId);
-  }
-
-  static async saveCustomerAddress(address: Omit<CustomerAddress, 'id'>): Promise<CustomerAddress> {
-    return this.saveAddress(address);
-  }
-
-  static async updateCustomerAddress(addressId: string, updates: Partial<CustomerAddress>): Promise<CustomerAddress> {
-    return this.updateAddress(addressId, updates);
-  }
-
-  static async deleteCustomerAddress(addressId: string, userId?: string): Promise<boolean> {
-    return this.deleteAddress(addressId, userId);
   }
 
   static async updateOrderPickupLocation(
@@ -2461,18 +2277,6 @@ export class LaundryService {
     );
   }
 
-  static async markOrderCollected(orderId: string, _staffName?: string, notes?: string): Promise<Order> {
-    return this.markAsCollected(orderId, notes);
-  }
-
-  static async markOrderDelivered(orderId: string, _staffName?: string, notes?: string): Promise<Order> {
-    return this.markAsDelivered(orderId, notes);
-  }
-
-  static async cancelOrder(orderId: string, cancellationReason: string): Promise<Order> {
-    return this.updateOrderStatus(orderId, 'cancelled', undefined, cancellationReason);
-  }
-
   static async updateDeliveryNotes(orderId: string, deliveryNotes: string): Promise<Order> {
     const orders = await this.getOrders();
     const order = orders.find(o => o.id === orderId);
@@ -2493,13 +2297,7 @@ export class LaundryService {
         order.delivery_notes = rpcData.delivery_notes || deliveryNotes;
         order.updated_at = new Date().toISOString();
       } else {
-        const isRpcMissing =
-          rpcError?.code === '42883' ||
-          rpcError?.code === 'PGRST202' ||
-          rpcError?.message?.includes('update_order_delivery_notes') ||
-          rpcError?.message?.includes('could not find');
-
-        if (isRpcMissing) {
+        if (this.isRpcMissing(rpcError, 'update_order_delivery_notes')) {
           console.warn('Database RPC update_order_delivery_notes is pending remote migration; executing fallback update.');
           const { data, error } = await supabase
             .from('orders')
@@ -3158,11 +2956,7 @@ export class LaundryService {
   }
 
   static async getAllPayments(): Promise<Payment[]> {
-    const saved = localStorage.getItem(STORAGE_KEYS.PAYMENTS);
-    if (saved) {
-      try { return JSON.parse(saved); } catch {}
-    }
-    return [];
+    return this.getLocalFallback<Payment[]>(STORAGE_KEYS.PAYMENTS, []);
   }
 
   // ----------------------------------------------------
@@ -3191,17 +2985,8 @@ export class LaundryService {
       }
     }
 
-    const saved = localStorage.getItem(STORAGE_KEYS.SERVICE_AREAS);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((d: any) => ({ ...d, name: d.area_name || d.name }));
-        }
-      } catch {}
-    }
-    localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(DEFAULT_SERVICE_AREAS));
-    return DEFAULT_SERVICE_AREAS;
+    const fallback = this.getLocalFallback(STORAGE_KEYS.SERVICE_AREAS, DEFAULT_SERVICE_AREAS);
+    return fallback.map((d: any) => ({ ...d, name: d.area_name || d.name }));
   }
 
   static async addServiceArea(data: Omit<ServiceArea, 'id' | 'created_at' | 'updated_at'>): Promise<ServiceArea> {
@@ -3351,6 +3136,7 @@ export class LaundryService {
   // Services Catalog Management
   // ----------------------------------------------------
   static async getServices(includeInactive: boolean = true): Promise<LaundryServiceItem[]> {
+    let list: LaundryServiceItem[] | null = null;
     if (isLiveMode) {
       try {
         let query = supabase.from('services').select('*').order('display_order', { ascending: true });
@@ -3362,24 +3148,15 @@ export class LaundryService {
           console.warn('Supabase services load notice:', error.message);
         } else if (data && data.length > 0) {
           localStorage.setItem(STORAGE_KEYS.SERVICES, JSON.stringify(data));
-          return data;
+          list = data;
         }
       } catch (err: any) {
         console.warn('Falling back to local services cache:', err?.message || err);
       }
     }
 
-    const saved = localStorage.getItem(STORAGE_KEYS.SERVICES);
-    let list: LaundryServiceItem[] = DEFAULT_SERVICES;
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          list = parsed;
-        }
-      } catch {}
-    } else {
-      localStorage.setItem(STORAGE_KEYS.SERVICES, JSON.stringify(DEFAULT_SERVICES));
+    if (!list || list.length === 0) {
+      list = this.getLocalFallback(STORAGE_KEYS.SERVICES, DEFAULT_SERVICES);
     }
 
     if (!includeInactive) {
@@ -3397,18 +3174,7 @@ export class LaundryService {
     is_active?: boolean;
     display_order?: number;
   }, callerRole?: UserRole): Promise<LaundryServiceItem> {
-    const currentProfileStr = typeof localStorage !== 'undefined' ? localStorage.getItem('superwash_auth_profile') : null;
-    let storedRole: UserRole | undefined;
-    if (currentProfileStr) {
-      try {
-        const parsed = JSON.parse(currentProfileStr);
-        storedRole = parsed?.role;
-      } catch {}
-    }
-    const effectiveRole = callerRole || storedRole;
-    if (effectiveRole && effectiveRole !== 'owner') {
-      throw new Error(`Unauthorized: Only business owners can add services to the catalogue. Current role: '${effectiveRole}'.`);
-    }
+    this.assertOwnerRole(callerRole, 'add services to the catalogue');
 
     const trimmedName = serviceData.name?.trim();
     if (!trimmedName) {
@@ -3460,18 +3226,7 @@ export class LaundryService {
   }
 
   static async updateService(id: string, updates: Partial<LaundryServiceItem>, callerRole?: UserRole): Promise<LaundryServiceItem> {
-    const currentProfileStr = typeof localStorage !== 'undefined' ? localStorage.getItem('superwash_auth_profile') : null;
-    let storedRole: UserRole | undefined;
-    if (currentProfileStr) {
-      try {
-        const parsed = JSON.parse(currentProfileStr);
-        storedRole = parsed?.role;
-      } catch {}
-    }
-    const effectiveRole = callerRole || storedRole;
-    if (effectiveRole && effectiveRole !== 'owner') {
-      throw new Error(`Unauthorized: Only business owners can modify services in the catalogue. Current role: '${effectiveRole}'.`);
-    }
+    this.assertOwnerRole(callerRole, 'modify services in the catalogue');
 
     const services = await this.getServices(true);
     const item = services.find(s => s.id === id);
@@ -3529,18 +3284,7 @@ export class LaundryService {
   }
 
   static async deleteService(id: string, callerRole?: UserRole): Promise<{ success: boolean; message: string }> {
-    const currentProfileStr = typeof localStorage !== 'undefined' ? localStorage.getItem('superwash_auth_profile') : null;
-    let storedRole: UserRole | undefined;
-    if (currentProfileStr) {
-      try {
-        const parsed = JSON.parse(currentProfileStr);
-        storedRole = parsed?.role;
-      } catch {}
-    }
-    const effectiveRole = callerRole || storedRole;
-    if (effectiveRole && effectiveRole !== 'owner') {
-      throw new Error(`Unauthorized: Only business owners can delete services from the catalogue. Current role: '${effectiveRole}'.`);
-    }
+    this.assertOwnerRole(callerRole, 'delete services from the catalogue');
 
     const services = await this.getServices(true);
     const item = services.find(s => s.id === id);
@@ -3919,11 +3663,7 @@ export class LaundryService {
         console.warn('Using local feedback cache:', e);
       }
     }
-    const saved = localStorage.getItem(STORAGE_KEYS.FEEDBACK);
-    if (saved) {
-      try { return JSON.parse(saved); } catch {}
-    }
-    return [];
+    return this.getLocalFallback<OrderFeedback[]>(STORAGE_KEYS.FEEDBACK, []);
   }
 
   static async updateFeedbackReview(
@@ -3999,7 +3739,35 @@ export class LaundryService {
   // ----------------------------------------------------
   // Coupon Management & Validation System
   // ----------------------------------------------------
+  static async getPublicPromotions(): Promise<PublicPromotion[]> {
+    if (isLiveMode) {
+      try {
+        const { data, error } = await supabase.rpc('get_public_promotions');
+        if (!error && Array.isArray(data)) {
+          return data;
+        }
+        if (error) {
+          console.warn('get_public_promotions RPC note:', error.message);
+        }
+      } catch (err) {
+        console.warn('get_public_promotions RPC fallback:', err);
+      }
+    }
+
+    const activeCoupons = await this.getCoupons(false);
+    return activeCoupons.map(c => ({
+      code: c.code,
+      description: c.description || '',
+      discount_type: c.discount_type,
+      discount_value: c.discount_value,
+      min_order_paise: c.min_order_paise,
+      max_discount_paise: c.max_discount_paise,
+      valid_until: c.valid_until
+    }));
+  }
+
   static async getCoupons(includeInactive: boolean = true): Promise<Coupon[]> {
+    let list: Coupon[] | null = null;
     if (isLiveMode) {
       try {
         let query = supabase.from('coupons').select('*').order('created_at', { ascending: false });
@@ -4009,24 +3777,15 @@ export class LaundryService {
         const { data, error } = await query;
         if (!error && data) {
           localStorage.setItem(STORAGE_KEYS.COUPONS, JSON.stringify(data));
-          return data as Coupon[];
+          list = data as Coupon[];
         }
       } catch (err) {
         console.warn('Falling back to local coupons cache:', err);
       }
     }
 
-    const saved = localStorage.getItem(STORAGE_KEYS.COUPONS);
-    let list: Coupon[] = DEFAULT_COUPONS;
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          list = parsed;
-        }
-      } catch {}
-    } else {
-      localStorage.setItem(STORAGE_KEYS.COUPONS, JSON.stringify(DEFAULT_COUPONS));
+    if (!list || list.length === 0) {
+      list = this.getLocalFallback(STORAGE_KEYS.COUPONS, DEFAULT_COUPONS);
     }
 
     if (!includeInactive) {
@@ -4050,18 +3809,7 @@ export class LaundryService {
     valid_until?: string | null;
     is_active?: boolean;
   }, callerRole?: UserRole): Promise<Coupon> {
-    const currentProfileStr = typeof localStorage !== 'undefined' ? localStorage.getItem('superwash_auth_profile') : null;
-    let storedRole: UserRole | undefined;
-    if (currentProfileStr) {
-      try {
-        const parsed = JSON.parse(currentProfileStr);
-        storedRole = parsed?.role;
-      } catch {}
-    }
-    const effectiveRole = callerRole || storedRole;
-    if (effectiveRole && effectiveRole !== 'owner') {
-      throw new Error(`Unauthorized: Only business owners can create coupons. Current role: '${effectiveRole}'.`);
-    }
+    this.assertOwnerRole(callerRole, 'create');
 
     const cleanCode = couponData.code.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
     if (!cleanCode || cleanCode.length < 3) {
@@ -4123,23 +3871,35 @@ export class LaundryService {
     return newCoupon;
   }
 
+  private static async resolveCouponTarget(item: Coupon): Promise<{ id: string; total_redemptions?: number }> {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.id);
+    if (isUuid) {
+      return { id: item.id, total_redemptions: item.total_redemptions };
+    }
+    if (item.code) {
+      try {
+        const { data } = await supabase
+          .from('coupons')
+          .select('id, total_redemptions')
+          .ilike('code', item.code)
+          .maybeSingle();
+        if (data?.id) {
+          return {
+            id: data.id,
+            total_redemptions: data.total_redemptions !== undefined ? data.total_redemptions : item.total_redemptions
+          };
+        }
+      } catch {}
+    }
+    return { id: item.id, total_redemptions: item.total_redemptions };
+  }
+
   static async updateCoupon(
     id: string,
     updates: Partial<Coupon>,
     callerRole?: UserRole
   ): Promise<Coupon> {
-    const currentProfileStr = typeof localStorage !== 'undefined' ? localStorage.getItem('superwash_auth_profile') : null;
-    let storedRole: UserRole | undefined;
-    if (currentProfileStr) {
-      try {
-        const parsed = JSON.parse(currentProfileStr);
-        storedRole = parsed?.role;
-      } catch {}
-    }
-    const effectiveRole = callerRole || storedRole;
-    if (effectiveRole && effectiveRole !== 'owner') {
-      throw new Error(`Unauthorized: Only business owners can update coupons. Current role: '${effectiveRole}'.`);
-    }
+    const effectiveRole = this.assertOwnerRole(callerRole, 'update');
 
     const list = await this.getCoupons(true);
     const item = list.find(c => c.id === id);
@@ -4152,44 +3912,96 @@ export class LaundryService {
     };
 
     if (isLiveMode) {
+      const target = await this.resolveCouponTarget(item);
+      const targetId = target.id;
+      updated.id = targetId;
+
+      const updatePayload: Record<string, any> = {
+        updated_at: updated.updated_at
+      };
+      if (updates.is_active !== undefined) updatePayload.is_active = updates.is_active;
+      if (updates.description !== undefined) updatePayload.description = updates.description;
+      if (updates.discount_type !== undefined) updatePayload.discount_type = updates.discount_type;
+      if (updates.discount_value !== undefined) updatePayload.discount_value = updates.discount_value;
+      if (updates.min_order_paise !== undefined) updatePayload.min_order_paise = updates.min_order_paise;
+      if (updates.max_discount_paise !== undefined) updatePayload.max_discount_paise = updates.max_discount_paise;
+      if (updates.max_redemptions !== undefined) updatePayload.max_redemptions = updates.max_redemptions;
+      if (updates.per_customer_limit !== undefined) updatePayload.per_customer_limit = updates.per_customer_limit;
+      if (updates.applicable_service_ids !== undefined) updatePayload.applicable_service_ids = updates.applicable_service_ids;
+      if (updates.first_time_only !== undefined) updatePayload.first_time_only = updates.first_time_only;
+      if (updates.valid_until !== undefined) updatePayload.valid_until = updates.valid_until;
+
       try {
-        const { error } = await supabase.from('coupons').update(updated).eq('id', id);
-        if (error) console.warn('Coupons update note:', error.message);
-      } catch (err) {
+        const { error } = await supabase.from('coupons').update(updatePayload).eq('id', targetId);
+        if (error) {
+          console.warn('Coupons update note:', error.message);
+          if (effectiveRole === 'owner' && error.code !== 'PGRST116') {
+            throw new Error(`Failed to update coupon in database: ${error.message}`);
+          }
+        }
+      } catch (err: any) {
+        if (err.message && err.message.includes('database:')) {
+          throw err;
+        }
         console.warn('Coupons update fallback:', err);
       }
     }
 
-    const updatedList = list.map(c => c.id === id ? updated : c);
+    const updatedList = list.map(c => (c.id === id || c.code === updated.code) ? updated : c);
     localStorage.setItem(STORAGE_KEYS.COUPONS, JSON.stringify(updatedList));
     return updated;
   }
 
   static async deleteCoupon(id: string, callerRole?: UserRole): Promise<boolean> {
-    const currentProfileStr = typeof localStorage !== 'undefined' ? localStorage.getItem('superwash_auth_profile') : null;
-    let storedRole: UserRole | undefined;
-    if (currentProfileStr) {
-      try {
-        const parsed = JSON.parse(currentProfileStr);
-        storedRole = parsed?.role;
-      } catch {}
-    }
-    const effectiveRole = callerRole || storedRole;
-    if (effectiveRole && effectiveRole !== 'owner') {
-      throw new Error(`Unauthorized: Only business owners can delete coupons. Current role: '${effectiveRole}'.`);
-    }
+    const effectiveRole = this.assertOwnerRole(callerRole, 'delete');
 
     const list = await this.getCoupons(true);
-    const updatedList = list.filter(c => c.id !== id);
-    localStorage.setItem(STORAGE_KEYS.COUPONS, JSON.stringify(updatedList));
+    const item = list.find(c => c.id === id);
+    if (!item) throw new Error('Coupon not found');
 
     if (isLiveMode) {
+      const target = await this.resolveCouponTarget(item);
+      const targetId = target.id;
+      const totalRedemptions = target.total_redemptions ?? item.total_redemptions;
+      const hasHistoricalUsage = Boolean(totalRedemptions && totalRedemptions > 0);
+
       try {
-        await supabase.from('coupons').delete().eq('id', id);
-      } catch (err) {
+        if (hasHistoricalUsage) {
+          // Soft-deactivation to protect historical order records and cancellation restoration
+          const { error } = await supabase
+            .from('coupons')
+            .update({
+              is_active: false,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', targetId);
+          if (error) {
+            console.warn('Coupons safe deactivation note:', error.message);
+            if (effectiveRole === 'owner' && error.code !== 'PGRST116') {
+              throw new Error(`Failed to delete coupon in database: ${error.message}`);
+            }
+          }
+        } else {
+          // Zero historical redemptions: safe to permanently delete row
+          const { error } = await supabase.from('coupons').delete().eq('id', targetId);
+          if (error) {
+            console.warn('Coupons delete note:', error.message);
+            if (effectiveRole === 'owner' && error.code !== 'PGRST116') {
+              throw new Error(`Failed to delete coupon in database: ${error.message}`);
+            }
+          }
+        }
+      } catch (err: any) {
+        if (err.message && err.message.includes('database:')) {
+          throw err;
+        }
         console.warn('Coupons delete note:', err);
       }
     }
+
+    // Only update local storage and state AFTER live mutation succeeds
+    const updatedList = list.filter(c => c.id !== id && c.code !== item.code);
+    localStorage.setItem(STORAGE_KEYS.COUPONS, JSON.stringify(updatedList));
     return true;
   }
 
@@ -4202,6 +4014,45 @@ export class LaundryService {
     const cleanCode = (rawCode || '').trim().toUpperCase();
     if (!cleanCode) {
       return { valid: false, code: rawCode, reason: 'Please enter a coupon code.', discount_paise: 0 };
+    }
+
+    if (isLiveMode) {
+      try {
+        const cleanPhone = (customerPhone || '').replace(/[^0-9]/g, '').slice(-10);
+        const isUuid = serviceId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(serviceId);
+        const { data, error } = await supabase.rpc('validate_coupon', {
+          p_code: cleanCode,
+          p_customer_phone: cleanPhone,
+          p_subtotal_paise: subtotalPaise,
+          p_service_id: isUuid ? serviceId : null
+        });
+        if (error) {
+          console.warn('Server coupon validation error:', error.message);
+          return {
+            valid: false,
+            code: cleanCode,
+            reason: `Unable to verify coupon '${cleanCode}' with server (${error.message}). Please try again.`,
+            discount_paise: 0
+          };
+        }
+        if (data && typeof data === 'object') {
+          return data as CouponValidationResult;
+        }
+        return {
+          valid: false,
+          code: cleanCode,
+          reason: `Invalid response from coupon verification server for '${cleanCode}'.`,
+          discount_paise: 0
+        };
+      } catch (err: any) {
+        console.warn('Live coupon validation network exception:', err);
+        return {
+          valid: false,
+          code: cleanCode,
+          reason: `Network error verifying coupon '${cleanCode}'. Please check your connection.`,
+          discount_paise: 0
+        };
+      }
     }
 
     const coupons = await this.getCoupons(true);

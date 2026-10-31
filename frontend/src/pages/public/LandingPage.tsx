@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { BusinessSettings, LaundryServiceItem, Order, Coupon } from '../../types';
+import { BusinessSettings, LaundryServiceItem, Order, PublicPromotion } from '../../types';
 import { LaundryService, DEFAULT_SETTINGS } from '../../services/laundryService';
 import { useAuth } from '../../context/AuthContext';
 import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
@@ -20,7 +20,7 @@ export const LandingPage: React.FC = () => {
   const navigate = useNavigate();
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [services, setServices] = useState<LaundryServiceItem[]>([]);
-  const [coupons, setCoupons] = useState<Coupon[]>([]);
+  const [coupons, setCoupons] = useState<PublicPromotion[]>([]);
   const [activeOrder, setActiveOrder] = useState<Order | null>(null);
   const [pincodeInput, setPincodeInput] = useState<string>('');
   const [pincodeResult, setPincodeResult] = useState<{ checked: boolean; serviceable: boolean; message: string } | null>(null);
@@ -30,11 +30,11 @@ export const LandingPage: React.FC = () => {
     Promise.all([
       LaundryService.getSettings(),
       LaundryService.getServices(false),
-      LaundryService.getCoupons(false)
-    ]).then(([s, srvList, couponList]) => {
+      LaundryService.getPublicPromotions()
+    ]).then(([s, srvList, promoList]) => {
       setSettings(s);
       setServices(srvList || []);
-      setCoupons(couponList || []);
+      setCoupons(promoList || []);
     });
   }, []);
 
@@ -401,7 +401,7 @@ export const LandingPage: React.FC = () => {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {coupons.map((coupon) => (
                   <div
-                    key={coupon.id}
+                    key={coupon.code}
                     className="p-5 rounded-2xl bg-white/10 backdrop-blur-md border border-white/15 flex flex-col justify-between space-y-3"
                   >
                     <div>

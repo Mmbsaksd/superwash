@@ -55,7 +55,7 @@ describe('Issue A: Coupon Discount Allocation Across Linked Orders', () => {
     const batchId = 'BATCH-TEST01';
     
     // Order 1: Wash & Fold @ ₹79/kg with WELCOME50 (₹50 discount)
-    const order1 = await LaundryService.createOrder({
+    const order1 = await LaundryService.createBooking({
       customer_name: 'Priya Multi',
       customer_phone: '9876543210',
       pickup_address: 'Flat 101, Green Glen',
@@ -69,7 +69,7 @@ describe('Issue A: Coupon Discount Allocation Across Linked Orders', () => {
     });
 
     // Order 2: Wash & Iron @ ₹99/kg without coupon
-    const order2 = await LaundryService.createOrder({
+    const order2 = await LaundryService.createBooking({
       customer_name: 'Priya Multi',
       customer_phone: '9876543210',
       pickup_address: 'Flat 101, Green Glen',
@@ -106,7 +106,7 @@ describe('Issue A: Coupon Discount Allocation Across Linked Orders', () => {
   it('safely revokes the coupon if sibling linked order is cancelled and subtotal falls below threshold', async () => {
     const batchId = 'BATCH-TEST02';
 
-    const order1 = await LaundryService.createOrder({
+    const order1 = await LaundryService.createBooking({
       customer_name: 'Cancel Sibling Tester',
       customer_phone: '9876543211',
       pickup_address: '12 Indiranagar',
@@ -119,7 +119,7 @@ describe('Issue A: Coupon Discount Allocation Across Linked Orders', () => {
       client_submission_id: 'sub_test_02_a'
     });
 
-    const order2 = await LaundryService.createOrder({
+    const order2 = await LaundryService.createBooking({
       customer_name: 'Cancel Sibling Tester',
       customer_phone: '9876543211',
       pickup_address: '12 Indiranagar',
@@ -192,7 +192,7 @@ describe('Issue C: Linked-Order Lifecycle and Shared Pickup Coordination', () =>
   it('coordinates courier assignment across sibling orders of the same linked batch', async () => {
     const batchId = 'BATCH-TEST03';
 
-    const order1 = await LaundryService.createOrder({
+    const order1 = await LaundryService.createBooking({
       customer_name: 'Batch Logistics Tester',
       customer_phone: '9876543212',
       pickup_address: '45 Koramangala',
@@ -203,7 +203,7 @@ describe('Issue C: Linked-Order Lifecycle and Shared Pickup Coordination', () =>
       client_submission_id: 'sub_test_03_a'
     });
 
-    const order2 = await LaundryService.createOrder({
+    const order2 = await LaundryService.createBooking({
       customer_name: 'Batch Logistics Tester',
       customer_phone: '9876543212',
       pickup_address: '45 Koramangala',
@@ -231,7 +231,7 @@ describe('Issue C: Linked-Order Lifecycle and Shared Pickup Coordination', () =>
   it('permits independent weighing and processing for separate laundry batches', async () => {
     const batchId = 'BATCH-TEST04';
 
-    const order1 = await LaundryService.createOrder({
+    const order1 = await LaundryService.createBooking({
       customer_name: 'Independent Weighing Tester',
       customer_phone: '9876543213',
       pickup_address: '77 Residency Rd',
@@ -242,7 +242,7 @@ describe('Issue C: Linked-Order Lifecycle and Shared Pickup Coordination', () =>
       client_submission_id: 'sub_test_04_a'
     });
 
-    const order2 = await LaundryService.createOrder({
+    const order2 = await LaundryService.createBooking({
       customer_name: 'Independent Weighing Tester',
       customer_phone: '9876543213',
       pickup_address: '77 Residency Rd',
@@ -275,7 +275,7 @@ describe('Issue C: Linked-Order Lifecycle and Shared Pickup Coordination', () =>
   });
 
   it('guarantees doorstep collection records pickup_measured_weight without setting store manager intake timestamp (SW-1008 invariant)', async () => {
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_name: 'Doorstep Scale Tester',
       customer_phone: '9876543214',
       pickup_address: '100 Outer Ring Rd',
@@ -323,7 +323,7 @@ describe('Coupon Strategy: Booking Conversion, Post-Weighing Discounts & Retenti
     });
 
     // 2. Customer books with PROMO20
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_name: 'Terms Lock Customer',
       customer_phone: '9876543220',
       pickup_address: '42 MG Road',
@@ -367,7 +367,7 @@ describe('Coupon Strategy: Booking Conversion, Post-Weighing Discounts & Retenti
       is_active: true
     });
 
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_name: 'Heavy Weigh-in Customer',
       customer_phone: '9876543221',
       pickup_address: '15 Indiranagar',
@@ -395,7 +395,7 @@ describe('Coupon Strategy: Booking Conversion, Post-Weighing Discounts & Retenti
       await LaundryService.updateCoupon(exprez10.id, { is_active: true });
     }
 
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_name: 'Retention Test Customer',
       customer_phone: '9876543299',
       pickup_address: '55 Koramangala',

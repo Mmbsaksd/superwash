@@ -6,6 +6,7 @@ __pycache__/
 .Python
 env/
 venv/
+.venv/
 ENV/
 build/
 develop-eggs/
@@ -33,10 +34,18 @@ dist/
 dist-ssr/
 *.local
 .vite/
+.wrangler/
+logs/
+*.log
 
-# Environment files
+# Archives & Temporary Scratch Artifacts
+*.zip
+scratch/
+
+# Environment files & Secrets
 .env
-.env.production
+.env.*
+!.env.example
 
 # Backups and temporary CLI cache
 backups/

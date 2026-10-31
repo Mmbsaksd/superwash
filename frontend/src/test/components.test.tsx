@@ -19,6 +19,22 @@ import { supabase } from '../services/supabase';
 import { FunctionsClient } from '@supabase/functions-js';
 import { Profile } from '../types';
 
+/**
+ * Replicates DeliveryDashboard queue filtering logic using canonical LaundryService.getAllOrders().
+ * Tests delivery associate operational queues without duplicating filtering in LaundryService.
+ */
+const getDeliveryDashboardQueues = async (staffId: string) => {
+  const all = await LaundryService.getAllOrders();
+  const completedDeliveries = all.filter(o => o.assigned_delivery_id === staffId && o.order_status === 'delivered');
+  return {
+    pickups: all.filter(o => o.assigned_pickup_id === staffId && o.order_status === 'pickup_assigned'),
+    deliveries: all.filter(o => o.assigned_delivery_id === staffId && ['ready_for_delivery', 'delivery_assigned', 'out_for_delivery'].includes(o.order_status)),
+    completedDeliveries,
+    pickupHistory: all.filter(o => o.assigned_pickup_id === staffId && ['collected', 'washing', 'ready_for_delivery', 'delivery_assigned', 'out_for_delivery', 'delivered'].includes(o.order_status)),
+    completed: completedDeliveries
+  };
+};
+
 beforeEach(async () => {
   localStorage.clear();
   LaundryService.resetOrderSequence();
@@ -61,7 +77,7 @@ describe('Pricing & Weight Calculation Business Logic', () => {
 
   it('preserves order price snapshots when global settings change', async () => {
     // Create an order with Rs 80/kg
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_name: 'Test Customer',
       customer_phone: '9876543212',
       pickup_address: '123 Main St, Bengaluru',
@@ -88,7 +104,7 @@ describe('Pricing & Weight Calculation Business Logic', () => {
 
 describe('Payment & Balance Calculations', () => {
   it('correctly records full and partial payments with balances', async () => {
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_name: 'Payment Tester',
       customer_phone: '9876543299',
       pickup_address: '77 Residency Rd',
@@ -116,7 +132,7 @@ describe('Payment & Balance Calculations', () => {
 
 describe('Status Transitions Workflow', () => {
   it('transitions order through the 8 stages: Booked -> Pickup Assigned -> Collected -> Washing -> Ready -> Out -> Delivered', async () => {
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_name: 'Workflow Tester',
       customer_phone: '9876543288',
       pickup_address: 'Indiranagar 100ft Rd',
@@ -203,7 +219,7 @@ describe('Role Switcher Bar Component', () => {
 
 describe('Private Customer Feedback Workflow', () => {
   it('allows feedback submission only on delivered orders', async () => {
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_name: 'Feedback Tester',
       customer_phone: '9876543210',
       pickup_address: 'Koramangala 4th Block',
@@ -274,7 +290,7 @@ describe('Private Customer Feedback Workflow', () => {
     expect(emptyMetrics.averageOverall).toBe(0);
 
     // Create and deliver order
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_name: 'Metrics Tester',
       customer_phone: '9876543211',
       pickup_address: 'HSR Layout Sector 1',
@@ -412,7 +428,7 @@ describe('Google Maps Navigation & Directions URL', () => {
 
 describe('Financial Payment Ledger Integrity', () => {
   it('rejects negative or zero payment amounts', async () => {
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_name: 'Zero Pay Tester',
       customer_phone: '9876543201',
       pickup_address: 'Test Address',
@@ -432,7 +448,7 @@ describe('Financial Payment Ledger Integrity', () => {
   });
 
   it('prevents overpayments exceeding remaining order balance', async () => {
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_name: 'Overpay Tester',
       customer_phone: '9876543202',
       pickup_address: 'Test Address 2',
@@ -449,7 +465,7 @@ describe('Financial Payment Ledger Integrity', () => {
   });
 
   it('requires a valid transaction reference for manual UPI payment', async () => {
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_name: 'UPI Tester',
       customer_phone: '9876543203',
       pickup_address: 'Test Address 3',
@@ -626,7 +642,7 @@ describe('End-to-End Workflow Transitions & Staff Task Queues', () => {
     expect(pickupAssigned.assigned_pickup_name).toBe('Ramesh Kumar');
 
     // Verify task is visible to Ramesh
-    const rameshTasks = await LaundryService.getOrdersForDelivery('staff-pickup-1');
+    const rameshTasks = await getDeliveryDashboardQueues('staff-pickup-1');
     expect(rameshTasks.pickups.some(o => o.id === booking.id)).toBe(true);
 
     // 3. Pickup Associate marks order as collected
@@ -661,7 +677,7 @@ describe('End-to-End Workflow Transitions & Staff Task Queues', () => {
     expect(dispatched.order_status).toBe('out_for_delivery');
 
     // Verify task appears under Suresh's deliveries
-    const sureshTasks = await LaundryService.getOrdersForDelivery('staff-delivery-2');
+    const sureshTasks = await getDeliveryDashboardQueues('staff-delivery-2');
     expect(sureshTasks.deliveries.some(o => o.id === booking.id)).toBe(true);
 
     // 7. Complete final delivery
@@ -670,7 +686,7 @@ describe('End-to-End Workflow Transitions & Staff Task Queues', () => {
     expect(delivered.delivered_at).toBeDefined();
 
     // Verify task moves to completed queue and leaves active deliveries
-    const finalTasks = await LaundryService.getOrdersForDelivery('staff-delivery-2');
+    const finalTasks = await getDeliveryDashboardQueues('staff-delivery-2');
     expect(finalTasks.deliveries.some(o => o.id === booking.id)).toBe(false);
     expect(finalTasks.completed.some(o => o.id === booking.id)).toBe(true);
   });
@@ -718,7 +734,7 @@ describe('End-to-End Workflow Transitions & Staff Task Queues', () => {
     expect(collectedOrder.delivery_notes).toContain('Doorstep scale measured 3.5 kg');
 
     // Once collected, order must leave active pickups queue
-    const tasks = await LaundryService.getOrdersForDelivery('courier-1');
+    const tasks = await getDeliveryDashboardQueues('courier-1');
     expect(tasks.pickups.some(o => o.id === order.id)).toBe(false);
   });
 
@@ -780,7 +796,7 @@ describe('End-to-End Workflow Transitions & Staff Task Queues', () => {
     await LaundryService.assignDeliveryStaff(order.id, staffId, 'Ramesh Kumar', '9876543215');
 
     // Query staff task queues
-    const tasks = await LaundryService.getOrdersForDelivery(staffId);
+    const tasks = await getDeliveryDashboardQueues(staffId);
 
     // 1. Must NOT appear in active pickups
     expect(tasks.pickups.some(o => o.id === order.id)).toBe(false);
@@ -806,7 +822,7 @@ describe('End-to-End Workflow Transitions & Staff Task Queues', () => {
     expect(delivered.order_status).toBe('delivered');
 
     // 7. After delivery: leaves active deliveries, enters completed deliveries
-    const finalTasks = await LaundryService.getOrdersForDelivery(staffId);
+    const finalTasks = await getDeliveryDashboardQueues(staffId);
     expect(finalTasks.deliveries.some(o => o.id === order.id)).toBe(false);
     expect(finalTasks.completedDeliveries.some(o => o.id === order.id)).toBe(true);
     expect(finalTasks.completed.some(o => o.id === order.id)).toBe(true);
@@ -830,7 +846,7 @@ describe('End-to-End Workflow Transitions & Staff Task Queues', () => {
     await LaundryService.assignPickupStaff(order.id, staffId, 'Ramesh Kumar', '9876543215');
     await LaundryService.recordPickupCollectionAndWeight(order.id, 4.25, staffId, 'Ramesh Kumar');
 
-    const tasks = await LaundryService.getOrdersForDelivery(staffId);
+    const tasks = await getDeliveryDashboardQueues(staffId);
 
     // Must NOT be in active pickups
     expect(tasks.pickups.some(o => o.id === order.id)).toBe(false);
@@ -870,13 +886,14 @@ describe('Hardened Workflow, Security Invariants & Payment Atomicity', () => {
     expect(assigned.assigned_delivery_id).toBe(courierId);
 
     // 3. Courier checks their delivery queue -> order must appear in active deliveries
-    const courierTasks = await LaundryService.getOrdersForDelivery(courierId);
+    const courierTasks = await getDeliveryDashboardQueues(courierId);
     expect(courierTasks.deliveries.some(o => o.id === order.id)).toBe(true);
     expect(courierTasks.completedDeliveries.some(o => o.id === order.id)).toBe(false);
 
-    // 4. Also verify Manager's ready queue includes delivery_assigned orders
-    const managerQueues = await LaundryService.getOrdersForManager();
-    expect(managerQueues.readyForDelivery.some(o => o.id === order.id)).toBe(true);
+    // 4. Also verify Manager's ready queue includes delivery_assigned orders (matching ManagerDashboard logic)
+    const allManagerOrders = await LaundryService.getAllOrders();
+    const readyForDelivery = allManagerOrders.filter(o => o.order_status === 'ready_for_delivery' || o.order_status === 'delivery_assigned');
+    expect(readyForDelivery.some(o => o.id === order.id)).toBe(true);
 
     // 5. Courier dispatches order out for delivery
     const dispatched = await LaundryService.updateOrderStatus(order.id, 'out_for_delivery', 'Departed store with parcel', 'Suresh Courier');
@@ -889,7 +906,7 @@ describe('Hardened Workflow, Security Invariants & Payment Atomicity', () => {
     expect(delivered.payment_status).toBe('paid');
 
     // 7. Queue updates: leaves active deliveries and enters completed queue
-    const finalCourierTasks = await LaundryService.getOrdersForDelivery(courierId);
+    const finalCourierTasks = await getDeliveryDashboardQueues(courierId);
     expect(finalCourierTasks.deliveries.some(o => o.id === order.id)).toBe(false);
     expect(finalCourierTasks.completedDeliveries.some(o => o.id === order.id)).toBe(true);
   });
@@ -946,7 +963,7 @@ describe('Hardened Workflow, Security Invariants & Payment Atomicity', () => {
     ).rejects.toThrow(/delivery courier must be assigned before dispatching/i);
 
     // Associate not assigned to delivery does NOT see order in deliveries queue
-    const unassignedTasks = await LaundryService.getOrdersForDelivery('unassigned-courier-uuid');
+    const unassignedTasks = await getDeliveryDashboardQueues('unassigned-courier-uuid');
     expect(unassignedTasks.deliveries.some(o => o.id === order.id)).toBe(false);
   });
 

@@ -1,0 +1,41 @@
+# Packaging and Export Archive Exclusion Rules
+# Excludes development artifacts, packaging noise, and evidence from git archive
+
+.github export-ignore
+.gitignore export-ignore
+.gitattributes export-ignore
+.oxlintrc.json export-ignore
+
+node_modules export-ignore
+dist export-ignore
+dist-ssr export-ignore
+.npm export-ignore
+.vite export-ignore
+
+venv export-ignore
+.venv export-ignore
+ENV export-ignore
+env export-ignore
+__pycache__ export-ignore
+*.py[cod] export-ignore
+.pytest_cache export-ignore
+
+backups export-ignore
+scratch export-ignore
+docs.zip export-ignore
+*.zip export-ignore
+*.log export-ignore
+logs export-ignore
+
+docs/testing/production_readiness/evidence export-ignore
+docs/testing/local_qa_audit export-ignore
+docs/testing/manual_browser_audit export-ignore
+docs/review/phase2b_artifacts export-ignore
+
+*.db export-ignore
+superwash.db export-ignore
+
+.env export-ignore
+.env.local export-ignore
+.env.production export-ignore
+.env.*.local export-ignore

@@ -64,7 +64,7 @@ export const DeliveryDashboard: React.FC = () => {
     try {
       const [s, allOrds] = await Promise.all([
         LaundryService.getSettings(),
-        LaundryService.getAllOrders()
+        LaundryService.getOrders()
       ]);
       setSettings(s);
 
@@ -203,9 +203,9 @@ export const DeliveryDashboard: React.FC = () => {
 
     try {
       setIsSubmitting(true);
-      const updated = await LaundryService.markOrderDelivered(
+      const updated = await LaundryService.updateOrderStatus(
         order.id,
-        currentUser?.full_name || 'Delivery Staff'
+        'delivered'
       );
       if (updated) {
         setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
@@ -219,6 +219,57 @@ export const DeliveryDashboard: React.FC = () => {
       setIsSubmitting(false);
     }
   };
+
+  const renderAddressBox = (order: Order, title: string, showSlot: boolean = false) => (
+    <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 text-slate-700 space-y-1">
+      <div className="flex items-center justify-between">
+        <span className="font-bold text-slate-800 block text-[11px]">{title.endsWith(':') ? title : `${title}:`}</span>
+        {LaundryService.hasValidCoordinates(order) ? (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+            <MapPin className="w-2.5 h-2.5 text-emerald-600" /> GPS Pinned
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-200 text-slate-700">
+            📝 Text Address
+          </span>
+        )}
+      </div>
+      <p className="leading-relaxed">{order.pickup_address}</p>
+      {order.pickup_landmark && (
+        <p className="text-slate-500 text-[11px]">Landmark: {order.pickup_landmark}</p>
+      )}
+      {showSlot && (
+        <div className="pt-1 flex items-center gap-1.5 text-slate-500 text-[11px] font-mono">
+          <span>PIN: {order.pickup_pincode}</span>
+          <span>•</span>
+          <span>{order.pickup_slot}</span>
+        </div>
+      )}
+    </div>
+  );
+
+  const renderCallAndDirections = (order: Order) => (
+    <div className="grid grid-cols-2 gap-2">
+      <a
+        href={`tel:${order.customer_phone}`}
+        className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 rounded-xl font-bold text-slate-700 flex items-center justify-center gap-1.5 transition text-center"
+      >
+        <Phone className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+        <span>Call</span>
+      </a>
+
+      <a
+        href={LaundryService.getGoogleMapsDirectionsUrl(order)}
+        target="_blank"
+        rel="noreferrer"
+        className="py-2.5 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl font-bold flex items-center justify-center gap-1.5 transition text-center"
+        title={LaundryService.hasValidCoordinates(order) ? "Open exact GPS driving directions in Google Maps" : "Search address in Google Maps"}
+      >
+        <MapPin className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+        <span>{LaundryService.hasValidCoordinates(order) ? 'Directions (GPS)' : 'Search Maps'}</span>
+      </a>
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-24">
@@ -395,51 +446,10 @@ export const DeliveryDashboard: React.FC = () => {
                           <StatusBadge status={order.order_status} size="sm" />
                         </div>
 
-                        <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 text-slate-700 space-y-1">
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold text-slate-800 block text-[11px]">Pickup Location:</span>
-                            {LaundryService.hasValidCoordinates(order) ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                                <MapPin className="w-2.5 h-2.5 text-emerald-600" /> GPS Pinned
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-200 text-slate-700">
-                                📝 Text Address
-                              </span>
-                            )}
-                          </div>
-                          <p className="leading-relaxed">{order.pickup_address}</p>
-                          {order.pickup_landmark && (
-                            <p className="text-slate-500 text-[11px]">Landmark: {order.pickup_landmark}</p>
-                          )}
-                          <div className="pt-1 flex items-center gap-1.5 text-slate-500 text-[11px] font-mono">
-                            <span>PIN: {order.pickup_pincode}</span>
-                            <span>•</span>
-                            <span>{order.pickup_slot}</span>
-                          </div>
-                        </div>
+                        {renderAddressBox(order, 'Pickup Location:', true)}
 
                         {/* Call & Maps */}
-                        <div className="grid grid-cols-2 gap-2">
-                          <a
-                            href={`tel:${order.customer_phone}`}
-                            className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 rounded-xl font-bold text-slate-700 flex items-center justify-center gap-1.5 transition text-center"
-                          >
-                            <Phone className="w-3.5 h-3.5 text-slate-600 shrink-0" />
-                            <span>Call</span>
-                          </a>
-
-                          <a
-                            href={LaundryService.getGoogleMapsDirectionsUrl(order)}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="py-2.5 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl font-bold flex items-center justify-center gap-1.5 transition text-center"
-                            title={LaundryService.hasValidCoordinates(order) ? "Open exact GPS driving directions in Google Maps" : "Search address in Google Maps"}
-                          >
-                            <MapPin className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                            <span>{LaundryService.hasValidCoordinates(order) ? 'Directions (GPS)' : 'Search Maps'}</span>
-                          </a>
-                        </div>
+                        {renderCallAndDirections(order)}
                       </div>
 
                       {/* Action: Open Doorstep Weigh & Collect Modal */}
@@ -498,24 +508,7 @@ export const DeliveryDashboard: React.FC = () => {
                           <StatusBadge status={order.order_status} size="sm" />
                         </div>
 
-                        <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 text-slate-700 space-y-1">
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold text-slate-800 block text-[11px]">Delivery Address:</span>
-                            {LaundryService.hasValidCoordinates(order) ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                                <MapPin className="w-2.5 h-2.5 text-emerald-600" /> GPS Pinned
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-200 text-slate-700">
-                                📝 Text Address
-                              </span>
-                            )}
-                          </div>
-                          <p>{order.pickup_address}</p>
-                          {order.pickup_landmark && (
-                            <p className="text-slate-500 text-[11px]">Landmark: {order.pickup_landmark}</p>
-                          )}
-                        </div>
+                        {renderAddressBox(order, 'Delivery Address:', false)}
 
                         {/* Bill & Balance Due Card */}
                         <div className="p-3 bg-amber-50 border border-amber-200 rounded-2xl space-y-1.5">
@@ -536,26 +529,7 @@ export const DeliveryDashboard: React.FC = () => {
                         </div>
 
                         {/* Call & Maps */}
-                        <div className="grid grid-cols-2 gap-2">
-                          <a
-                            href={`tel:${order.customer_phone}`}
-                            className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 rounded-xl font-bold text-slate-700 flex items-center justify-center gap-1.5 transition text-center"
-                          >
-                            <Phone className="w-3.5 h-3.5 text-slate-600 shrink-0" />
-                            <span>Call</span>
-                          </a>
-
-                          <a
-                            href={LaundryService.getGoogleMapsDirectionsUrl(order)}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="py-2.5 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl font-bold flex items-center justify-center gap-1.5 transition text-center"
-                            title={LaundryService.hasValidCoordinates(order) ? "Open exact GPS driving directions in Google Maps" : "Search address in Google Maps"}
-                          >
-                            <MapPin className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                            <span>{LaundryService.hasValidCoordinates(order) ? 'Directions (GPS)' : 'Search Maps'}</span>
-                          </a>
-                        </div>
+                        {renderCallAndDirections(order)}
                       </div>
 
                       {/* Lifecycle Controlled Actions */}

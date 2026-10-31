@@ -13,7 +13,7 @@ describe('Master Application Audit: Pricing Consistency & Address Deduplication'
     expect(initialServices.length).toBeGreaterThan(0);
 
     // Create an order at current rate
-    const order1 = await LaundryService.createOrder({
+    const order1 = await LaundryService.createBooking({
       customer_name: 'Audit Customer',
       customer_phone: '9876543210',
       pickup_address: '123 Main St, Bengaluru',
@@ -32,7 +32,7 @@ describe('Master Application Audit: Pricing Consistency & Address Deduplication'
     }, 'owner');
 
     // 3. New booking must pick up the new active rate ₹95/kg
-    const order2 = await LaundryService.createOrder({
+    const order2 = await LaundryService.createBooking({
       customer_name: 'New Customer',
       customer_phone: '9876543211',
       pickup_address: '456 Cross St, Bengaluru',
@@ -87,14 +87,14 @@ describe('Master Application Audit: Pricing Consistency & Address Deduplication'
     localStorage.setItem(`superwash_addresses_${userId}`, JSON.stringify(rawDuplicates));
 
     // Retrieved addresses must deduplicate identical normalized line + pincode
-    const list = await LaundryService.getCustomerAddresses(userId);
+    const list = await LaundryService.getAddresses(userId);
     expect(list.length).toBe(1);
     expect(list[0].id).toBe('dup-1');
   });
 
   it('rejects invalid or negative weights during doorstep collection', async () => {
     const services = await LaundryService.getServices(false);
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_name: 'Bounds Customer',
       customer_phone: '9876543212',
       pickup_address: '789 5th Main, Bengaluru',
@@ -146,7 +146,7 @@ describe('Master Application Audit: Pricing Consistency & Address Deduplication'
 
     // 4. Create booking with applied coupon
     const services = await LaundryService.getServices(false);
-    const orderWithCoupon = await LaundryService.createOrder({
+    const orderWithCoupon = await LaundryService.createBooking({
       customer_name: 'Coupon Customer',
       customer_phone: '9876543210',
       pickup_address: '100 Richmond Rd, Bengaluru',
@@ -222,7 +222,7 @@ describe('Master Application Audit: Pricing Consistency & Address Deduplication'
     const services = await LaundryService.getServices(false);
     // 2. Booking created: at booking time, min weight estimate (1 kg @ ₹79/kg = ₹79) is below ₹150 min order,
     // or estimate is based on preliminary weight. We record the coupon code on the booking.
-    const booking = await LaundryService.createOrder({
+    const booking = await LaundryService.createBooking({
       customer_name: 'Weigh Test Customer',
       customer_phone: '9123456789',
       pickup_address: '12 Indiranagar 100ft Rd',
@@ -251,7 +251,7 @@ describe('Master Application Audit: Pricing Consistency & Address Deduplication'
 
     // 4. Test cap enforcement when actual weighed clothes are heavy (15 kg @ ₹79/kg = ₹1185)
     // 10% of ₹1185 = ₹118.50, but max_discount_paise is ₹100 (10000 paise).
-    const bookingHeavy = await LaundryService.createOrder({
+    const bookingHeavy = await LaundryService.createBooking({
       customer_name: 'Heavy Laundry Customer',
       customer_phone: '9123456780',
       pickup_address: '50 Koramangala 4th Block',
@@ -311,7 +311,7 @@ describe('Master Application Audit: Pricing Consistency & Address Deduplication'
     ];
     localStorage.setItem(`superwash_addresses_${userId}`, JSON.stringify(rawDuplicates));
 
-    const mergedList = await LaundryService.getCustomerAddresses(userId);
+    const mergedList = await LaundryService.getAddresses(userId);
     expect(mergedList.length).toBe(1);
     const retained = mergedList[0];
     expect(retained.id).toBe('addr-primary');
@@ -350,7 +350,7 @@ describe('Master Application Audit: Pricing Consistency & Address Deduplication'
       }
     ];
     localStorage.setItem('superwash_addresses_user-conflict', JSON.stringify(conflictDuplicates));
-    const conflictResult = await LaundryService.getCustomerAddresses('user-conflict');
+    const conflictResult = await LaundryService.getAddresses('user-conflict');
     expect(conflictResult.length).toBe(1);
     expect(conflictResult[0].latitude).toBe(12.9716); // Preserved original valid coordinates
     expect(conflictResult[0].longitude).toBe(77.5946);
@@ -403,7 +403,7 @@ describe('Master Application Audit: Pricing Consistency & Address Deduplication'
     const services = await LaundryService.getServices(false);
 
     // A. 12-parameter caller (booking without coupon)
-    const baseOrder = await LaundryService.createOrder({
+    const baseOrder = await LaundryService.createBooking({
       customer_name: 'Base Caller',
       customer_phone: '9876543215',
       pickup_address: '15 Cunningham Rd, Bengaluru',
@@ -417,7 +417,7 @@ describe('Master Application Audit: Pricing Consistency & Address Deduplication'
     expect(baseOrder.discount_paise || 0).toBe(0);
 
     // B. 14-parameter caller (booking with coupon and discount)
-    const couponOrder = await LaundryService.createOrder({
+    const couponOrder = await LaundryService.createBooking({
       customer_name: 'Coupon Caller',
       customer_phone: '9876543216',
       pickup_address: '16 Cunningham Rd, Bengaluru',
@@ -471,7 +471,7 @@ describe('Master Application Audit: Pricing Consistency & Address Deduplication'
 
     // 2. Create an order with coupon
     const services = await LaundryService.getServices(false);
-    const orderWithCoupon = await LaundryService.createOrder({
+    const orderWithCoupon = await LaundryService.createBooking({
       customer_name: 'Single Truth Tester',
       customer_phone: '9876543299',
       pickup_address: '100 Indiranagar, Bengaluru',

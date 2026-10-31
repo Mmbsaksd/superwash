@@ -249,6 +249,16 @@ export interface Coupon {
   updated_at?: string;
 }
 
+export interface PublicPromotion {
+  code: string;
+  description: string;
+  discount_type: CouponDiscountType;
+  discount_value: number;
+  min_order_paise: number;
+  max_discount_paise: number | null;
+  valid_until: string | null;
+}
+
 export interface CouponValidationResult {
   valid: boolean;
   code: string;

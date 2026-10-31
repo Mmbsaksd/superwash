@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Sparkles, CalendarCheck, Tag, ArrowRight,
   ChevronLeft, ChevronRight, Pause, Play, ShieldCheck, Check
 } from 'lucide-react';
+import { LaundryService } from '../services/laundryService';
+import { Coupon } from '../types';
 
 export interface PromotionalBanner {
   id: string;
@@ -20,78 +22,130 @@ export interface PromotionalBanner {
   features: string[];
 }
 
+export const BASE_PROMOTIONAL_BANNERS: PromotionalBanner[] = [
+  {
+    id: 'banner-pickup',
+    theme: 'pickup',
+    title: 'Fast Doorstep Pickup & Delivery',
+    tagline: 'Simple Per-Kilogram Laundry • Bengaluru',
+    description: 'Book a convenient home pickup in 60 seconds. Calibrated digital weighing at your doorstep or facility, zero hidden fees, and clean delivery in 24-48 hours.',
+    ctaText: 'Book a Home Pickup',
+    ctaAction: '/customer?tab=book',
+    gradientClass: 'from-brand-900 via-brand-800 to-cyan-900',
+    accentClass: 'bg-cyan-500 hover:bg-cyan-400 text-slate-950',
+    features: ['Free Doorstep Collection', 'Certified Digital Scales', 'Hygienic Separate Batches']
+  },
+  {
+    id: 'banner-welcome50',
+    theme: 'welcome',
+    title: 'Flat ₹50 OFF on Your First Order',
+    tagline: 'New Customer Welcome Promotion',
+    description: 'Experience professional laundry care. Apply code WELCOME50 at booking for ₹50 instant savings on any laundry pickup over ₹150.',
+    ctaText: 'Claim ₹50 Offer',
+    ctaAction: '/customer?tab=book&coupon=WELCOME50',
+    badge: 'WELCOME50',
+    couponCode: 'WELCOME50',
+    gradientClass: 'from-indigo-900 via-purple-900 to-slate-900',
+    accentClass: 'bg-emerald-400 hover:bg-emerald-300 text-slate-950',
+    features: ['₹50 Off Orders ≥ ₹150', 'Valid on Wash & Fold', '1-Tap Application']
+  },
+  {
+    id: 'banner-exprez10',
+    theme: 'repeat',
+    title: 'Save 10% on Every Laundry Batch',
+    tagline: 'Regular Customer Privilege Offer',
+    description: 'Keep your wardrobe fresh week after week. Use code EXPREZ10 for 10% off up to ₹100 on every regular laundry schedule.',
+    ctaText: 'Apply 10% Off',
+    ctaAction: '/customer?tab=book&coupon=EXPREZ10',
+    badge: 'EXPREZ10',
+    couponCode: 'EXPREZ10',
+    gradientClass: 'from-sky-900 via-blue-900 to-slate-950',
+    accentClass: 'bg-amber-400 hover:bg-amber-300 text-slate-950',
+    features: ['10% Off up to ₹100', 'Multiple Redemptions', 'No Garment Counting']
+  },
+  {
+    id: 'banner-service',
+    theme: 'service',
+    title: 'Steam Press & Gentle Fabric Care',
+    tagline: 'Premium Sanitization & Garment Finish',
+    description: 'Skin-friendly eco detergents, antibacterial rinse, and crisp steam press on hangers or precision folding. Pay securely via Cash or UPI after weighing.',
+    ctaText: 'Book a Home Pickup',
+    ctaAction: '/customer?tab=book',
+    gradientClass: 'from-slate-900 via-brand-950 to-cyan-950',
+    accentClass: 'bg-cyan-400 hover:bg-cyan-300 text-slate-950',
+    features: ['Eco-Certified Detergents', 'Steam Iron Finish', 'Pay on Delivery']
+  }
+];
+
 interface PromotionalCarouselProps {
   onSelectOffer?: (couponCode: string) => void;
   className?: string;
+  activePromotions?: Array<{ code: string }>;
+  activeCoupons?: Array<{ code: string; is_active?: boolean }>;
 }
 
 export const PromotionalCarousel: React.FC<PromotionalCarouselProps> = ({
   onSelectOffer,
-  className = ''
+  className = '',
+  activePromotions: initialActivePromotions,
+  activeCoupons: initialActiveCoupons
 }) => {
   const navigate = useNavigate();
   const [currentSlide, setCurrentSlide] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
+  const [activeCodes, setActiveCodes] = useState<Set<string> | null>(() => {
+    const passed = initialActivePromotions || initialActiveCoupons;
+    if (passed) {
+      return new Set(passed.filter(c => ('is_active' in c ? c.is_active !== false : true)).map(c => c.code.toUpperCase()));
+    }
+    return null;
+  });
   const touchStartXRef = useRef<number | null>(null);
   const touchEndXRef = useRef<number | null>(null);
   const carouselRef = useRef<HTMLDivElement | null>(null);
 
-  const banners: PromotionalBanner[] = [
-    {
-      id: 'banner-pickup',
-      theme: 'pickup',
-      title: 'Fast Doorstep Pickup & Delivery',
-      tagline: 'Simple Per-Kilogram Laundry • Bengaluru',
-      description: 'Book a convenient home pickup in 60 seconds. Calibrated digital weighing at your doorstep or facility, zero hidden fees, and clean delivery in 24-48 hours.',
-      ctaText: 'Book a Home Pickup',
-      ctaAction: '/customer?tab=book',
-      gradientClass: 'from-brand-900 via-brand-800 to-cyan-900',
-      accentClass: 'bg-cyan-500 hover:bg-cyan-400 text-slate-950',
-      features: ['Free Doorstep Collection', 'Certified Digital Scales', 'Hygienic Separate Batches']
-    },
-    {
-      id: 'banner-welcome50',
-      theme: 'welcome',
-      title: 'Flat ₹50 OFF on Your First Order',
-      tagline: 'New Customer Welcome Promotion',
-      description: 'Experience professional laundry care. Apply code WELCOME50 at booking for ₹50 instant savings on any laundry pickup over ₹150.',
-      ctaText: 'Claim ₹50 Offer',
-      ctaAction: '/customer?tab=book&coupon=WELCOME50',
-      badge: 'WELCOME50',
-      couponCode: 'WELCOME50',
-      gradientClass: 'from-indigo-900 via-purple-900 to-slate-900',
-      accentClass: 'bg-emerald-400 hover:bg-emerald-300 text-slate-950',
-      features: ['₹50 Off Orders ≥ ₹150', 'Valid on Wash & Fold', '1-Tap Application']
-    },
-    {
-      id: 'banner-exprez10',
-      theme: 'repeat',
-      title: 'Save 10% on Every Laundry Batch',
-      tagline: 'Regular Customer Privilege Offer',
-      description: 'Keep your wardrobe fresh week after week. Use code EXPREZ10 for 10% off up to ₹100 on every regular laundry schedule.',
-      ctaText: 'Apply 10% Off',
-      ctaAction: '/customer?tab=book&coupon=EXPREZ10',
-      badge: 'EXPREZ10',
-      couponCode: 'EXPREZ10',
-      gradientClass: 'from-sky-900 via-blue-900 to-slate-950',
-      accentClass: 'bg-amber-400 hover:bg-amber-300 text-slate-950',
-      features: ['10% Off up to ₹100', 'Multiple Redemptions', 'No Garment Counting']
-    },
-    {
-      id: 'banner-service',
-      theme: 'service',
-      title: 'Steam Press & Gentle Fabric Care',
-      tagline: 'Premium Sanitization & Garment Finish',
-      description: 'Skin-friendly eco detergents, antibacterial rinse, and crisp steam press on hangers or precision folding. Pay securely via Cash or UPI after weighing.',
-      ctaText: 'Book a Home Pickup',
-      ctaAction: '/customer?tab=book',
-      gradientClass: 'from-slate-900 via-brand-950 to-cyan-950',
-      accentClass: 'bg-cyan-400 hover:bg-cyan-300 text-slate-950',
-      features: ['Eco-Certified Detergents', 'Steam Iron Finish', 'Pay on Delivery']
+  useEffect(() => {
+    const passed = initialActivePromotions || initialActiveCoupons;
+    if (passed !== undefined) {
+      setActiveCodes(new Set(passed.filter(c => ('is_active' in c ? c.is_active !== false : true)).map(c => c.code.toUpperCase())));
+      return;
     }
-  ];
+    // In unit test environment without explicit props, avoid un-mocked background updates
+    if (import.meta.env.MODE === 'test') {
+      return;
+    }
+    let isMounted = true;
+    LaundryService.getPublicPromotions().then((promos) => {
+      if (isMounted && Array.isArray(promos)) {
+        setActiveCodes(new Set(promos.map(p => p.code.toUpperCase())));
+      }
+    }).catch(() => {
+      // Fallback: keep existing
+    });
+    return () => { isMounted = false; };
+  }, [initialActivePromotions, initialActiveCoupons]);
+
+  // Derive visible banners dynamically:
+  // If active promotions have loaded, only display promotional slides whose coupon code is active.
+  // Permanent brand slides (without couponCode) are always displayed.
+  const banners = useMemo(() => {
+    if (activeCodes === null) {
+      return BASE_PROMOTIONAL_BANNERS;
+    }
+    const filtered = BASE_PROMOTIONAL_BANNERS.filter(banner => {
+      if (!banner.couponCode) return true;
+      return activeCodes.has(banner.couponCode.toUpperCase());
+    });
+    return filtered.length > 0 ? filtered : BASE_PROMOTIONAL_BANNERS.filter(b => !b.couponCode);
+  }, [activeCodes]);
 
   const totalSlides = banners.length;
+
+  useEffect(() => {
+    if (currentSlide >= totalSlides) {
+      setCurrentSlide(0);
+    }
+  }, [currentSlide, totalSlides]);
 
   const nextSlide = useCallback(() => {
     setCurrentSlide((prev) => (prev + 1) % totalSlides);

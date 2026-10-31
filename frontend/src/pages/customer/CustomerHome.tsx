@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { Order, CustomerAddress, PickupSlot, BusinessSettings, OrderFeedback, LaundryServiceItem, Coupon } from '../../types';
+import { Order, CustomerAddress, PickupSlot, BusinessSettings, OrderFeedback, LaundryServiceItem, Coupon, PublicPromotion } from '../../types';
 import { LaundryService, DEFAULT_SETTINGS } from '../../services/laundryService';
 import { supabase } from '../../services/supabase';
 import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
@@ -11,8 +11,6 @@ import { InvoiceModal } from '../../components/InvoiceModal';
 import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
 import { MapLocationPicker } from '../../components/MapLocationPicker';
 import { CustomerBottomNav } from '../../components/CustomerBottomNav';
-import { CustomerTopNav } from '../../components/CustomerTopNav';
-import { CustomerOrderTracker } from '../../components/CustomerOrderTracker';
 import { formatCustomerError } from '../../utils/errorHandling';
 import {
   getPendingBooking,
@@ -21,22 +19,175 @@ import {
   updatePendingBookingStatus,
   calculateBookingFingerprint,
   isAmbiguousNetworkError,
-  PendingBookingRecord,
-  PendingBookingPayload
+  PendingBookingRecord
 } from '../../utils/pendingBooking';
 import {
   Calendar, Clock, MapPin, Plus, Phone,
   CheckCircle2, AlertCircle, Sparkles,
   QrCode, ArrowRight, User, Star, MessageSquareHeart,
-  ShieldCheck, RefreshCw, LogOut, X, Truck, Scale, Package, Lock,
+  RefreshCw, LogOut, X, Scale, Lock,
   AlertTriangle, Loader2, Edit2, Trash2, Navigation,
-  TicketPercent, Tag, Printer, FileText, CreditCard, ChevronLeft, ChevronRight, Check, Settings
+  TicketPercent, Tag, Printer, CreditCard, ChevronLeft, ChevronRight, Check, Settings
 } from 'lucide-react';
+import { Profile } from '../../types';
 
 const CONFIRMED_ORDER_KEY = 'superwash_last_confirmed_order';
 
+/**
+ * Standard client submission ID generator for idempotent booking requests.
+ */
+const generateClientSubmissionId = (): string =>
+  typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+/**
+ * Authoritative ownership verification helper for customer orders.
+ * Verifies matching customer_id or normalized 10-digit customer_phone.
+ */
+const isCustomerOrderOwner = (
+  order: { customer_id?: string | null; customer_phone?: string | null } | null | undefined,
+  user: Profile | null | undefined
+): boolean => {
+  if (!order || !user) return false;
+  if (order.customer_id && order.customer_id === user.id) return true;
+  if (user.phone && order.customer_phone) {
+    const cleanUserPhone = user.phone.replace(/[^0-9]/g, '');
+    const cleanOrderPhone = order.customer_phone.replace(/[^0-9]/g, '');
+    return cleanUserPhone.length > 0 && cleanOrderPhone === cleanUserPhone;
+  }
+  return false;
+};
+
+/**
+ * Standard device geolocation helper wrapping navigator.geolocation with fallback error categorization.
+ */
+const requestDeviceLocation = (
+  onSuccess: (lat: number, lng: number) => void,
+  onError: (type: 'unsupported' | 'invalid' | 'permission_denied' | 'timeout' | 'error') => void,
+  onComplete: () => void
+) => {
+  if (typeof navigator === 'undefined' || !navigator.geolocation) {
+    onError('unsupported');
+    onComplete();
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      if (typeof lat === 'number' && typeof lng === 'number' && !isNaN(lat) && !isNaN(lng)) {
+        onSuccess(lat, lng);
+      } else {
+        onError('invalid');
+      }
+      onComplete();
+    },
+    (err) => {
+      console.warn('Geolocation error:', err);
+      onComplete();
+      if (err.code === 1) onError('permission_denied');
+      else if (err.code === 3) onError('timeout');
+      else onError('error');
+    },
+    { timeout: 8000, enableHighAccuracy: true }
+  );
+};
+
+interface AddressFields {
+  line: string;
+  landmark: string;
+  pincode: string;
+  latitude: number | null;
+  longitude: number | null;
+}
+
+interface AddressModalState {
+  isOpen: boolean;
+  editingId: string | null;
+  label: string;
+  address_line: string;
+  landmark: string;
+  pincode: string;
+  latitude: number | null;
+  longitude: number | null;
+  is_default: boolean;
+  isSaving: boolean;
+  error: string | null;
+  success: string | null;
+}
+
+const DEFAULT_ADDRESS_MODAL_STATE: AddressModalState = {
+  isOpen: false,
+  editingId: null,
+  label: 'Home',
+  address_line: '',
+  landmark: '',
+  pincode: '560103',
+  latitude: null,
+  longitude: null,
+  is_default: false,
+  isSaving: false,
+  error: null,
+  success: null
+};
+
+interface OrderLocationModalState {
+  order: Order | null;
+  address: string;
+  landmark: string;
+  pincode: string;
+  latitude: number | null;
+  longitude: number | null;
+  isSaving: boolean;
+  error: string | null;
+  success: string | null;
+}
+
+const DEFAULT_ORDER_LOCATION_STATE: OrderLocationModalState = {
+  order: null,
+  address: '',
+  landmark: '',
+  pincode: '560038',
+  latitude: null,
+  longitude: null,
+  isSaving: false,
+  error: null,
+  success: null
+};
+
+interface OnboardingModalState {
+  isOpen: boolean;
+  phone: string;
+  name: string;
+  address: string;
+  landmark: string;
+  pincode: string;
+  latitude: number | null;
+  longitude: number | null;
+  isLocating: boolean;
+  locationFeedback: string | null;
+  isSaving: boolean;
+  error: string | null;
+}
+
+const DEFAULT_ONBOARDING_MODAL_STATE: OnboardingModalState = {
+  isOpen: false,
+  phone: '',
+  name: '',
+  address: '',
+  landmark: '',
+  pincode: '560103',
+  latitude: null,
+  longitude: null,
+  isLocating: false,
+  locationFeedback: null,
+  isSaving: false,
+  error: null
+};
+
 export const CustomerHome: React.FC = () => {
-  const { currentUser, needsPhonePrompt, updateProfile, logout, isLoading: isAuthLoading } = useAuth();
+  const { currentUser, updateProfile, logout, isLoading: isAuthLoading } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get('tab');
@@ -90,42 +241,31 @@ export const CustomerHome: React.FC = () => {
   const [dataLoadError, setDataLoadError] = useState<string | null>(null);
 
   // Address Refinement during Booking State
+  const [refinedAddress, setRefinedAddress] = useState<AddressFields>({
+    line: '',
+    landmark: '',
+    pincode: '560103',
+    latitude: null,
+    longitude: null
+  });
   const [isRefiningAddress, setIsRefiningAddress] = useState<boolean>(false);
-  const [refinedAddressLine, setRefinedAddressLine] = useState<string>('');
-  const [refinedLandmark, setRefinedLandmark] = useState<string>('');
-  const [refinedPincode, setRefinedPincode] = useState<string>('560103');
-  const [refinedLatitude, setRefinedLatitude] = useState<number | null>(null);
-  const [refinedLongitude, setRefinedLongitude] = useState<number | null>(null);
   const [updateSavedAddressBook, setUpdateSavedAddressBook] = useState<boolean>(true);
+  const updateRefinedAddress = (patch: Partial<AddressFields>) =>
+    setRefinedAddress((prev) => ({ ...prev, ...patch }));
 
   // Address Book CRUD State (My Addresses Tab)
-  const [addressModalOpen, setAddressModalOpen] = useState<boolean>(false);
-  const [editingAddressId, setEditingAddressId] = useState<string | null>(null);
-  const [addrLabel, setAddrLabel] = useState<string>('Home');
-  const [addrLine, setAddrLine] = useState<string>('');
-  const [addrLandmark, setAddrLandmark] = useState<string>('');
-  const [addrPincode, setAddrPincode] = useState<string>('560103');
-  const [addrLat, setAddrLat] = useState<number | null>(null);
-  const [addrLng, setAddrLng] = useState<number | null>(null);
-  const [addrIsDefault, setAddrIsDefault] = useState<boolean>(false);
-  const [isSavingAddress, setIsSavingAddress] = useState<boolean>(false);
-  const [addressActionError, setAddressActionError] = useState<string | null>(null);
-  const [addressActionSuccess, setAddressActionSuccess] = useState<string | null>(null);
+  const [addressModal, setAddressModal] = useState<AddressModalState>(DEFAULT_ADDRESS_MODAL_STATE);
+  const updateAddressModal = (patch: Partial<AddressModalState>) =>
+    setAddressModal((prev) => ({ ...prev, ...patch }));
 
   const [addressToDelete, setAddressToDelete] = useState<CustomerAddress | null>(null);
   const [addressDeleteError, setAddressDeleteError] = useState<string | null>(null);
   const [isDeletingAddress, setIsDeletingAddress] = useState<boolean>(false);
 
   // Post-Booking Order Pickup Location Correction State (Track Order Tab)
-  const [editingOrderLocation, setEditingOrderLocation] = useState<Order | null>(null);
-  const [orderEditAddress, setOrderEditAddress] = useState<string>('');
-  const [orderEditLandmark, setOrderEditLandmark] = useState<string>('');
-  const [orderEditPincode, setOrderEditPincode] = useState<string>('');
-  const [orderEditLat, setOrderEditLat] = useState<number | null>(null);
-  const [orderEditLng, setOrderEditLng] = useState<number | null>(null);
-  const [isSavingOrderLocation, setIsSavingOrderLocation] = useState<boolean>(false);
-  const [orderLocationError, setOrderLocationError] = useState<string | null>(null);
-  const [orderLocationSuccess, setOrderLocationSuccess] = useState<string | null>(null);
+  const [orderLocationModal, setOrderLocationModal] = useState<OrderLocationModalState>(DEFAULT_ORDER_LOCATION_STATE);
+  const updateOrderLocationModal = (patch: Partial<OrderLocationModalState>) =>
+    setOrderLocationModal((prev) => ({ ...prev, ...patch }));
 
   // Interactive Map Location Picker State
   const [mapPickerState, setMapPickerState] = useState<{
@@ -147,11 +287,15 @@ export const CustomerHome: React.FC = () => {
   // Booking Form State
   const [selectedAddressId, setSelectedAddressId] = useState<string>('');
   const [isEnteringNewAddress, setIsEnteringNewAddress] = useState<boolean>(false);
-  const [newAddressLine, setNewAddressLine] = useState<string>('');
-  const [newLandmark, setNewLandmark] = useState<string>('');
-  const [newPincode, setNewPincode] = useState<string>('560103');
-  const [newLatitude, setNewLatitude] = useState<number | null>(null);
-  const [newLongitude, setNewLongitude] = useState<number | null>(null);
+  const [newAddress, setNewAddress] = useState<AddressFields>({
+    line: '',
+    landmark: '',
+    pincode: '560103',
+    latitude: null,
+    longitude: null
+  });
+  const updateNewAddress = (patch: Partial<AddressFields>) =>
+    setNewAddress((prev) => ({ ...prev, ...patch }));
   const [isLocating, setIsLocating] = useState<boolean>(false);
   const [locationFeedback, setLocationFeedback] = useState<{
     type: 'loading' | 'success' | 'permission_denied' | 'timeout' | 'error';
@@ -178,7 +322,7 @@ export const CustomerHome: React.FC = () => {
     max_discount_paise?: number | null;
     description?: string;
   } | null>(null);
-  const [availablePromotions, setAvailablePromotions] = useState<Coupon[]>([]);
+  const [availablePromotions, setAvailablePromotions] = useState<Array<PublicPromotion | Coupon>>([]);
   const [couponValidationLoading, setCouponValidationLoading] = useState<boolean>(false);
   const [couponError, setCouponError] = useState<string | null>(null);
   const [couponSuccessMessage, setCouponSuccessMessage] = useState<string | null>(null);
@@ -189,11 +333,7 @@ export const CustomerHome: React.FC = () => {
   const [statusCheckOutcome, setStatusCheckOutcome] = useState<'not_found' | null>(null);
 
   // Client submission request ID for safe idempotency & timeout retries
-  const [submissionId, setSubmissionId] = useState<string>(() =>
-    typeof crypto !== 'undefined' && crypto.randomUUID
-      ? crypto.randomUUID()
-      : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
-  );
+  const [submissionId, setSubmissionId] = useState<string>(generateClientSubmissionId);
 
   // Restore pending uncertain booking from sessionStorage across refreshes on mount
   useEffect(() => {
@@ -223,10 +363,10 @@ export const CustomerHome: React.FC = () => {
       const currentFingerprint = calculateBookingFingerprint({
         customer_phone: customerPhone || currentUser?.phone || '',
         pickup_address: isEnteringNewAddress
-          ? newAddressLine
+          ? newAddress.line
           : (addresses.find((a) => a.id === selectedAddressId)?.address_line || ''),
         pickup_pincode: isEnteringNewAddress
-          ? newPincode
+          ? newAddress.pincode
           : (addresses.find((a) => a.id === selectedAddressId)?.pincode || ''),
         pickup_date: pickupDate,
         pickup_slot: selectedSlotName,
@@ -237,34 +377,17 @@ export const CustomerHome: React.FC = () => {
         // Only discard if status is strictly in_flight and was uncompleted
         clearPendingBooking(currentUser?.id);
         setPendingRecovery(null);
-        setSubmissionId(
-          typeof crypto !== 'undefined' && crypto.randomUUID
-            ? crypto.randomUUID()
-            : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
-        );
+        setSubmissionId(generateClientSubmissionId());
       }
     } else {
-      setSubmissionId(
-        typeof crypto !== 'undefined' && crypto.randomUUID
-          ? crypto.randomUUID()
-          : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
-      );
+      setSubmissionId(generateClientSubmissionId());
     }
-  }, [selectedServiceId, selectedSlotName, pickupDate, selectedAddressId, newAddressLine, newPincode, pendingRecovery, customerPhone, currentUser]);
+  }, [selectedServiceId, selectedSlotName, pickupDate, selectedAddressId, newAddress.line, newAddress.pincode, pendingRecovery, customerPhone, currentUser]);
 
   // Onboarding Modal State (Prompt for phone and initial address if missing after Google sign-in)
-  const [isOnboardingModalOpen, setIsOnboardingModalOpen] = useState<boolean>(false);
-  const [onboardPhone, setOnboardPhone] = useState<string>('');
-  const [onboardName, setOnboardName] = useState<string>('');
-  const [onboardAddress, setOnboardAddress] = useState<string>('');
-  const [onboardLandmark, setOnboardLandmark] = useState<string>('');
-  const [onboardPincode, setOnboardPincode] = useState<string>('560103');
-  const [onboardLatitude, setOnboardLatitude] = useState<number | null>(null);
-  const [onboardLongitude, setOnboardLongitude] = useState<number | null>(null);
-  const [isOnboardLocating, setIsOnboardLocating] = useState<boolean>(false);
-  const [onboardLocationFeedback, setOnboardLocationFeedback] = useState<string | null>(null);
-  const [isOnboardingSaving, setIsOnboardingSaving] = useState<boolean>(false);
-  const [onboardingError, setOnboardingError] = useState<string | null>(null);
+  const [onboardingModal, setOnboardingModal] = useState<OnboardingModalState>(DEFAULT_ONBOARDING_MODAL_STATE);
+  const updateOnboardingModal = (patch: Partial<OnboardingModalState>) =>
+    setOnboardingModal((prev) => ({ ...prev, ...patch }));
 
   // Modals
   const [selectedPaymentOrder, setSelectedPaymentOrder] = useState<Order | null>(null);
@@ -273,11 +396,7 @@ export const CustomerHome: React.FC = () => {
 
   const handleTabChange = (tab: 'book' | 'current' | 'history' | 'addresses' | 'profile' | 'settings' | 'contact') => {
     if (tab === 'book') {
-      setSubmissionId(
-        typeof crypto !== 'undefined' && crypto.randomUUID
-          ? crypto.randomUUID()
-          : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
-      );
+      setSubmissionId(generateClientSubmissionId());
       setBookingStep(1);
     }
     setActiveTab(tab);
@@ -326,11 +445,11 @@ export const CustomerHome: React.FC = () => {
       setBookingStep(3);
     } else if (current === 3) {
       if (isEnteringNewAddress || addresses.length === 0) {
-        if (!newAddressLine.trim()) {
+        if (!newAddress.line.trim()) {
           setBookingStepError('Please enter your complete pickup address.');
           return;
         }
-        if (!newPincode.trim() || newPincode.trim().length !== 6) {
+        if (!newAddress.pincode.trim() || newAddress.pincode.trim().length !== 6) {
           setBookingStepError('Please enter a valid 6-digit Bangalore PIN code.');
           return;
         }
@@ -367,7 +486,7 @@ export const CustomerHome: React.FC = () => {
           return;
         }
       }
-      if (targetStep >= 4 && !selectedAddressId && (!newAddressLine.trim() || newPincode.trim().length !== 6)) {
+      if (targetStep >= 4 && !selectedAddressId && (!newAddress.line.trim() || newAddress.pincode.trim().length !== 6)) {
         setBookingStepError('Please complete your pickup address first.');
         return;
       }
@@ -423,6 +542,41 @@ export const CustomerHome: React.FC = () => {
     );
   };
 
+  /**
+   * Consolidates post-booking state updates across creation, status verification, and timeout recovery.
+   * Preserves bookingSuccessOrder state, sessionStorage timestamped payload, orders list deduplication, and URL navigation.
+   */
+  const commitConfirmedBookingState = (primaryOrder: Order, batchOrders?: Order[]) => {
+    const ordersToCommit = batchOrders && batchOrders.length > 0 ? batchOrders : [primaryOrder];
+    setBookingSuccessOrder(primaryOrder);
+    try {
+      sessionStorage.setItem(
+        CONFIRMED_ORDER_KEY,
+        JSON.stringify({
+          ...primaryOrder,
+          timestamp: Date.now()
+        })
+      );
+    } catch {}
+
+    setOrders((prev) => {
+      const newIds = new Set(ordersToCommit.map((o) => o.id));
+      const filtered = prev.filter((o) => !newIds.has(o.id));
+      return [...ordersToCommit, ...filtered];
+    });
+    setBookingError(null);
+    handleTabChange('current');
+    setSearchParams(
+      (prev) => {
+        const p = new URLSearchParams(prev);
+        p.set('tab', 'current');
+        p.set('confirmed', primaryOrder.order_number);
+        return p;
+      },
+      { replace: true }
+    );
+  };
+
   // FIX 2: Restore confirmed booking state ONLY on explicit ?confirmed=... URL and valid ownership
   useEffect(() => {
     // Wait until auth state finishes hydrating before checking ownership
@@ -445,10 +599,7 @@ export const CustomerHome: React.FC = () => {
           const isOrderMatch = parsed && parsed.order_number === confirmedParam;
 
           // Verify ownership: order must belong to the currently authenticated customer
-          const isOwner = currentUser && (
-            (parsed.customer_id && parsed.customer_id === currentUser.id) ||
-            (currentUser.phone && parsed.customer_phone && parsed.customer_phone.replace(/[^0-9]/g, '') === currentUser.phone.replace(/[^0-9]/g, ''))
-          );
+          const isOwner = isCustomerOrderOwner(parsed, currentUser);
 
           if (isOrderMatch && isRecent && isOwner) {
             setBookingSuccessOrder(parsed as Order);
@@ -472,14 +623,8 @@ export const CustomerHome: React.FC = () => {
     const confirmedParam = searchParams.get('confirmed');
     if (confirmedParam && orders.length > 0) {
       const matched = orders.find((o) => o.order_number === confirmedParam);
-      if (matched) {
-        const isOwner = currentUser && (
-          matched.customer_id === currentUser.id ||
-          (currentUser.phone && matched.customer_phone && matched.customer_phone.replace(/[^0-9]/g, '') === currentUser.phone.replace(/[^0-9]/g, ''))
-        );
-        if (isOwner) {
-          setBookingSuccessOrder(matched);
-        }
+      if (matched && isCustomerOrderOwner(matched, currentUser)) {
+        setBookingSuccessOrder(matched);
       }
     }
   }, [orders, searchParams, currentUser, isAuthLoading]);
@@ -487,19 +632,9 @@ export const CustomerHome: React.FC = () => {
   // FIX 2: Clear stored confirmation on logout or account switch
   useEffect(() => {
     if (isAuthLoading) return;
-    if (bookingSuccessOrder) {
-      if (!currentUser) {
-        setBookingSuccessOrder(null);
-        try { sessionStorage.removeItem(CONFIRMED_ORDER_KEY); } catch {}
-      } else {
-        const isOwner =
-          (bookingSuccessOrder.customer_id && bookingSuccessOrder.customer_id === currentUser.id) ||
-          (currentUser.phone && bookingSuccessOrder.customer_phone && bookingSuccessOrder.customer_phone.replace(/[^0-9]/g, '') === currentUser.phone.replace(/[^0-9]/g, ''));
-        if (!isOwner) {
-          setBookingSuccessOrder(null);
-          try { sessionStorage.removeItem(CONFIRMED_ORDER_KEY); } catch {}
-        }
-      }
+    if (bookingSuccessOrder && !isCustomerOrderOwner(bookingSuccessOrder, currentUser)) {
+      setBookingSuccessOrder(null);
+      try { sessionStorage.removeItem(CONFIRMED_ORDER_KEY); } catch {}
     }
   }, [currentUser, bookingSuccessOrder, isAuthLoading]);
 
@@ -508,8 +643,10 @@ export const CustomerHome: React.FC = () => {
       setCustomerPhone(currentUser.phone || '');
       setCustomerName(currentUser.full_name || 'Customer');
       if (currentUser.role === 'customer' && (!currentUser.phone || currentUser.phone.trim().length < 10)) {
-        setIsOnboardingModalOpen(true);
-        setOnboardName(currentUser.full_name || 'Customer');
+        updateOnboardingModal({
+          isOpen: true,
+          name: currentUser.full_name || 'Customer'
+        });
       }
     }
     loadData();
@@ -539,281 +676,239 @@ export const CustomerHome: React.FC = () => {
   }, [currentUser]);
 
   const handleGetOnboardLocation = () => {
-    if (!navigator.geolocation) {
-      setOnboardLocationFeedback('Geolocation is not supported by your browser.');
-      return;
-    }
-    setIsOnboardLocating(true);
-    setOnboardLocationFeedback('Acquiring device GPS...');
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
-        if (typeof lat === 'number' && typeof lng === 'number' && !isNaN(lat) && !isNaN(lng)) {
-          setOnboardLatitude(lat);
-          setOnboardLongitude(lng);
-          setOnboardLocationFeedback('GPS location attached!');
-        } else {
-          setOnboardLocationFeedback('Invalid location received from device.');
-        }
-        setIsOnboardLocating(false);
+    updateOnboardingModal({ isLocating: true, locationFeedback: 'Acquiring device GPS...' });
+    requestDeviceLocation(
+      (lat, lng) => {
+        updateOnboardingModal({
+          latitude: lat,
+          longitude: lng,
+          locationFeedback: 'GPS location attached!'
+        });
       },
-      (err) => {
-        console.warn('Geolocation error:', err);
-        setIsOnboardLocating(false);
-        if (err.code === 1) {
-          setOnboardLocationFeedback('Location permission denied. Enter address manually.');
-        } else if (err.code === 3) {
-          setOnboardLocationFeedback('Location request timed out. Enter address manually.');
-        } else {
-          setOnboardLocationFeedback('Could not determine GPS position.');
-        }
+      (errType) => {
+        const msgs = {
+          unsupported: 'Geolocation is not supported by your browser.',
+          invalid: 'Invalid location received from device.',
+          permission_denied: 'Location permission denied. Enter address manually.',
+          timeout: 'Location request timed out. Enter address manually.',
+          error: 'Could not determine GPS position.'
+        };
+        updateOnboardingModal({ locationFeedback: msgs[errType] });
       },
-      { timeout: 8000, enableHighAccuracy: true }
+      () => updateOnboardingModal({ isLocating: false })
     );
   };
 
   const handleSaveOnboarding = async (e: React.FormEvent) => {
     e.preventDefault();
-    setOnboardingError(null);
-    const clean = onboardPhone.replace(/[^0-9]/g, '').slice(-10);
+    updateOnboardingModal({ error: null });
+    const clean = onboardingModal.phone.replace(/[^0-9]/g, '').slice(-10);
     if (clean.length < 10) {
-      setOnboardingError('Please enter a valid 10-digit Indian mobile number.');
+      updateOnboardingModal({ error: 'Please enter a valid 10-digit Indian mobile number.' });
       return;
     }
 
-    setIsOnboardingSaving(true);
+    updateOnboardingModal({ isSaving: true });
     try {
       const res = await updateProfile({
         phone: clean,
-        full_name: onboardName.trim() || currentUser?.full_name
+        full_name: onboardingModal.name.trim() || currentUser?.full_name
       });
       if (!res.success) {
-        setOnboardingError(res.message);
-        setIsOnboardingSaving(false);
+        updateOnboardingModal({ error: res.message, isSaving: false });
         return;
       }
 
       // If address provided and user has no addresses, save it
-      if (onboardAddress.trim() && currentUser) {
-        const savedAddr = await LaundryService.saveCustomerAddress({
+      if (onboardingModal.address.trim() && currentUser) {
+        const savedAddr = await LaundryService.saveAddress({
           user_id: currentUser.id,
           label: 'Home',
-          address_line: onboardAddress.trim(),
-          landmark: onboardLandmark.trim() || undefined,
-          pincode: onboardPincode.trim(),
+          address_line: onboardingModal.address.trim(),
+          landmark: onboardingModal.landmark.trim() || undefined,
+          pincode: onboardingModal.pincode.trim(),
           is_default: true,
-          latitude: onboardLatitude,
-          longitude: onboardLongitude
+          latitude: onboardingModal.latitude,
+          longitude: onboardingModal.longitude
         });
         setAddresses([savedAddr]);
         setSelectedAddressId(savedAddr.id);
         setIsEnteringNewAddress(false);
       }
 
-      setIsOnboardingModalOpen(false);
+      updateOnboardingModal({ isOpen: false });
       setCustomerPhone(clean);
-      setCustomerName(onboardName.trim() || customerName);
+      setCustomerName(onboardingModal.name.trim() || customerName);
     } catch (err: any) {
-      setOnboardingError(formatCustomerError(err, 'Error saving profile. Please verify your details and try again.'));
+      updateOnboardingModal({ error: formatCustomerError(err, 'Error saving profile. Please verify your details and try again.') });
     } finally {
-      setIsOnboardingSaving(false);
+      updateOnboardingModal({ isSaving: false });
     }
   };
 
   const handleGetCurrentLocation = () => {
-    if (!navigator.geolocation) {
-      setLocationFeedback({
-        type: 'error',
-        message: 'Geolocation is not supported by your browser. Please enter address manually.'
-      });
-      return;
-    }
     setIsLocating(true);
     setLocationFeedback({
       type: 'loading',
       message: 'Requesting device GPS position...'
     });
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
-        if (typeof lat === 'number' && typeof lng === 'number' && !isNaN(lat) && !isNaN(lng)) {
-          setNewLatitude(lat);
-          setNewLongitude(lng);
-          setLocationFeedback({
-            type: 'success',
-            message: 'GPS location attached! Delivery associates will navigate directly to your coordinates.'
-          });
-        } else {
-          setLocationFeedback({
-            type: 'error',
-            message: 'Invalid coordinates received from device. Please enter address manually.'
-          });
-        }
-        setIsLocating(false);
+    requestDeviceLocation(
+      (lat, lng) => {
+        updateNewAddress({ latitude: lat, longitude: lng });
+        setLocationFeedback({
+          type: 'success',
+          message: 'GPS location attached! Delivery associates will navigate directly to your coordinates.'
+        });
       },
-      (err) => {
-        console.warn('Geolocation error:', err);
-        setIsLocating(false);
-        if (err.code === 1) { // PERMISSION_DENIED
-          setLocationFeedback({
-            type: 'permission_denied',
-            message: 'Location permission was denied. You can continue by entering your address manually.'
-          });
-        } else if (err.code === 3) { // TIMEOUT
-          setLocationFeedback({
-            type: 'timeout',
-            message: 'GPS location request timed out. Please enter your address manually.'
-          });
-        } else {
-          setLocationFeedback({
-            type: 'error',
-            message: 'Could not determine GPS position. Please enter your address manually.'
-          });
-        }
+      (errType) => {
+        const msgs = {
+          unsupported: 'Geolocation is not supported by your browser. Please enter address manually.',
+          invalid: 'Invalid coordinates received from device. Please enter address manually.',
+          permission_denied: 'Location permission was denied. You can continue by entering your address manually.',
+          timeout: 'GPS location request timed out. Please enter your address manually.',
+          error: 'Could not determine GPS position. Please enter your address manually.'
+        };
+        setLocationFeedback({
+          type: errType === 'unsupported' || errType === 'invalid' ? 'error' : errType,
+          message: msgs[errType]
+        });
       },
-      { timeout: 8000, enableHighAccuracy: true }
+      () => setIsLocating(false)
     );
   };
 
   const handleClearLocation = () => {
-    setNewLatitude(null);
-    setNewLongitude(null);
+    updateNewAddress({ latitude: null, longitude: null });
     setLocationFeedback(null);
   };
 
   // Map Pin Confirmation Handler
   const handleMapPinConfirmed = (coords: { latitude: number; longitude: number }) => {
-    if (mapPickerState.target === 'booking_new') {
-      setNewLatitude(coords.latitude);
-      setNewLongitude(coords.longitude);
-      setLocationFeedback({
-        type: 'success',
-        message: `Doorstep pin confirmed on map (${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)})`
-      });
-    } else if (mapPickerState.target === 'booking_refine') {
-      setRefinedLatitude(coords.latitude);
-      setRefinedLongitude(coords.longitude);
-    } else if (mapPickerState.target === 'address_modal') {
-      setAddrLat(coords.latitude);
-      setAddrLng(coords.longitude);
-    } else if (mapPickerState.target === 'order_edit') {
-      setOrderEditLat(coords.latitude);
-      setOrderEditLng(coords.longitude);
+    const { latitude, longitude } = coords;
+    switch (mapPickerState.target) {
+      case 'booking_new':
+        updateNewAddress({ latitude, longitude });
+        setLocationFeedback({
+          type: 'success',
+          message: `Doorstep pin confirmed on map (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`
+        });
+        break;
+      case 'booking_refine':
+        updateRefinedAddress({ latitude, longitude });
+        break;
+      case 'address_modal':
+        updateAddressModal({ latitude, longitude });
+        break;
+      case 'order_edit':
+        updateOrderLocationModal({ latitude, longitude });
+        break;
     }
     setMapPickerState((prev) => ({ ...prev, isOpen: false, target: null }));
   };
 
+  // Populate refined address fields from selected CustomerAddress
+  const populateRefinedAddress = (addr: CustomerAddress) => {
+    setSelectedAddressId(addr.id);
+    setRefinedAddress({
+      line: addr.address_line,
+      landmark: addr.landmark || '',
+      pincode: addr.pincode,
+      latitude: addr.latitude ?? null,
+      longitude: addr.longitude ?? null
+    });
+    setIsRefiningAddress(false);
+  };
+
   // Address Selection & Pre-population for Refinement
   const handleSelectSavedAddress = (addr: CustomerAddress) => {
-    setSelectedAddressId(addr.id);
-    setRefinedAddressLine(addr.address_line);
-    setRefinedLandmark(addr.landmark || '');
-    setRefinedPincode(addr.pincode);
-    setRefinedLatitude(addr.latitude ?? null);
-    setRefinedLongitude(addr.longitude ?? null);
-    setIsRefiningAddress(false);
+    populateRefinedAddress(addr);
   };
 
   // Address CRUD Handlers (My Addresses Tab)
   const handleOpenAddAddress = () => {
-    setEditingAddressId(null);
-    setAddrLabel('Home');
-    setAddrLine('');
-    setAddrLandmark('');
-    setAddrPincode('560103');
-    setAddrLat(null);
-    setAddrLng(null);
-    setAddrIsDefault(addresses.length === 0);
-    setAddressActionError(null);
-    setAddressActionSuccess(null);
-    setAddressModalOpen(true);
+    setAddressModal({
+      ...DEFAULT_ADDRESS_MODAL_STATE,
+      isOpen: true,
+      is_default: addresses.length === 0
+    });
   };
 
   const handleOpenEditAddress = (addr: CustomerAddress) => {
-    setEditingAddressId(addr.id);
-    setAddrLabel(addr.label);
-    setAddrLine(addr.address_line);
-    setAddrLandmark(addr.landmark || '');
-    setAddrPincode(addr.pincode);
-    setAddrLat(addr.latitude ?? null);
-    setAddrLng(addr.longitude ?? null);
-    setAddrIsDefault(addr.is_default);
-    setAddressActionError(null);
-    setAddressActionSuccess(null);
-    setAddressModalOpen(true);
+    setAddressModal({
+      isOpen: true,
+      editingId: addr.id,
+      label: addr.label,
+      address_line: addr.address_line,
+      landmark: addr.landmark || '',
+      pincode: addr.pincode,
+      latitude: addr.latitude ?? null,
+      longitude: addr.longitude ?? null,
+      is_default: addr.is_default,
+      isSaving: false,
+      error: null,
+      success: null
+    });
   };
 
   const handleSaveAddress = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentUser) return;
-    setAddressActionError(null);
+    updateAddressModal({ error: null });
 
-    const trimmedLine = addrLine.trim();
-    const trimmedPin = addrPincode.trim();
+    const trimmedLine = addressModal.address_line.trim();
+    const trimmedPin = addressModal.pincode.trim();
     if (!trimmedLine) {
-      setAddressActionError('Please enter a valid address line.');
+      updateAddressModal({ error: 'Please enter a valid address line.' });
       return;
     }
     if (!trimmedPin) {
-      setAddressActionError('Please enter a valid PIN code.');
+      updateAddressModal({ error: 'Please enter a valid PIN code.' });
       return;
     }
 
-    setIsSavingAddress(true);
+    updateAddressModal({ isSaving: true });
     try {
-      if (editingAddressId) {
-        const updated = await LaundryService.updateCustomerAddress(editingAddressId, {
-          label: addrLabel,
+      if (addressModal.editingId) {
+        const updated = await LaundryService.updateAddress(addressModal.editingId, {
+          label: addressModal.label,
           address_line: trimmedLine,
-          landmark: addrLandmark.trim() || undefined,
+          landmark: addressModal.landmark.trim() || undefined,
           pincode: trimmedPin,
-          latitude: addrLat,
-          longitude: addrLng,
-          is_default: addrIsDefault,
+          latitude: addressModal.latitude,
+          longitude: addressModal.longitude,
+          is_default: addressModal.is_default,
           user_id: currentUser.id
         });
         setAddresses((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
         if (selectedAddressId === updated.id) {
-          setRefinedAddressLine(updated.address_line);
-          setRefinedLandmark(updated.landmark || '');
-          setRefinedPincode(updated.pincode);
-          setRefinedLatitude(updated.latitude ?? null);
-          setRefinedLongitude(updated.longitude ?? null);
+          populateRefinedAddress(updated);
         }
-        setAddressActionSuccess('Address updated successfully.');
+        updateAddressModal({ success: 'Address updated successfully.' });
       } else {
-        const saved = await LaundryService.saveCustomerAddress({
+        const saved = await LaundryService.saveAddress({
           user_id: currentUser.id,
-          label: addrLabel,
+          label: addressModal.label,
           address_line: trimmedLine,
-          landmark: addrLandmark.trim() || undefined,
+          landmark: addressModal.landmark.trim() || undefined,
           pincode: trimmedPin,
-          latitude: addrLat,
-          longitude: addrLng,
-          is_default: addrIsDefault
+          latitude: addressModal.latitude,
+          longitude: addressModal.longitude,
+          is_default: addressModal.is_default
         });
         setAddresses((prev) => {
           const exists = prev.some((a) => a.id === saved.id);
           return exists ? prev.map((a) => (a.id === saved.id ? saved : a)) : [...prev, saved];
         });
-        setSelectedAddressId(saved.id);
-        setRefinedAddressLine(saved.address_line);
-        setRefinedLandmark(saved.landmark || '');
-        setRefinedPincode(saved.pincode);
-        setRefinedLatitude(saved.latitude ?? null);
-        setRefinedLongitude(saved.longitude ?? null);
-        setAddressActionSuccess('Address saved successfully.');
+        populateRefinedAddress(saved);
+        updateAddressModal({ success: 'Address saved successfully.' });
       }
       setTimeout(() => {
-        setAddressModalOpen(false);
-        setAddressActionSuccess(null);
+        updateAddressModal({ isOpen: false, success: null });
       }, 700);
     } catch (err: any) {
-      setAddressActionError(formatCustomerError(err) || 'Failed to save address.');
+      updateAddressModal({ error: formatCustomerError(err) || 'Failed to save address.' });
     } finally {
-      setIsSavingAddress(false);
+      updateAddressModal({ isSaving: false });
     }
   };
 
@@ -822,17 +917,12 @@ export const CustomerHome: React.FC = () => {
     setIsDeletingAddress(true);
     setAddressDeleteError(null);
     try {
-      await LaundryService.deleteCustomerAddress(addressToDelete.id, currentUser.id);
+      await LaundryService.deleteAddress(addressToDelete.id, currentUser.id);
       setAddresses((prev) => {
         const remaining = prev.filter((a) => a.id !== addressToDelete.id);
         if (selectedAddressId === addressToDelete.id) {
           if (remaining.length > 0) {
-            setSelectedAddressId(remaining[0].id);
-            setRefinedAddressLine(remaining[0].address_line);
-            setRefinedLandmark(remaining[0].landmark || '');
-            setRefinedPincode(remaining[0].pincode);
-            setRefinedLatitude(remaining[0].latitude ?? null);
-            setRefinedLongitude(remaining[0].longitude ?? null);
+            populateRefinedAddress(remaining[0]);
           } else {
             setSelectedAddressId('');
             setIsEnteringNewAddress(true);
@@ -850,51 +940,53 @@ export const CustomerHome: React.FC = () => {
 
   // Order Pickup Location Correction Handlers
   const handleOpenOrderLocationEdit = (order: Order) => {
-    setEditingOrderLocation(order);
-    setOrderEditAddress(order.pickup_address || '');
-    setOrderEditLandmark(order.pickup_landmark || '');
-    setOrderEditPincode(order.pickup_pincode || '560038');
-    setOrderEditLat(order.pickup_latitude ?? null);
-    setOrderEditLng(order.pickup_longitude ?? null);
-    setOrderLocationError(null);
-    setOrderLocationSuccess(null);
+    setOrderLocationModal({
+      order,
+      address: order.pickup_address || '',
+      landmark: order.pickup_landmark || '',
+      pincode: order.pickup_pincode || '560038',
+      latitude: order.pickup_latitude ?? null,
+      longitude: order.pickup_longitude ?? null,
+      isSaving: false,
+      error: null,
+      success: null
+    });
   };
 
   const handleSaveOrderLocation = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingOrderLocation) return;
-    setOrderLocationError(null);
+    if (!orderLocationModal.order) return;
+    updateOrderLocationModal({ error: null });
 
-    const trimmedAddress = orderEditAddress.trim();
-    const trimmedPin = orderEditPincode.trim();
+    const trimmedAddress = orderLocationModal.address.trim();
+    const trimmedPin = orderLocationModal.pincode.trim();
     if (!trimmedAddress) {
-      setOrderLocationError('Please enter a valid pickup address.');
+      updateOrderLocationModal({ error: 'Please enter a valid pickup address.' });
       return;
     }
     if (!trimmedPin) {
-      setOrderLocationError('Please enter a valid PIN code.');
+      updateOrderLocationModal({ error: 'Please enter a valid PIN code.' });
       return;
     }
 
-    setIsSavingOrderLocation(true);
+    updateOrderLocationModal({ isSaving: true });
     try {
-      const updatedOrder = await LaundryService.updateOrderPickupLocation(editingOrderLocation.id, {
+      const updatedOrder = await LaundryService.updateOrderPickupLocation(orderLocationModal.order.id, {
         pickup_address: trimmedAddress,
-        pickup_landmark: orderEditLandmark.trim() || undefined,
+        pickup_landmark: orderLocationModal.landmark.trim() || undefined,
         pickup_pincode: trimmedPin,
-        pickup_latitude: orderEditLat,
-        pickup_longitude: orderEditLng
+        pickup_latitude: orderLocationModal.latitude,
+        pickup_longitude: orderLocationModal.longitude
       });
       setOrders((prev) => prev.map((o) => (o.id === updatedOrder.id ? updatedOrder : o)));
-      setOrderLocationSuccess('Pickup location updated successfully.');
+      updateOrderLocationModal({ success: 'Pickup location updated successfully.' });
       setTimeout(() => {
-        setEditingOrderLocation(null);
-        setOrderLocationSuccess(null);
+        setOrderLocationModal(DEFAULT_ORDER_LOCATION_STATE);
       }, 700);
     } catch (err: any) {
-      setOrderLocationError(formatCustomerError(err) || 'Could not update pickup location.');
+      updateOrderLocationModal({ error: formatCustomerError(err) || 'Could not update pickup location.' });
     } finally {
-      setIsSavingOrderLocation(false);
+      updateOrderLocationModal({ isSaving: false });
     }
   };
 
@@ -904,10 +996,10 @@ export const CustomerHome: React.FC = () => {
     try {
       const [s, sl, ords, srv, activeCoupons] = await Promise.all([
         LaundryService.getSettings(),
-        LaundryService.getPickupSlots(),
+        LaundryService.getSlots(),
         currentUser ? LaundryService.getCustomerOrders(currentUser.id, currentUser.phone) : [],
         LaundryService.getServices(false),
-        LaundryService.getCoupons(false)
+        LaundryService.getPublicPromotions()
       ]);
       setSettings(s);
       setServices(srv || []);
@@ -926,18 +1018,13 @@ export const CustomerHome: React.FC = () => {
 
       if (currentUser) {
         const [addrs, userFeedbacks] = await Promise.all([
-          LaundryService.getCustomerAddresses(currentUser.id),
+          LaundryService.getAddresses(currentUser.id),
           LaundryService.getFeedbackForCustomer(currentUser.id)
         ]);
         setAddresses(addrs);
         if (addrs.length > 0) {
           const def = addrs.find((a) => a.is_default) || addrs[0];
-          setSelectedAddressId(def.id);
-          setRefinedAddressLine(def.address_line);
-          setRefinedLandmark(def.landmark || '');
-          setRefinedPincode(def.pincode);
-          setRefinedLatitude(def.latitude ?? null);
-          setRefinedLongitude(def.longitude ?? null);
+          populateRefinedAddress(def);
         } else {
           setIsEnteringNewAddress(true);
         }
@@ -980,19 +1067,19 @@ export const CustomerHome: React.FC = () => {
     let longitude: number | null = null;
 
     if (isEnteringNewAddress || addresses.length === 0) {
-      if (!newAddressLine.trim()) {
+      if (!newAddress.line.trim()) {
         setBookingError('Please enter your complete pickup address');
         return;
       }
-      addressLine = newAddressLine.trim();
-      landmark = newLandmark.trim();
-      pincode = newPincode.trim() || '560001';
-      latitude = newLatitude;
-      longitude = newLongitude;
+      addressLine = newAddress.line.trim();
+      landmark = newAddress.landmark.trim();
+      pincode = newAddress.pincode.trim() || '560001';
+      latitude = newAddress.latitude;
+      longitude = newAddress.longitude;
 
       if (currentUser) {
         try {
-          const savedAddr = await LaundryService.saveCustomerAddress({
+          const savedAddr = await LaundryService.saveAddress({
             user_id: currentUser.id,
             label: 'Home',
             address_line: addressLine,
@@ -1020,19 +1107,19 @@ export const CustomerHome: React.FC = () => {
       }
 
       if (isRefiningAddress) {
-        if (!refinedAddressLine.trim()) {
+        if (!refinedAddress.line.trim()) {
           setBookingError('Please enter the refined pickup address');
           return;
         }
-        addressLine = refinedAddressLine.trim();
-        landmark = refinedLandmark.trim();
-        pincode = refinedPincode.trim() || chosen.pincode;
-        latitude = refinedLatitude ?? chosen.latitude ?? null;
-        longitude = refinedLongitude ?? chosen.longitude ?? null;
+        addressLine = refinedAddress.line.trim();
+        landmark = refinedAddress.landmark.trim();
+        pincode = refinedAddress.pincode.trim() || chosen.pincode;
+        latitude = refinedAddress.latitude ?? chosen.latitude ?? null;
+        longitude = refinedAddress.longitude ?? chosen.longitude ?? null;
 
         if (updateSavedAddressBook && currentUser) {
           try {
-            const updatedAddr = await LaundryService.updateCustomerAddress(chosen.id, {
+            const updatedAddr = await LaundryService.updateAddress(chosen.id, {
               address_line: addressLine,
               landmark,
               pincode,
@@ -1049,8 +1136,8 @@ export const CustomerHome: React.FC = () => {
         addressLine = chosen.address_line;
         landmark = chosen.landmark || '';
         pincode = chosen.pincode;
-        latitude = chosen.latitude || null;
-        longitude = chosen.longitude || null;
+        latitude = chosen.latitude ?? null;
+        longitude = chosen.longitude ?? null;
       }
     }
 
@@ -1102,7 +1189,7 @@ export const CustomerHome: React.FC = () => {
         // Apply coupon to first service order in linked batch
         const couponToApply = isFirst && appliedCoupon;
 
-        const order = await LaundryService.createOrder({
+        const order = await LaundryService.createBooking({
           customer_id: currentUser?.id,
           ...basePayloadData,
           service_id: srv.id,
@@ -1128,37 +1215,10 @@ export const CustomerHome: React.FC = () => {
       setPendingRecovery(null);
 
       // Renew submission ID for any subsequent separate booking
-      setSubmissionId(
-        typeof crypto !== 'undefined' && crypto.randomUUID
-          ? crypto.randomUUID()
-          : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
-      );
+      setSubmissionId(generateClientSubmissionId());
 
       const primaryOrder = createdOrders[0];
-      setBookingSuccessOrder(primaryOrder);
-      try {
-        sessionStorage.setItem(CONFIRMED_ORDER_KEY, JSON.stringify({
-          ...primaryOrder,
-          timestamp: Date.now()
-        }));
-      } catch {}
-
-      setOrders((prev) => {
-        const newIds = new Set(createdOrders.map((o) => o.id));
-        const filtered = prev.filter((o) => !newIds.has(o.id));
-        return [...createdOrders, ...filtered];
-      });
-      setBookingError(null);
-      handleTabChange('current');
-      setSearchParams(
-        (prev) => {
-          const p = new URLSearchParams(prev);
-          p.set('tab', 'current');
-          p.set('confirmed', primaryOrder.order_number);
-          return p;
-        },
-        { replace: true }
-      );
+      commitConfirmedBookingState(primaryOrder, createdOrders);
     } catch (err: any) {
       if (isAmbiguousNetworkError(err)) {
         // Retain pending record with 'uncertain_timeout' status
@@ -1208,38 +1268,8 @@ export const CustomerHome: React.FC = () => {
         clearPendingBooking(currentUser.id);
         setPendingRecovery(null);
         setStatusCheckOutcome(null);
-
-        setSubmissionId(
-          typeof crypto !== 'undefined' && crypto.randomUUID
-            ? crypto.randomUUID()
-            : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
-        );
-
-        setBookingSuccessOrder(existingOrder);
-        try {
-          sessionStorage.setItem(
-            CONFIRMED_ORDER_KEY,
-            JSON.stringify({
-              ...existingOrder,
-              timestamp: Date.now()
-            })
-          );
-        } catch {}
-
-        setOrders((prev) => {
-          const exists = prev.some((o) => o.id === existingOrder.id);
-          return exists ? prev : [existingOrder, ...prev];
-        });
-        handleTabChange('current');
-        setSearchParams(
-          (prev) => {
-            const p = new URLSearchParams(prev);
-            p.set('tab', 'current');
-            p.set('confirmed', existingOrder.order_number);
-            return p;
-          },
-          { replace: true }
-        );
+        setSubmissionId(generateClientSubmissionId());
+        commitConfirmedBookingState(existingOrder);
         return;
       }
 
@@ -1274,7 +1304,7 @@ export const CustomerHome: React.FC = () => {
     setBookingError(null);
 
     try {
-      const order = await LaundryService.createOrder({
+      const order = await LaundryService.createBooking({
         customer_id: currentUser.id,
         ...pendingRecovery.payload,
         client_submission_id: pendingRecovery.clientSubmissionId
@@ -1283,38 +1313,8 @@ export const CustomerHome: React.FC = () => {
       clearPendingBooking(currentUser.id);
       setPendingRecovery(null);
       setStatusCheckOutcome(null);
-
-      setSubmissionId(
-        typeof crypto !== 'undefined' && crypto.randomUUID
-          ? crypto.randomUUID()
-          : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
-      );
-
-      setBookingSuccessOrder(order);
-      try {
-        sessionStorage.setItem(
-          CONFIRMED_ORDER_KEY,
-          JSON.stringify({
-            ...order,
-            timestamp: Date.now()
-          })
-        );
-      } catch {}
-
-      setOrders((prev) => {
-        const exists = prev.some((o) => o.id === order.id);
-        return exists ? prev : [order, ...prev];
-      });
-      handleTabChange('current');
-      setSearchParams(
-        (prev) => {
-          const p = new URLSearchParams(prev);
-          p.set('tab', 'current');
-          p.set('confirmed', order.order_number);
-          return p;
-        },
-        { replace: true }
-      );
+      setSubmissionId(generateClientSubmissionId());
+      commitConfirmedBookingState(order);
     } catch (err: any) {
       if (isAmbiguousNetworkError(err)) {
         setBookingError(
@@ -1347,11 +1347,7 @@ export const CustomerHome: React.FC = () => {
     clearPendingBooking(currentUser?.id);
     setPendingRecovery(null);
     setStatusCheckOutcome(null);
-    setSubmissionId(
-      typeof crypto !== 'undefined' && crypto.randomUUID
-        ? crypto.randomUUID()
-        : `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
-    );
+    setSubmissionId(generateClientSubmissionId());
   };
 
   const currentActiveOrder =
@@ -1383,8 +1379,6 @@ export const CustomerHome: React.FC = () => {
   }, 0);
 
   const minBill = ((combinedEstimatedSubtotalPaise) / 100).toFixed(0);
-  const pricePerKg = serviceRateStr;
-  const minWeight = effectiveMinWeight.toString();
 
   const handleApplyCoupon = async (codeOverride?: string, e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -1443,6 +1437,228 @@ export const CustomerHome: React.FC = () => {
       handleApplyCoupon(couponQueryParam);
     }
   }, [couponQueryParam]);
+
+  // Internal JSX Helpers for Address Input & Map Pin Box Consolidation (Stage 3C)
+  const renderAddressInputFields = (cfg: {
+    line: string;
+    landmark: string;
+    pincode: string;
+    onLineChange: (val: string) => void;
+    onLandmarkChange: (val: string) => void;
+    onPincodeChange: (val: string) => void;
+    lineLabel?: React.ReactNode;
+    landmarkLabel?: React.ReactNode;
+    pincodeLabel?: React.ReactNode;
+    labelClass?: string;
+    linePlaceholder?: string;
+    landmarkPlaceholder?: string;
+    pincodePlaceholder?: string;
+    required?: boolean;
+    pinRequired?: boolean;
+    pinMaxLength?: number;
+    inputClass?: string;
+    subInputClass?: string;
+    middleSlot?: React.ReactNode;
+  }) => {
+    const lblClass = cfg.labelClass || 'block font-bold text-slate-700 mb-1';
+    const mainClass = cfg.inputClass || 'w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-medium';
+    const subClass = cfg.subInputClass || cfg.inputClass || 'w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500';
+
+    return (
+      <>
+        <div>
+          {cfg.lineLabel && <label className={lblClass}>{cfg.lineLabel}</label>}
+          <input
+            type="text"
+            placeholder={cfg.linePlaceholder}
+            value={cfg.line}
+            onChange={(e) => cfg.onLineChange(e.target.value)}
+            className={mainClass}
+            required={cfg.required}
+          />
+        </div>
+
+        {cfg.middleSlot}
+
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            {cfg.landmarkLabel && <label className={lblClass}>{cfg.landmarkLabel}</label>}
+            <input
+              type="text"
+              placeholder={cfg.landmarkPlaceholder}
+              value={cfg.landmark}
+              onChange={(e) => cfg.onLandmarkChange(e.target.value)}
+              className={subClass}
+            />
+          </div>
+          <div>
+            {cfg.pincodeLabel && <label className={lblClass}>{cfg.pincodeLabel}</label>}
+            <input
+              type="text"
+              maxLength={cfg.pinMaxLength}
+              placeholder={cfg.pincodePlaceholder}
+              value={cfg.pincode}
+              onChange={(e) => cfg.onPincodeChange(e.target.value)}
+              className={`${subClass} font-mono`}
+              required={cfg.pinRequired}
+            />
+          </div>
+        </div>
+      </>
+    );
+  };
+
+  const renderMapPinBox = (
+    lat: number | null,
+    lng: number | null,
+    target: 'booking_refine' | 'address_modal' | 'order_edit',
+    addressContext: string,
+    title: string,
+    options?: {
+      label?: string;
+      fallbackText?: string;
+      buttonText?: string;
+      cardStyle?: boolean;
+    }
+  ) => {
+    const hasPin = Boolean(lat && lng);
+    const cardStyle = options?.cardStyle ?? true;
+    const buttonLabel = options?.buttonText || (hasPin ? 'Change Pin' : 'Set Pin on Map');
+
+    return (
+      <div className={`flex items-center justify-between ${cardStyle ? 'p-3 bg-slate-50 rounded-2xl border border-slate-200' : 'pt-1'}`}>
+        <div className={cardStyle ? 'space-y-0.5' : 'text-[11px] text-slate-600 font-mono'}>
+          {cardStyle && options?.label && (
+            <span className="block font-bold text-slate-700">{options.label}</span>
+          )}
+          <span className={`block font-mono ${cardStyle ? 'text-[11px] text-slate-500' : hasPin ? 'text-emerald-700 font-semibold' : 'text-slate-400'}`}>
+            {hasPin ? (cardStyle ? `${lat!.toFixed(4)}, ${lng!.toFixed(4)}` : `📍 Pin: ${lat!.toFixed(4)}, ${lng!.toFixed(4)}`) : (options?.fallbackText || 'Not pinned yet')}
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => setMapPickerState({
+            isOpen: true,
+            target,
+            initialLat: lat,
+            initialLng: lng,
+            addressContext,
+            title
+          })}
+          className={`py-1.5 px-3 bg-white text-brand-700 font-bold border border-brand-300 flex items-center gap-1.5 cursor-pointer shadow-sm transition ${
+            cardStyle ? 'hover:bg-slate-100 rounded-xl text-xs' : 'hover:bg-slate-50 rounded-lg text-[11px]'
+          }`}
+        >
+          <Navigation className="w-3.5 h-3.5 text-brand-600" />
+          <span>{buttonLabel}</span>
+        </button>
+      </div>
+    );
+  };
+
+  const renderModalFooter = (cfg: {
+    onCancel: () => void;
+    submitLabel: string;
+    loadingLabel?: string;
+    isSubmitting: boolean;
+    submitTestId?: string;
+    submitVariant?: 'brand' | 'danger';
+    submitType?: 'submit' | 'button';
+    onSubmitClick?: () => void;
+    icon?: React.ReactNode;
+  }) => {
+    const isDanger = cfg.submitVariant === 'danger';
+    const bgClass = isDanger ? 'bg-red-600 hover:bg-red-700 px-4' : 'bg-brand-600 hover:bg-brand-700 px-5';
+
+    return (
+      <div className="flex items-center gap-2 pt-2 justify-end">
+        <button
+          type="button"
+          onClick={cfg.onCancel}
+          className="py-2.5 px-4 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 transition cursor-pointer"
+        >
+          Cancel
+        </button>
+        <button
+          type={cfg.submitType || 'submit'}
+          onClick={cfg.onSubmitClick}
+          disabled={cfg.isSubmitting}
+          className={`py-2.5 ${bgClass} text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50`}
+          data-testid={cfg.submitTestId}
+        >
+          {cfg.isSubmitting ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            cfg.icon || null
+          )}
+          <span>{cfg.isSubmitting ? (cfg.loadingLabel || 'Saving...') : cfg.submitLabel}</span>
+        </button>
+      </div>
+    );
+  };
+
+  const renderModalShell = (cfg: {
+    testId?: string;
+    maxWidth?: 'max-w-lg' | 'max-w-md' | 'max-w-sm';
+    icon?: React.ReactNode;
+    title: React.ReactNode;
+    subtitle?: React.ReactNode;
+    error?: string | null;
+    success?: string | null;
+    notice?: React.ReactNode;
+    onClose?: () => void;
+    children: React.ReactNode;
+  }) => {
+    const alignClass = !cfg.icon && cfg.subtitle ? 'items-start' : 'items-center';
+
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
+        data-testid={cfg.testId}
+      >
+        <div className={`bg-white rounded-3xl w-full ${cfg.maxWidth || 'max-w-lg'} shadow-2xl border border-slate-200 p-6 space-y-4 text-xs`}>
+          <div className={`flex justify-between ${alignClass} ${cfg.onClose ? 'pb-2 border-b border-slate-100' : ''}`}>
+            <div className={`flex ${cfg.icon && cfg.maxWidth === 'max-w-sm' ? 'items-center gap-3' : 'items-center gap-2'}`}>
+              {cfg.icon}
+              <div>
+                <h3 className="font-black text-sm text-slate-900">{cfg.title}</h3>
+                {cfg.subtitle && (
+                  <p className="text-[11px] text-slate-500 mt-0.5">{cfg.subtitle}</p>
+                )}
+              </div>
+            </div>
+            {cfg.onClose && (
+              <button
+                type="button"
+                onClick={cfg.onClose}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 cursor-pointer shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {cfg.notice}
+
+          {cfg.error && (
+            <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+              <span>{cfg.error}</span>
+            </div>
+          )}
+
+          {cfg.success && (
+            <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-xl flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+              <span>{cfg.success}</span>
+            </div>
+          )}
+
+          {cfg.children}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-28 sm:pb-24 md:pb-12">
@@ -2108,69 +2324,31 @@ export const CustomerHome: React.FC = () => {
                                   Refine Address for this Pickup
                                 </span>
                                 <div>
-                                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                                    Door / Flat No., Building, Street
-                                  </label>
-                                  <input
-                                    type="text"
-                                    placeholder="e.g. Flat 301, Tower B, 12th Main Rd"
-                                    value={refinedAddressLine}
-                                    onChange={(e) => setRefinedAddressLine(e.target.value)}
-                                    className="w-full px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 bg-white"
-                                  />
-                                </div>
-                                <div className="grid grid-cols-2 gap-2">
-                                  <div>
-                                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                                      Landmark
-                                    </label>
-                                    <input
-                                      type="text"
-                                      placeholder="e.g. Opposite Park"
-                                      value={refinedLandmark}
-                                      onChange={(e) => setRefinedLandmark(e.target.value)}
-                                      className="w-full px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 bg-white"
-                                    />
-                                  </div>
-                                  <div>
-                                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                                      PIN Code
-                                    </label>
-                                    <input
-                                      type="text"
-                                      placeholder="e.g. 560038"
-                                      value={refinedPincode}
-                                      onChange={(e) => setRefinedPincode(e.target.value)}
-                                      className="w-full px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono bg-white"
-                                    />
-                                  </div>
-                                </div>
+                                  {renderAddressInputFields({
+                                    line: refinedAddress.line,
+                                    landmark: refinedAddress.landmark,
+                                    pincode: refinedAddress.pincode,
+                                    onLineChange: (val) => updateRefinedAddress({ line: val }),
+                                    onLandmarkChange: (val) => updateRefinedAddress({ landmark: val }),
+                                    onPincodeChange: (val) => updateRefinedAddress({ pincode: val }),
+                                    lineLabel: 'Door / Flat No., Building, Street',
+                                    landmarkLabel: 'Landmark',
+                                    pincodeLabel: 'PIN Code',
+                                    labelClass: 'block text-[11px] font-bold text-slate-700 mb-1',
+                                    linePlaceholder: 'e.g. Flat 301, Tower B, 12th Main Rd',
+                                    landmarkPlaceholder: 'e.g. Opposite Park',
+                                    pincodePlaceholder: 'e.g. 560038',
+                                    inputClass: 'w-full px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 bg-white'
+                                  })}
 
-                                <div className="flex items-center justify-between pt-1">
-                                  <div className="text-[11px] text-slate-600 font-mono">
-                                    {refinedLatitude && refinedLongitude ? (
-                                      <span className="text-emerald-700 font-semibold">
-                                        📍 Pin: {refinedLatitude.toFixed(4)}, {refinedLongitude.toFixed(4)}
-                                      </span>
-                                    ) : (
-                                      <span className="text-slate-400">No map pin set</span>
-                                    )}
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => setMapPickerState({
-                                      isOpen: true,
-                                      target: 'booking_refine',
-                                      initialLat: refinedLatitude,
-                                      initialLng: refinedLongitude,
-                                      addressContext: refinedAddressLine || addr.address_line,
-                                      title: 'Adjust Pickup Pin for Refined Address'
-                                    })}
-                                    className="py-1.5 px-3 bg-white hover:bg-slate-50 text-brand-700 font-bold rounded-lg border border-brand-300 text-[11px] flex items-center gap-1.5 cursor-pointer shadow-sm"
-                                  >
-                                    <Navigation className="w-3.5 h-3.5 text-brand-600" />
-                                    <span>Adjust on Map</span>
-                                  </button>
+                                  {renderMapPinBox(
+                                    refinedAddress.latitude,
+                                    refinedAddress.longitude,
+                                    'booking_refine',
+                                    refinedAddress.line || addr.address_line,
+                                    'Adjust Pickup Pin for Refined Address',
+                                    { cardStyle: false, fallbackText: 'No map pin set', buttonText: 'Adjust on Map' }
+                                  )}
                                 </div>
 
                                 <label className="flex items-center gap-2 pt-1 text-xs font-semibold text-slate-700 cursor-pointer">
@@ -2190,88 +2368,80 @@ export const CustomerHome: React.FC = () => {
                     </div>
                   ) : (
                     <div className="space-y-2 text-xs">
-                      <input
-                        type="text"
-                        placeholder="House / Flat No., Apartment, Street name"
-                        value={newAddressLine}
-                        onChange={(e) => setNewAddressLine(e.target.value)}
-                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-medium bg-white"
-                        required
-                      />
-                      <div className="space-y-1.5 pt-0.5">
-                        <div className="flex items-center justify-between flex-wrap gap-2">
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={handleGetCurrentLocation}
-                              disabled={isLocating}
-                              className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 disabled:opacity-50 px-3 py-1.5 rounded-lg border border-brand-200 transition cursor-pointer"
-                            >
-                              <MapPin className="w-3.5 h-3.5 text-brand-600" />
-                              <span>{isLocating ? 'Acquiring GPS...' : '📍 Use current location'}</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setMapPickerState({
-                                isOpen: true,
-                                target: 'booking_new',
-                                initialLat: newLatitude,
-                                initialLng: newLongitude,
-                                addressContext: newAddressLine || 'New Address',
-                                title: 'Pin Exact Doorstep on Map'
-                              })}
-                              className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 px-3 py-1.5 rounded-lg border border-brand-200 transition cursor-pointer"
-                            >
-                              <Navigation className="w-3.5 h-3.5 text-brand-600" />
-                              <span>Adjust Pin on Map</span>
-                            </button>
-                          </div>
-                          {newLatitude && newLongitude && (
-                            <div className="flex items-center gap-2">
-                              <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
-                                ✓ GPS Attached
-                              </span>
-                              <button
-                                type="button"
-                                onClick={handleClearLocation}
-                                className="text-[10px] text-slate-400 hover:text-slate-600 underline cursor-pointer"
-                              >
-                                Remove
-                              </button>
+                      {renderAddressInputFields({
+                        line: newAddress.line,
+                        landmark: newAddress.landmark,
+                        pincode: newAddress.pincode,
+                        onLineChange: (val) => updateNewAddress({ line: val }),
+                        onLandmarkChange: (val) => updateNewAddress({ landmark: val }),
+                        onPincodeChange: (val) => updateNewAddress({ pincode: val }),
+                        linePlaceholder: 'House / Flat No., Apartment, Street name',
+                        landmarkPlaceholder: 'Landmark (e.g. Near Metro)',
+                        pincodePlaceholder: 'PIN Code (e.g. 560103)',
+                        required: true,
+                        pinRequired: true,
+                        inputClass: 'w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-medium bg-white',
+                        subInputClass: 'w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 bg-white',
+                        middleSlot: (
+                          <div className="space-y-1.5 pt-0.5">
+                            <div className="flex items-center justify-between flex-wrap gap-2">
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={handleGetCurrentLocation}
+                                  disabled={isLocating}
+                                  className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 disabled:opacity-50 px-3 py-1.5 rounded-lg border border-brand-200 transition cursor-pointer"
+                                >
+                                  <MapPin className="w-3.5 h-3.5 text-brand-600" />
+                                  <span>{isLocating ? 'Acquiring GPS...' : '📍 Use current location'}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setMapPickerState({
+                                    isOpen: true,
+                                    target: 'booking_new',
+                                    initialLat: newAddress.latitude,
+                                    initialLng: newAddress.longitude,
+                                    addressContext: newAddress.line || 'New Address',
+                                    title: 'Pin Exact Doorstep on Map'
+                                  })}
+                                  className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 px-3 py-1.5 rounded-lg border border-brand-200 transition cursor-pointer"
+                                >
+                                  <Navigation className="w-3.5 h-3.5 text-brand-600" />
+                                  <span>Adjust Pin on Map</span>
+                                </button>
+                              </div>
+                              {newAddress.latitude && newAddress.longitude && (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
+                                    ✓ GPS Attached
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={handleClearLocation}
+                                    className="text-[10px] text-slate-400 hover:text-slate-600 underline cursor-pointer"
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              )}
                             </div>
-                          )}
-                        </div>
-                        {locationFeedback && (
-                          <p
-                            className={`text-[11px] leading-tight ${
-                              locationFeedback.type === 'success'
-                                ? 'text-emerald-700 font-medium'
-                                : locationFeedback.type === 'loading'
-                                ? 'text-brand-600 animate-pulse'
-                                : 'text-amber-700'
-                            }`}
-                          >
-                            {locationFeedback.message}
-                          </p>
-                        )}
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <input
-                          type="text"
-                          placeholder="Landmark (e.g. Near Metro)"
-                          value={newLandmark}
-                          onChange={(e) => setNewLandmark(e.target.value)}
-                          className="w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 bg-white"
-                        />
-                        <input
-                          type="text"
-                          placeholder="PIN Code (e.g. 560103)"
-                          value={newPincode}
-                          onChange={(e) => setNewPincode(e.target.value)}
-                          className="w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono bg-white"
-                          required
-                        />
-                      </div>
+                            {locationFeedback && (
+                              <p
+                                className={`text-[11px] leading-tight ${
+                                  locationFeedback.type === 'success'
+                                    ? 'text-emerald-700 font-medium'
+                                    : locationFeedback.type === 'loading'
+                                    ? 'text-brand-600 animate-pulse'
+                                    : 'text-amber-700'
+                                }`}
+                              >
+                                {locationFeedback.message}
+                              </p>
+                            )}
+                          </div>
+                        )
+                      })}
                     </div>
                   )}
 
@@ -2339,12 +2509,12 @@ export const CustomerHome: React.FC = () => {
                       </span>
                       <p className="font-medium text-slate-900 text-xs">
                         Address: {isEnteringNewAddress || addresses.length === 0
-                          ? newAddressLine
-                          : (isRefiningAddress ? refinedAddressLine : addresses.find((a) => a.id === selectedAddressId)?.address_line)}
+                          ? newAddress.line
+                          : (isRefiningAddress ? refinedAddress.line : addresses.find((a) => a.id === selectedAddressId)?.address_line)}
                       </p>
                       <span className="text-[11px] text-slate-500">
-                        PIN: {isEnteringNewAddress || addresses.length === 0 ? newPincode : (isRefiningAddress ? refinedPincode : addresses.find((a) => a.id === selectedAddressId)?.pincode)}
-                        {(newLandmark || refinedLandmark || addresses.find((a) => a.id === selectedAddressId)?.landmark) ? ` • Landmark: ${newLandmark || refinedLandmark || addresses.find((a) => a.id === selectedAddressId)?.landmark}` : ''}
+                        PIN: {isEnteringNewAddress || addresses.length === 0 ? newAddress.pincode : (isRefiningAddress ? refinedAddress.pincode : addresses.find((a) => a.id === selectedAddressId)?.pincode)}
+                        {(newAddress.landmark || refinedAddress.landmark || addresses.find((a) => a.id === selectedAddressId)?.landmark) ? ` • Landmark: ${newAddress.landmark || refinedAddress.landmark || addresses.find((a) => a.id === selectedAddressId)?.landmark}` : ''}
                       </span>
                     </div>
                   </div>
@@ -2419,7 +2589,7 @@ export const CustomerHome: React.FC = () => {
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                               {availablePromotions.map((promo) => (
                                 <div
-                                  key={promo.id}
+                                  key={promo.code}
                                   className="bg-white border border-slate-200 hover:border-brand-300 rounded-xl p-2.5 flex items-center justify-between gap-2 transition shadow-2xs"
                                 >
                                   <div className="min-w-0">
@@ -3685,474 +3855,274 @@ export const CustomerHome: React.FC = () => {
       />
 
       {/* Saved Address Add / Edit Modal */}
-      {addressModalOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
-          data-testid="address-form-modal"
-        >
-          <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl border border-slate-200 p-6 space-y-4 text-xs">
-            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center">
-                  <MapPin className="w-4 h-4" />
-                </div>
-                <h3 className="font-black text-sm text-slate-900">
-                  {editingAddressId ? 'Edit Saved Address' : 'Add New Delivery Address'}
-                </h3>
+      {addressModal.isOpen && renderModalShell({
+        testId: 'address-form-modal',
+        maxWidth: 'max-w-lg',
+        icon: (
+          <div className="w-8 h-8 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center shrink-0">
+            <MapPin className="w-4 h-4" />
+          </div>
+        ),
+        title: addressModal.editingId ? 'Edit Saved Address' : 'Add New Delivery Address',
+        error: addressModal.error,
+        success: addressModal.success,
+        onClose: () => updateAddressModal({ isOpen: false }),
+        children: (
+          <form onSubmit={handleSaveAddress} className="space-y-3.5">
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">Address Label</label>
+              <div className="flex gap-2">
+                {['Home', 'Work', 'Other'].map((lbl) => (
+                  <button
+                    type="button"
+                    key={lbl}
+                    onClick={() => updateAddressModal({ label: lbl })}
+                    className={`py-1.5 px-3 rounded-xl border text-xs font-bold transition cursor-pointer ${
+                      addressModal.label === lbl
+                        ? 'border-brand-600 bg-brand-50 text-brand-700 ring-2 ring-brand-500/20'
+                        : 'border-slate-200 hover:bg-slate-50 text-slate-600'
+                    }`}
+                  >
+                    {lbl}
+                  </button>
+                ))}
               </div>
-              <button
-                type="button"
-                onClick={() => setAddressModalOpen(false)}
-                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
             </div>
 
-            {addressActionError && (
-              <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
-                <span>{addressActionError}</span>
-              </div>
+            {renderAddressInputFields({
+              line: addressModal.address_line,
+              landmark: addressModal.landmark,
+              pincode: addressModal.pincode,
+              onLineChange: (val) => updateAddressModal({ address_line: val }),
+              onLandmarkChange: (val) => updateAddressModal({ landmark: val }),
+              onPincodeChange: (val) => updateAddressModal({ pincode: val }),
+              lineLabel: <>Door / Flat No., Building, Street <span className="text-red-500">*</span></>,
+              landmarkLabel: 'Landmark (Optional)',
+              pincodeLabel: <>PIN Code <span className="text-red-500">*</span></>,
+              linePlaceholder: 'e.g. Flat 402, Green Glen Layout, Bellandur',
+              landmarkPlaceholder: 'e.g. Near Central Mall',
+              pincodePlaceholder: 'e.g. 560103',
+              required: true,
+              pinRequired: true
+            })}
+
+            {renderMapPinBox(
+              addressModal.latitude,
+              addressModal.longitude,
+              'address_modal',
+              addressModal.address_line,
+              'Pin Address on Map',
+              { label: 'Map Location Pin', fallbackText: 'Not pinned yet' }
             )}
 
-            {addressActionSuccess && (
-              <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-xl flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
-                <span>{addressActionSuccess}</span>
-              </div>
-            )}
+            <label className="flex items-center gap-2 pt-1 text-xs font-semibold text-slate-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={addressModal.is_default}
+                onChange={(e) => updateAddressModal({ is_default: e.target.checked })}
+                className="rounded text-brand-600 focus:ring-brand-500"
+              />
+              <span>Set as my default pickup address</span>
+            </label>
 
-            <form onSubmit={handleSaveAddress} className="space-y-3.5">
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">Address Label</label>
-                <div className="flex gap-2">
-                  {['Home', 'Work', 'Other'].map((lbl) => (
-                    <button
-                      type="button"
-                      key={lbl}
-                      onClick={() => setAddrLabel(lbl)}
-                      className={`py-1.5 px-3 rounded-xl border text-xs font-bold transition cursor-pointer ${
-                        addrLabel === lbl
-                          ? 'border-brand-600 bg-brand-50 text-brand-700 ring-2 ring-brand-500/20'
-                          : 'border-slate-200 hover:bg-slate-50 text-slate-600'
-                      }`}
-                    >
-                      {lbl}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">
-                  Door / Flat No., Building, Street <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Flat 402, Green Glen Layout, Bellandur"
-                  value={addrLine}
-                  onChange={(e) => setAddrLine(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-medium"
-                  required
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">Landmark (Optional)</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Near Central Mall"
-                    value={addrLandmark}
-                    onChange={(e) => setAddrLandmark(e.target.value)}
-                    className="w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500"
-                  />
-                </div>
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    PIN Code <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. 560103"
-                    value={addrPincode}
-                    onChange={(e) => setAddrPincode(e.target.value)}
-                    className="w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl border border-slate-200">
-                <div className="space-y-0.5">
-                  <span className="block font-bold text-slate-700">Map Location Pin</span>
-                  <span className="block text-[11px] text-slate-500 font-mono">
-                    {addrLat && addrLng
-                      ? `${addrLat.toFixed(4)}, ${addrLng.toFixed(4)}`
-                      : 'Not pinned yet'}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setMapPickerState({
-                    isOpen: true,
-                    target: 'address_modal',
-                    initialLat: addrLat,
-                    initialLng: addrLng,
-                    addressContext: addrLine,
-                    title: 'Pin Address on Map'
-                  })}
-                  className="py-1.5 px-3 bg-white hover:bg-slate-100 text-brand-700 border border-brand-300 rounded-xl font-bold text-xs flex items-center gap-1.5 transition cursor-pointer shadow-sm"
-                >
-                  <Navigation className="w-3.5 h-3.5 text-brand-600" />
-                  <span>{addrLat && addrLng ? 'Change Pin' : 'Set Pin on Map'}</span>
-                </button>
-              </div>
-
-              <label className="flex items-center gap-2 pt-1 text-xs font-semibold text-slate-700 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={addrIsDefault}
-                  onChange={(e) => setAddrIsDefault(e.target.checked)}
-                  className="rounded text-brand-600 focus:ring-brand-500"
-                />
-                <span>Set as my default pickup address</span>
-              </label>
-
-              <div className="flex items-center gap-2 pt-2 justify-end">
-                <button
-                  type="button"
-                  onClick={() => setAddressModalOpen(false)}
-                  className="py-2.5 px-4 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 transition cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingAddress}
-                  className="py-2.5 px-5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                  data-testid="save-address-button"
-                >
-                  {isSavingAddress ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                  <span>{isSavingAddress ? 'Saving...' : 'Save Address'}</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+            {renderModalFooter({
+              onCancel: () => updateAddressModal({ isOpen: false }),
+              submitLabel: 'Save Address',
+              loadingLabel: 'Saving...',
+              isSubmitting: addressModal.isSaving,
+              submitTestId: 'save-address-button'
+            })}
+          </form>
+        )
+      })}
 
       {/* Delete Address Confirmation Modal */}
-      {addressToDelete && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
-          data-testid="delete-address-modal"
-        >
-          <div className="bg-white rounded-3xl w-full max-w-sm shadow-2xl border border-slate-200 p-6 space-y-4 text-xs">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-2xl bg-red-50 text-red-600 flex items-center justify-center shrink-0">
-                <Trash2 className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="font-black text-sm text-slate-900">Delete Saved Address</h3>
-                <p className="text-[11px] text-slate-500">This action cannot be undone.</p>
-              </div>
-            </div>
-
+      {addressToDelete && renderModalShell({
+        testId: 'delete-address-modal',
+        maxWidth: 'max-w-sm',
+        icon: (
+          <div className="w-10 h-10 rounded-2xl bg-red-50 text-red-600 flex items-center justify-center shrink-0">
+            <Trash2 className="w-5 h-5" />
+          </div>
+        ),
+        title: 'Delete Saved Address',
+        subtitle: 'This action cannot be undone.',
+        error: addressDeleteError,
+        children: (
+          <>
             <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-slate-700 space-y-0.5">
               <span className="font-bold text-slate-900 block">{addressToDelete.label}</span>
               <p className="text-slate-600">{addressToDelete.address_line}</p>
               <span className="text-[11px] text-slate-400 font-mono">PIN: {addressToDelete.pincode}</span>
             </div>
 
-            {addressDeleteError && (
-              <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-xs flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
-                <span>{addressDeleteError}</span>
-              </div>
-            )}
-
-            <div className="flex items-center gap-2 pt-2 justify-end">
-              <button
-                type="button"
-                onClick={() => {
-                  setAddressToDelete(null);
-                  setAddressDeleteError(null);
-                }}
-                className="py-2.5 px-4 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 transition cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmDeleteAddress}
-                disabled={isDeletingAddress}
-                className="py-2.5 px-4 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                data-testid="confirm-delete-address-button"
-              >
-                {isDeletingAddress ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-                <span>{isDeletingAddress ? 'Deleting...' : 'Delete Address'}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+            {renderModalFooter({
+              onCancel: () => {
+                setAddressToDelete(null);
+                setAddressDeleteError(null);
+              },
+              submitLabel: 'Delete Address',
+              loadingLabel: 'Deleting...',
+              isSubmitting: isDeletingAddress,
+              submitTestId: 'confirm-delete-address-button',
+              submitVariant: 'danger',
+              submitType: 'button',
+              onSubmitClick: handleConfirmDeleteAddress,
+              icon: <Trash2 className="w-4 h-4" />
+            })}
+          </>
+        )
+      })}
 
       {/* Order Pickup Location Correction Modal (Phase 3) */}
-      {editingOrderLocation && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
-          data-testid="edit-order-location-modal"
-        >
-          <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl border border-slate-200 p-6 space-y-4 text-xs">
-            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center">
-                  <MapPin className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="font-black text-sm text-slate-900">
-                    Correct Pickup Location
-                  </h3>
-                  <p className="text-[11px] text-slate-500">Order #{editingOrderLocation.order_number}</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setEditingOrderLocation(null)}
-                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-3 bg-blue-50 border border-blue-200 text-blue-900 rounded-xl text-[11px] leading-relaxed">
-              <strong>Order in Booked Status:</strong> You may adjust your pickup address, landmark, PIN code, or GPS pin before our pickup associate is dispatched.
-            </div>
-
-            {orderLocationError && (
-              <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
-                <span>{orderLocationError}</span>
-              </div>
-            )}
-
-            {orderLocationSuccess && (
-              <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-xl flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
-                <span>{orderLocationSuccess}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleSaveOrderLocation} className="space-y-3.5">
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">
-                  Pickup Address (Flat, Building, Street) <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Flat 402, Green Glen Layout, Bellandur"
-                  value={orderEditAddress}
-                  onChange={(e) => setOrderEditAddress(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-medium"
-                  required
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">Landmark (Optional)</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Near Central Mall"
-                    value={orderEditLandmark}
-                    onChange={(e) => setOrderEditLandmark(e.target.value)}
-                    className="w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500"
-                  />
-                </div>
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    PIN Code <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. 560103"
-                    value={orderEditPincode}
-                    onChange={(e) => setOrderEditPincode(e.target.value)}
-                    className="w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl border border-slate-200">
-                <div className="space-y-0.5">
-                  <span className="block font-bold text-slate-700">Doorstep Map Pin</span>
-                  <span className="block text-[11px] text-slate-500 font-mono">
-                    {orderEditLat && orderEditLng
-                      ? `${orderEditLat.toFixed(4)}, ${orderEditLng.toFixed(4)}`
-                      : 'No GPS pin attached'}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setMapPickerState({
-                    isOpen: true,
-                    target: 'order_edit',
-                    initialLat: orderEditLat,
-                    initialLng: orderEditLng,
-                    addressContext: orderEditAddress,
-                    title: 'Correct Order Pickup Pin'
-                  })}
-                  className="py-1.5 px-3 bg-white hover:bg-slate-100 text-brand-700 border border-brand-300 rounded-xl font-bold text-xs flex items-center gap-1.5 transition cursor-pointer shadow-sm"
-                >
-                  <Navigation className="w-3.5 h-3.5 text-brand-600" />
-                  <span>{orderEditLat && orderEditLng ? 'Adjust Pin' : 'Set Pin on Map'}</span>
-                </button>
-              </div>
-
-              <div className="flex items-center gap-2 pt-2 justify-end">
-                <button
-                  type="button"
-                  onClick={() => setEditingOrderLocation(null)}
-                  className="py-2.5 px-4 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 transition cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingOrderLocation}
-                  className="py-2.5 px-5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                  data-testid="save-order-location-button"
-                >
-                  {isSavingOrderLocation ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                  <span>{isSavingOrderLocation ? 'Updating...' : 'Save Changes'}</span>
-                </button>
-              </div>
-            </form>
+      {orderLocationModal.order && renderModalShell({
+        testId: 'edit-order-location-modal',
+        maxWidth: 'max-w-lg',
+        icon: (
+          <div className="w-8 h-8 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center shrink-0">
+            <MapPin className="w-4 h-4" />
           </div>
-        </div>
-      )}
+        ),
+        title: 'Correct Pickup Location',
+        subtitle: `Order #${orderLocationModal.order.order_number}`,
+        notice: (
+          <div className="p-3 bg-blue-50 border border-blue-200 text-blue-900 rounded-xl text-[11px] leading-relaxed">
+            <strong>Order in Booked Status:</strong> You may adjust your pickup address, landmark, PIN code, or GPS pin before our pickup associate is dispatched.
+          </div>
+        ),
+        error: orderLocationModal.error,
+        success: orderLocationModal.success,
+        onClose: () => updateOrderLocationModal({ order: null }),
+        children: (
+          <form onSubmit={handleSaveOrderLocation} className="space-y-3.5">
+            {renderAddressInputFields({
+              line: orderLocationModal.address,
+              landmark: orderLocationModal.landmark,
+              pincode: orderLocationModal.pincode,
+              onLineChange: (val) => updateOrderLocationModal({ address: val }),
+              onLandmarkChange: (val) => updateOrderLocationModal({ landmark: val }),
+              onPincodeChange: (val) => updateOrderLocationModal({ pincode: val }),
+              lineLabel: <>Pickup Address (Flat, Building, Street) <span className="text-red-500">*</span></>,
+              landmarkLabel: 'Landmark (Optional)',
+              pincodeLabel: <>PIN Code <span className="text-red-500">*</span></>,
+              linePlaceholder: 'e.g. Flat 402, Green Glen Layout, Bellandur',
+              landmarkPlaceholder: 'e.g. Near Central Mall',
+              pincodePlaceholder: 'e.g. 560103',
+              required: true,
+              pinRequired: true
+            })}
+
+            {renderMapPinBox(
+              orderLocationModal.latitude,
+              orderLocationModal.longitude,
+              'order_edit',
+              orderLocationModal.address,
+              'Correct Order Pickup Pin',
+              {
+                label: 'Doorstep Map Pin',
+                fallbackText: 'No GPS pin attached',
+                buttonText: orderLocationModal.latitude && orderLocationModal.longitude ? 'Adjust Pin' : 'Set Pin on Map'
+              }
+            )}
+
+            {renderModalFooter({
+              onCancel: () => updateOrderLocationModal({ order: null }),
+              submitLabel: 'Save Changes',
+              loadingLabel: 'Updating...',
+              isSubmitting: orderLocationModal.isSaving,
+              submitTestId: 'save-order-location-button'
+            })}
+          </form>
+        )
+      })}
 
       {/* Post-Google-Login Customer Onboarding Modal (Phone & Default Address) */}
-      {isOnboardingModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl border border-slate-200 p-6 space-y-4 text-xs">
-            <div className="flex justify-between items-start pb-2 border-b">
-              <div>
-                <h3 className="font-black text-sm text-slate-900">Complete Your Delivery Profile</h3>
-                <p className="text-slate-500 text-[11px] mt-0.5">
-                  Welcome to SuperWash! Please provide your mobile number for pickup coordination.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsOnboardingModalOpen(false)}
-                className="p-1 hover:bg-slate-100 rounded-full text-slate-400"
-              >
-                <X className="w-4 h-4" />
-              </button>
+      {onboardingModal.isOpen && renderModalShell({
+        maxWidth: 'max-w-md',
+        title: 'Complete Your Delivery Profile',
+        subtitle: 'Welcome to SuperWash! Please provide your mobile number for pickup coordination.',
+        error: onboardingModal.error,
+        onClose: () => updateOnboardingModal({ isOpen: false }),
+        children: (
+          <form onSubmit={handleSaveOnboarding} className="space-y-3.5">
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">Full Name</label>
+              <input
+                type="text"
+                value={onboardingModal.name}
+                onChange={(e) => updateOnboardingModal({ name: e.target.value })}
+                className="w-full px-3 py-2 rounded-xl border border-slate-300 font-semibold text-slate-900"
+                required
+              />
             </div>
 
-            {onboardingError && (
-              <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
-                <span>{onboardingError}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleSaveOnboarding} className="space-y-3.5">
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">Full Name</label>
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">
+                Contact Mobile Number <span className="text-red-500">*</span>
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-2.5 font-bold text-slate-400 text-xs">+91</span>
                 <input
-                  type="text"
-                  value={onboardName}
-                  onChange={(e) => setOnboardName(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-300 font-semibold text-slate-900"
+                  type="tel"
+                  maxLength={10}
+                  placeholder="98765 43210"
+                  value={onboardingModal.phone}
+                  onChange={(e) => updateOnboardingModal({ phone: e.target.value.replace(/[^0-9]/g, '') })}
+                  className="w-full pl-10 pr-3 py-2 rounded-xl border border-slate-300 font-mono font-bold text-sm text-slate-900"
                   required
+                  autoFocus
                 />
               </div>
+              <p className="text-[10px] text-slate-400 mt-1">
+                Used by our delivery executive to call you at pickup and delivery. (No SMS OTP required).
+              </p>
+            </div>
 
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">
-                  Contact Mobile Number <span className="text-red-500">*</span>
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-2.5 font-bold text-slate-400 text-xs">+91</span>
-                  <input
-                    type="tel"
-                    maxLength={10}
-                    placeholder="98765 43210"
-                    value={onboardPhone}
-                    onChange={(e) => setOnboardPhone(e.target.value.replace(/[^0-9]/g, ''))}
-                    className="w-full pl-10 pr-3 py-2 rounded-xl border border-slate-300 font-mono font-bold text-sm text-slate-900"
-                    required
-                    autoFocus
-                  />
-                </div>
-                <p className="text-[10px] text-slate-400 mt-1">
-                  Used by our delivery executive to call you at pickup and delivery. (No SMS OTP required).
-                </p>
-              </div>
-
-              <div className="pt-2 border-t border-slate-100 space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="block font-bold text-slate-700">Default Home Address (Optional)</label>
-                  <div className="flex items-center gap-2">
-                    {onboardLocationFeedback && (
-                      <span className="text-[10px] text-slate-500">{onboardLocationFeedback}</span>
-                    )}
-                    <button
-                      type="button"
-                      onClick={handleGetOnboardLocation}
-                      disabled={isOnboardLocating}
-                      className="text-[11px] text-brand-600 font-bold hover:underline flex items-center gap-1 cursor-pointer"
-                    >
-                      <MapPin className="w-3 h-3" />
-                      <span>{isOnboardLocating ? 'Locating...' : onboardLatitude ? '✓ GPS Attached' : '📍 GPS'}</span>
-                    </button>
-                  </div>
-                </div>
-                <input
-                  type="text"
-                  placeholder="Flat / House No., Apartment, Street"
-                  value={onboardAddress}
-                  onChange={(e) => setOnboardAddress(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-300"
-                />
-                <div className="grid grid-cols-2 gap-2">
-                  <input
-                    type="text"
-                    placeholder="Landmark (Optional)"
-                    value={onboardLandmark}
-                    onChange={(e) => setOnboardLandmark(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-300"
-                  />
-                  <input
-                    type="text"
-                    maxLength={6}
-                    placeholder="PIN Code"
-                    value={onboardPincode}
-                    onChange={(e) => setOnboardPincode(e.target.value.replace(/[^0-9]/g, ''))}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono"
-                  />
+            <div className="pt-2 border-t border-slate-100 space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block font-bold text-slate-700">Default Home Address (Optional)</label>
+                <div className="flex items-center gap-2">
+                  {onboardingModal.locationFeedback && (
+                    <span className="text-[10px] text-slate-500">{onboardingModal.locationFeedback}</span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleGetOnboardLocation}
+                    disabled={onboardingModal.isLocating}
+                    className="text-[11px] text-brand-600 font-bold hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <MapPin className="w-3 h-3" />
+                    <span>{onboardingModal.isLocating ? 'Locating...' : onboardingModal.latitude ? '✓ GPS Attached' : '📍 GPS'}</span>
+                  </button>
                 </div>
               </div>
+              {renderAddressInputFields({
+                line: onboardingModal.address,
+                landmark: onboardingModal.landmark,
+                pincode: onboardingModal.pincode,
+                onLineChange: (val) => updateOnboardingModal({ address: val }),
+                onLandmarkChange: (val) => updateOnboardingModal({ landmark: val }),
+                onPincodeChange: (val) => updateOnboardingModal({ pincode: val.replace(/[^0-9]/g, '') }),
+                linePlaceholder: 'Flat / House No., Apartment, Street',
+                landmarkPlaceholder: 'Landmark (Optional)',
+                pincodePlaceholder: 'PIN Code',
+                pinMaxLength: 6,
+                inputClass: 'w-full px-3 py-2 rounded-xl border border-slate-300'
+              })}
+            </div>
 
-              <div className="pt-2">
-                <button
-                  type="submit"
-                  disabled={isOnboardingSaving || onboardPhone.length < 10}
-                  className="w-full py-3 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-xl shadow-md transition disabled:opacity-50 cursor-pointer"
-                >
-                  {isOnboardingSaving ? 'Saving Profile...' : 'Save & Continue'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+            <div className="pt-2">
+              <button
+                type="submit"
+                disabled={onboardingModal.isSaving || onboardingModal.phone.length < 10}
+                className="w-full py-3 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-xl shadow-md transition disabled:opacity-50 cursor-pointer"
+              >
+                {onboardingModal.isSaving ? 'Saving Profile...' : 'Save & Continue'}
+              </button>
+            </div>
+          </form>
+        )
+      })}
 
       {/* Fixed Mobile Bottom Navigation */}
       <CustomerBottomNav

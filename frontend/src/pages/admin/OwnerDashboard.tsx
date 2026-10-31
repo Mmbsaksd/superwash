@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import {
-  Order, BusinessSettings, Profile, PickupSlot,
+  Order, BusinessSettings, Profile,
   Payment, OrderFeedback, FeedbackStatus, FeedbackSummaryMetrics, UserRole,
   ServiceArea, LaundryServiceItem, PeriodFilter, DashboardPeriodAnalytics, Coupon
 } from '../../types';
@@ -14,12 +14,16 @@ import { WeightEntryModal } from '../../components/WeightEntryModal';
 import { InvoiceModal } from '../../components/InvoiceModal';
 import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
 import {
-  IndianRupee, Package, CheckCircle2,
-  Users, Settings, Plus, RefreshCw,
+  IndianRupee, CheckCircle2,
+  Settings, Plus, RefreshCw,
   Search, Shield, Star, MessageSquareHeart,
   AlertCircle, X, Download, TrendingUp, TrendingDown, LogOut, Loader2,
   Edit2, Trash2, TicketPercent, FileText
 } from 'lucide-react';
+
+const PRIMARY_OWNER_EMAIL = 'superwashexprez@gmail.com';
+const normalizePhone = (phone: string) => phone.replace(/[^0-9]/g, '').slice(-10);
+const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
 export const OwnerDashboard: React.FC = () => {
   const { currentUser, logout, sendPasswordResetEmail } = useAuth();
@@ -27,7 +31,6 @@ export const OwnerDashboard: React.FC = () => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [staffList, setStaffList] = useState<Profile[]>([]);
-  const [slots, setSlots] = useState<PickupSlot[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [feedbacks, setFeedbacks] = useState<OrderFeedback[]>([]);
   const [feedbackMetrics, setFeedbackMetrics] = useState<FeedbackSummaryMetrics | null>(null);
@@ -183,10 +186,10 @@ export const OwnerDashboard: React.FC = () => {
     setIsLoading(true);
     try {
       const [allOrds, s, st, sl, p, fb, fm, sa, srv, pa, cps] = await Promise.all([
-        LaundryService.getAllOrders(),
+        LaundryService.getOrders(),
         LaundryService.getSettings(),
         LaundryService.getStaffProfiles(true),
-        LaundryService.getPickupSlots(),
+        LaundryService.getSlots(),
         LaundryService.getAllPayments(),
         LaundryService.getAllFeedback(),
         LaundryService.getFeedbackMetrics(),
@@ -198,7 +201,6 @@ export const OwnerDashboard: React.FC = () => {
       setOrders(allOrds);
       setSettings(s);
       setStaffList(st);
-      setSlots(sl);
       setPayments(p);
       setFeedbacks(fb);
       setFeedbackMetrics(fm);
@@ -444,7 +446,7 @@ export const OwnerDashboard: React.FC = () => {
   const handleCreateManualOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const order = await LaundryService.createOrder({
+      const order = await LaundryService.createBooking({
         customer_name: custName.trim(),
         customer_phone: custPhone.trim(),
         pickup_address: pickupAddr.trim(),
@@ -488,6 +490,23 @@ export const OwnerDashboard: React.FC = () => {
     setStaffStatusFilter('all');
   };
 
+  // Staff Protection Predicates
+  const isPermanentOwner = (s?: { email?: string | null } | null) => s?.email?.toLowerCase() === PRIMARY_OWNER_EMAIL;
+  const isCurrentOwner = (s?: { id?: string | null } | null) => Boolean(s?.id && s.id === currentUser?.id);
+  const isProtectedAccount = (s?: Profile | null) => isPermanentOwner(s) || isCurrentOwner(s);
+  const getDeactivationGuardError = (s?: Profile | null) =>
+    isPermanentOwner(s) ? 'The permanent primary owner account cannot be deactivated.'
+    : isCurrentOwner(s) ? 'You cannot deactivate your own owner account.'
+    : null;
+  const getStaffEditGuardError = (s: Profile, nextEmail: string, nextRole: UserRole, nextActive: boolean) => {
+    if (isPermanentOwner(s)) {
+      if (nextEmail && nextEmail !== PRIMARY_OWNER_EMAIL) return 'The permanent primary owner email cannot be changed.';
+      if (nextRole !== 'owner') return 'The permanent primary owner role cannot be changed.';
+    }
+    if (isCurrentOwner(s) && nextRole !== s.role) return 'Business owners cannot demote their own account role.';
+    return !nextActive ? getDeactivationGuardError(s) : null;
+  };
+
   const handleOpenEdit = (staff: Profile) => {
     setEditingStaff(staff);
     setEditStaffName(staff.full_name);
@@ -510,42 +529,22 @@ export const OwnerDashboard: React.FC = () => {
       return;
     }
 
-    const cleanPhone = editStaffPhone.replace(/[^0-9]/g, '').slice(-10);
+    const cleanPhone = normalizePhone(editStaffPhone);
     if (cleanPhone.length !== 10) {
       setEditStaffError('Please enter a valid 10-digit Indian phone number.');
       return;
     }
 
     const cleanEmail = editStaffEmail.trim().toLowerCase();
-    if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    if (cleanEmail && !isValidEmail(cleanEmail)) {
       setEditStaffError('Please enter a valid email address.');
       return;
     }
 
-    if (editingStaff.email?.toLowerCase() === 'superwashexprez@gmail.com') {
-      if (cleanEmail && cleanEmail !== 'superwashexprez@gmail.com') {
-        setEditStaffError('The permanent primary owner email cannot be changed.');
-        return;
-      }
-      if (editStaffRole !== 'owner') {
-        setEditStaffError('The permanent primary owner role cannot be changed.');
-        return;
-      }
-      if (!editStaffIsActive) {
-        setEditStaffError('The permanent primary owner account cannot be deactivated.');
-        return;
-      }
-    }
-
-    if (editingStaff.id === currentUser?.id) {
-      if (editStaffRole !== editingStaff.role) {
-        setEditStaffError('Business owners cannot demote their own account role.');
-        return;
-      }
-      if (!editStaffIsActive) {
-        setEditStaffError('You cannot deactivate your own owner account.');
-        return;
-      }
+    const guardErr = getStaffEditGuardError(editingStaff, cleanEmail, editStaffRole, editStaffIsActive);
+    if (guardErr) {
+      setEditStaffError(guardErr);
+      return;
     }
 
     // Require confirmation if role changed
@@ -582,7 +581,7 @@ export const OwnerDashboard: React.FC = () => {
   };
 
   const handleConfirmDeleteStaff = async () => {
-    if (!deletingStaff) return;
+    if (!deletingStaff || isProtectedAccount(deletingStaff)) return;
     setDeleteStaffError(null);
     setIsSubmittingDelete(true);
     try {
@@ -611,13 +610,9 @@ export const OwnerDashboard: React.FC = () => {
   const [staffActionType, setStaffActionType] = useState<'success' | 'warning' | null>(null);
 
   const handleRequestToggleStatus = (staff: Profile) => {
-    if (staff.email?.toLowerCase() === 'superwashexprez@gmail.com') {
-      setStaffActionMsg('The permanent primary owner account cannot be deactivated.');
-      setTimeout(() => setStaffActionMsg(null), 5000);
-      return;
-    }
-    if (staff.id === currentUser?.id) {
-      setStaffActionMsg('You cannot deactivate your own owner account.');
+    const deactErr = getDeactivationGuardError(staff);
+    if (deactErr) {
+      setStaffActionMsg(deactErr);
       setTimeout(() => setStaffActionMsg(null), 5000);
       return;
     }
@@ -679,12 +674,12 @@ export const OwnerDashboard: React.FC = () => {
       return;
     }
 
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!isValidEmail(email)) {
       setStaffFormError('Please enter a valid email address.');
       return;
     }
 
-    const cleanDigits = phone.replace(/[^0-9]/g, '').slice(-10);
+    const cleanDigits = normalizePhone(phone);
     if (cleanDigits.length !== 10) {
       setStaffFormError('Please enter a valid 10-digit Indian phone number.');
       return;
@@ -843,7 +838,7 @@ export const OwnerDashboard: React.FC = () => {
 
   const handleToggleServiceStatus = async (srv: LaundryServiceItem) => {
     try {
-      const updated = await LaundryService.toggleServiceStatus(srv.id, !srv.is_active, currentUser?.role);
+      const updated = await LaundryService.updateService(srv.id, { is_active: !srv.is_active }, currentUser?.role);
       setServicesList((prev) => prev.map((s) => (s.id === srv.id ? updated : s)));
       setServiceActionSuccess(`Service '${srv.name}' ${updated.is_active ? 'activated' : 'deactivated'}.`);
       setTimeout(() => setServiceActionSuccess(null), 3000);
@@ -873,7 +868,7 @@ export const OwnerDashboard: React.FC = () => {
   const handleDeactivateInstead = async () => {
     if (!deletingService) return;
     try {
-      const updated = await LaundryService.toggleServiceStatus(deletingService.id, false, currentUser?.role);
+      const updated = await LaundryService.updateService(deletingService.id, { is_active: false }, currentUser?.role);
       setServicesList((prev) => prev.map((s) => (s.id === deletingService.id ? updated : s)));
       setServiceActionSuccess(`Service '${deletingService.name}' has been deactivated. Historical orders remain intact.`);
       setTimeout(() => setServiceActionSuccess(null), 4000);
@@ -945,7 +940,7 @@ export const OwnerDashboard: React.FC = () => {
   const handleToggleCouponStatus = async (coupon: Coupon) => {
     try {
       const updated = await LaundryService.updateCoupon(coupon.id, { is_active: !coupon.is_active }, currentUser?.role || 'owner');
-      setCouponsList((prev) => prev.map(c => c.id === updated.id ? updated : c));
+      setCouponsList((prev) => prev.map(c => (c.id === updated.id || c.code === updated.code) ? updated : c));
       setCouponActionSuccess(`Coupon "${coupon.code}" ${updated.is_active ? 'activated' : 'disabled'}.`);
       setTimeout(() => setCouponActionSuccess(null), 3000);
     } catch (err: any) {
@@ -957,7 +952,7 @@ export const OwnerDashboard: React.FC = () => {
     if (!window.confirm(`Are you sure you want to delete coupon "${coupon.code}"?`)) return;
     try {
       await LaundryService.deleteCoupon(coupon.id, currentUser?.role || 'owner');
-      setCouponsList((prev) => prev.filter(c => c.id !== coupon.id));
+      setCouponsList((prev) => prev.filter(c => c.id !== coupon.id && c.code !== coupon.code));
       setCouponActionSuccess(`Coupon "${coupon.code}" deleted.`);
       setTimeout(() => setCouponActionSuccess(null), 3000);
     } catch (err: any) {
@@ -1871,11 +1866,11 @@ export const OwnerDashboard: React.FC = () => {
                         <div>
                           <div className="flex items-center gap-2">
                             <span className="font-bold text-slate-900 block text-sm">{staff.full_name}</span>
-                            {staff.email?.toLowerCase() === 'superwashexprez@gmail.com' ? (
+                            {isPermanentOwner(staff) ? (
                               <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300">
                                 Permanent Primary Owner
                               </span>
-                            ) : staff.id === currentUser?.id ? (
+                            ) : isCurrentOwner(staff) ? (
                               <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-purple-100 text-purple-700 border border-purple-200">
                                 You
                               </span>
@@ -1934,14 +1929,14 @@ export const OwnerDashboard: React.FC = () => {
                       )}
 
                       {/* Activate / Deactivate Button */}
-                      {staff.email?.toLowerCase() === 'superwashexprez@gmail.com' ? (
+                      {isPermanentOwner(staff) ? (
                         <span
                           className="px-3 py-1.5 rounded-xl font-bold text-[11px] bg-amber-50 text-amber-800 border border-amber-300 cursor-not-allowed"
                           title="The permanent primary owner account cannot be deactivated"
                         >
                           Permanent Owner
                         </span>
-                      ) : staff.id === currentUser?.id ? (
+                      ) : isCurrentOwner(staff) ? (
                         <span
                           className="px-3 py-1.5 rounded-xl font-bold text-[11px] bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
                           title="You cannot deactivate your own owner account"
@@ -1964,7 +1959,7 @@ export const OwnerDashboard: React.FC = () => {
                       )}
 
                       {/* Delete Staff Button */}
-                      {staff.email?.toLowerCase() === 'superwashexprez@gmail.com' || staff.id === currentUser?.id ? (
+                      {isProtectedAccount(staff) ? (
                         <span
                           className="px-2.5 py-1.5 rounded-xl font-bold text-[11px] bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
                           title="Protected account cannot be deleted"
@@ -2058,18 +2053,18 @@ export const OwnerDashboard: React.FC = () => {
                           setEditStaffRole(e.target.value as any);
                           setIsConfirmingRoleChange(false);
                         }}
-                        disabled={editingStaff.id === currentUser?.id || editingStaff.email?.toLowerCase() === 'superwashexprez@gmail.com'}
+                        disabled={isProtectedAccount(editingStaff)}
                         className="w-full px-3.5 py-2.5 rounded-2xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 font-semibold text-slate-800 disabled:bg-slate-100 disabled:cursor-not-allowed"
                       >
                         <option value="delivery">Delivery Person</option>
                         <option value="manager">Store Manager</option>
                         {editingStaff.role === 'owner' && <option value="owner">Business Owner</option>}
                       </select>
-                      {editingStaff.email?.toLowerCase() === 'superwashexprez@gmail.com' ? (
+                      {isPermanentOwner(editingStaff) ? (
                         <span className="text-[11px] text-amber-700 font-semibold mt-1 block">
                           The permanent primary owner role cannot be changed.
                         </span>
-                      ) : editingStaff.id === currentUser?.id ? (
+                      ) : isCurrentOwner(editingStaff) ? (
                         <span className="text-[11px] text-slate-400 mt-1 block">
                           You cannot change your own business owner role from the staff directory.
                         </span>
@@ -2091,7 +2086,7 @@ export const OwnerDashboard: React.FC = () => {
                         type="email"
                         value={editStaffEmail}
                         onChange={(e) => setEditStaffEmail(e.target.value)}
-                        disabled={editingStaff.email?.toLowerCase() === 'superwashexprez@gmail.com'}
+                        disabled={isPermanentOwner(editingStaff)}
                         className="w-full px-3.5 py-2.5 rounded-2xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 font-mono font-semibold text-slate-800 disabled:bg-slate-100 disabled:cursor-not-allowed"
                         required
                       />
@@ -2111,7 +2106,7 @@ export const OwnerDashboard: React.FC = () => {
                           id="edit-staff-active-checkbox"
                           checked={editStaffIsActive}
                           onChange={(e) => setEditStaffIsActive(e.target.checked)}
-                          disabled={editingStaff.email?.toLowerCase() === 'superwashexprez@gmail.com' || editingStaff.id === currentUser?.id}
+                          disabled={isProtectedAccount(editingStaff)}
                           className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500"
                         />
                         <div>

@@ -65,7 +65,7 @@ export const ManagerDashboard: React.FC = () => {
     try {
       const [s, allOrds] = await Promise.all([
         LaundryService.getSettings(),
-        LaundryService.getAllOrders()
+        LaundryService.getOrders()
       ]);
       setSettings(s);
       setOrders(allOrds);
@@ -181,9 +181,9 @@ export const ManagerDashboard: React.FC = () => {
     setManagerActionError(null);
     setManagerActionSuccess(null);
     try {
-      const updated = await LaundryService.markOrderCollected(
+      const updated = await LaundryService.updateOrderStatus(
         order.id,
-        currentUser?.full_name || 'Store Manager',
+        'collected',
         'Clothes received at store intake'
       );
       if (updated) {
@@ -196,6 +196,55 @@ export const ManagerDashboard: React.FC = () => {
       setManagerActionError(err?.message || 'Failed to mark order collected at store.');
     }
   };
+
+  const renderCardHeader = (
+    order: Order,
+    subDetail?: 'phone' | 'address' | React.ReactNode,
+    showService: boolean = false
+  ) => {
+    let subDetailNode: React.ReactNode = null;
+    if (subDetail === 'phone') {
+      subDetailNode = <span className="text-slate-500 block text-[11px] mt-0.5">📞 {order.customer_phone}</span>;
+    } else if (subDetail === 'address') {
+      subDetailNode = <span className="text-[11px] text-slate-500 block truncate">📍 {order.pickup_address}</span>;
+    } else if (React.isValidElement(subDetail)) {
+      subDetailNode = subDetail;
+    } else if (typeof subDetail === 'string') {
+      subDetailNode = <span className="text-[11px] text-slate-500 block truncate">{subDetail}</span>;
+    }
+
+    return (
+      <div className="flex justify-between items-start">
+        <div>
+          <span className="font-black text-slate-900 text-base block">#{order.order_number}</span>
+          {showService && (
+            <span className="inline-block px-2 py-0.5 rounded-md text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 my-0.5">
+              {order.service_name || 'Wash & Fold (Normal)'}
+            </span>
+          )}
+          <span className="font-bold text-slate-800 text-sm block">{order.customer_name}</span>
+          {subDetailNode}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <StatusBadge status={order.order_status} size="sm" />
+          <button
+            onClick={() => setInvoiceOrder(order)}
+            className="p-1.5 rounded-lg text-slate-500 hover:text-purple-700 hover:bg-purple-50 border border-slate-200 hover:border-purple-200 transition"
+            title="View / Print Bill"
+          >
+            <FileText className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderBillFooter = (order: Order) => (
+    <div className="flex justify-between items-center text-slate-600">
+      <span>Total: <b>₹{((order.total_amount_paise || 0) / 100).toFixed(2)}</b></span>
+      <PaymentBadge status={order.payment_status} />
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-24">
@@ -423,26 +472,7 @@ export const ManagerDashboard: React.FC = () => {
                       className="bg-white rounded-3xl border border-slate-200 p-5 space-y-4 shadow-sm text-xs flex flex-col justify-between"
                     >
                       <div className="space-y-3">
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <span className="font-black text-slate-900 text-base block">#{order.order_number}</span>
-                            <span className="inline-block px-2 py-0.5 rounded-md text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 my-0.5">
-                              {order.service_name || 'Wash & Fold (Normal)'}
-                            </span>
-                            <span className="font-bold text-slate-800 text-sm block">{order.customer_name}</span>
-                            <span className="text-slate-500 block text-[11px] mt-0.5">📞 {order.customer_phone}</span>
-                          </div>
-                          <div className="flex items-center gap-1.5">
-                            <StatusBadge status={order.order_status} size="sm" />
-                            <button
-                              onClick={() => setInvoiceOrder(order)}
-                              className="p-1.5 rounded-lg text-slate-500 hover:text-purple-700 hover:bg-purple-50 border border-slate-200 hover:border-purple-200 transition"
-                              title="View / Print Bill"
-                            >
-                              <FileText className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
+                        {renderCardHeader(order, 'phone', true)}
 
                         <div className="flex items-center gap-1.5 text-slate-500 text-[11px]">
                           <Calendar className="w-3.5 h-3.5" />
@@ -589,23 +619,7 @@ export const ManagerDashboard: React.FC = () => {
                     className="bg-white rounded-3xl border border-slate-200 p-5 space-y-4 shadow-sm text-xs flex flex-col justify-between"
                   >
                     <div className="space-y-2">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <span className="font-black text-slate-900 text-base block">#{order.order_number}</span>
-                          <span className="font-bold text-slate-800 text-sm">{order.customer_name}</span>
-                          <span className="text-[11px] text-slate-500 block">📞 {order.customer_phone}</span>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <StatusBadge status={order.order_status} size="sm" />
-                          <button
-                            onClick={() => setInvoiceOrder(order)}
-                            className="p-1.5 rounded-lg text-slate-500 hover:text-purple-700 hover:bg-purple-50 border border-slate-200 hover:border-purple-200 transition"
-                            title="View / Print Bill"
-                          >
-                            <FileText className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
+                      {renderCardHeader(order, 'phone')}
 
                       <div className="p-3 bg-cyan-50 border border-cyan-200 rounded-2xl flex justify-between items-center text-cyan-900">
                         <div>
@@ -656,23 +670,7 @@ export const ManagerDashboard: React.FC = () => {
                     className="bg-white rounded-3xl border border-slate-200 p-5 space-y-4 shadow-sm text-xs flex flex-col justify-between"
                   >
                     <div className="space-y-3">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <span className="font-black text-slate-900 text-base block">#{order.order_number}</span>
-                          <span className="font-bold text-slate-800 text-sm">{order.customer_name}</span>
-                          <span className="text-[11px] text-slate-500 block truncate">📍 {order.pickup_address}</span>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <StatusBadge status={order.order_status} size="sm" />
-                          <button
-                            onClick={() => setInvoiceOrder(order)}
-                            className="p-1.5 rounded-lg text-slate-500 hover:text-purple-700 hover:bg-purple-50 border border-slate-200 hover:border-purple-200 transition"
-                            title="View / Print Bill"
-                          >
-                            <FileText className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
+                      {renderCardHeader(order, 'address')}
 
                       <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 flex justify-between items-center">
                         <div>
@@ -693,10 +691,7 @@ export const ManagerDashboard: React.FC = () => {
                         </button>
                       </div>
 
-                      <div className="flex justify-between items-center text-slate-600">
-                        <span>Total: <b>₹{((order.total_amount_paise || 0) / 100).toFixed(2)}</b></span>
-                        <PaymentBadge status={order.payment_status} />
-                      </div>
+                      {renderBillFooter(order)}
                     </div>
 
                     {(order.order_status === 'ready_for_delivery' || order.order_status === 'delivery_assigned') && (
@@ -736,23 +731,7 @@ export const ManagerDashboard: React.FC = () => {
                     className="bg-white rounded-3xl border border-slate-200 p-5 space-y-4 shadow-sm text-xs flex flex-col justify-between"
                   >
                     <div className="space-y-3">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <span className="font-black text-slate-900 text-base block">#{order.order_number}</span>
-                          <span className="font-bold text-slate-800 text-sm">{order.customer_name}</span>
-                          <span className="text-[11px] text-slate-500 block truncate">📍 {order.pickup_address}</span>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <StatusBadge status={order.order_status} size="sm" />
-                          <button
-                            onClick={() => setInvoiceOrder(order)}
-                            className="p-1.5 rounded-lg text-slate-500 hover:text-purple-700 hover:bg-purple-50 border border-slate-200 hover:border-purple-200 transition"
-                            title="View / Print Bill"
-                          >
-                            <FileText className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
+                      {renderCardHeader(order, 'address')}
 
                       <div className="p-3 bg-blue-50 border border-blue-200 rounded-2xl flex justify-between items-center text-blue-900">
                         <div>
@@ -772,10 +751,7 @@ export const ManagerDashboard: React.FC = () => {
                         </button>
                       </div>
 
-                      <div className="flex justify-between items-center text-slate-600">
-                        <span>Total: <b>₹{((order.total_amount_paise || 0) / 100).toFixed(2)}</b></span>
-                        <PaymentBadge status={order.payment_status} />
-                      </div>
+                      {renderBillFooter(order)}
                     </div>
 
                     <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 text-center text-slate-500 text-[11px]">
@@ -809,23 +785,7 @@ export const ManagerDashboard: React.FC = () => {
                     className="bg-white rounded-3xl border border-slate-200 p-5 space-y-4 shadow-sm text-xs flex flex-col justify-between"
                   >
                     <div className="space-y-3">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <span className="font-black text-slate-900 text-base block">#{order.order_number}</span>
-                          <span className="font-bold text-slate-800 text-sm">{order.customer_name}</span>
-                          <span className="text-[11px] text-slate-500 block truncate">📍 {order.pickup_address}</span>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <StatusBadge status={order.order_status} size="sm" />
-                          <button
-                            onClick={() => setInvoiceOrder(order)}
-                            className="p-1.5 rounded-lg text-slate-500 hover:text-purple-700 hover:bg-purple-50 border border-slate-200 hover:border-purple-200 transition"
-                            title="View / Print Bill"
-                          >
-                            <FileText className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
+                      {renderCardHeader(order, 'address')}
 
                       <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-1 text-[11px] text-emerald-950">
                         <div className="flex justify-between">
@@ -842,10 +802,7 @@ export const ManagerDashboard: React.FC = () => {
                         </div>
                       </div>
 
-                      <div className="flex justify-between items-center text-slate-600">
-                        <span>Total: <b>₹{((order.total_amount_paise || 0) / 100).toFixed(2)}</b></span>
-                        <PaymentBadge status={order.payment_status} />
-                      </div>
+                      {renderBillFooter(order)}
                     </div>
                   </div>
                 ))}

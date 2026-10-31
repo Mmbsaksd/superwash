@@ -440,7 +440,7 @@ describe('Customer & Owner/Staff Portal Separation & Security Invariants', () =>
     expect(ordersForB.some(o => o.order_number === 'SW-8001')).toBe(false);
 
     // When customer B retrieves addresses, User A's address must NOT be returned
-    const addressesForB = await LaundryService.getCustomerAddresses(customerB.id);
+    const addressesForB = await LaundryService.getAddresses(customerB.id);
     expect(addressesForB.some(a => a.address_line === 'Secret Villa A')).toBe(false);
   });
 });

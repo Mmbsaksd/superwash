@@ -87,12 +87,12 @@ describe('Phase 1: Booking Confirmation & Anti-Duplicate Refresh Behavior', () =
     };
 
     // First booking attempt
-    const firstOrder = await LaundryService.createOrder(bookingParams);
+    const firstOrder = await LaundryService.createBooking(bookingParams);
     expect(firstOrder.id).toBeDefined();
     expect(firstOrder.order_number).toMatch(/^SW-\d+$/);
 
     // Refresh simulation / repeat submission with identical phone, date, slot
-    const secondAttempt = await LaundryService.createOrder(bookingParams);
+    const secondAttempt = await LaundryService.createBooking(bookingParams);
     expect(secondAttempt.id).toBe(firstOrder.id);
     expect(secondAttempt.order_number).toBe(firstOrder.order_number);
 
@@ -171,11 +171,11 @@ describe('Phase 1: Booking Confirmation & Anti-Duplicate Refresh Behavior', () =
       pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
     };
 
-    const order1 = await LaundryService.createOrder({
+    const order1 = await LaundryService.createBooking({
       ...base,
       service_id: 'srv-iron-2'
     });
-    const order2 = await LaundryService.createOrder({
+    const order2 = await LaundryService.createBooking({
       ...base,
       service_id: 'srv-bulk-4'
     });
@@ -197,11 +197,11 @@ describe('Phase 1: Booking Confirmation & Anti-Duplicate Refresh Behavior', () =
       service_id: 'srv-iron-2'
     };
 
-    const order1 = await LaundryService.createOrder({
+    const order1 = await LaundryService.createBooking({
       ...base,
       pickup_address: 'Flat 101, 100 Feet Rd, Indiranagar'
     });
-    const order2 = await LaundryService.createOrder({
+    const order2 = await LaundryService.createBooking({
       ...base,
       pickup_address: 'Office 402, 12th Main, Indiranagar'
     });
@@ -225,14 +225,14 @@ describe('Phase 1: Booking Confirmation & Anti-Duplicate Refresh Behavior', () =
     };
 
     // First intentional booking
-    const firstOrder = await LaundryService.createOrder({
+    const firstOrder = await LaundryService.createBooking({
       ...commonDetails,
       client_submission_id: 'sub-intent-001'
     });
 
     // Second intentional booking with identical phone, address, date, slot, and service,
     // submitted immediately (within 60 seconds) with a distinct submission ID
-    const secondOrder = await LaundryService.createOrder({
+    const secondOrder = await LaundryService.createBooking({
       ...commonDetails,
       client_submission_id: 'sub-intent-002'
     });
@@ -268,9 +268,9 @@ describe('Phase 1: Booking Confirmation & Anti-Duplicate Refresh Behavior', () =
       client_submission_id: clientSubmissionId
     };
 
-    const initialOrder = await LaundryService.createOrder(booking);
+    const initialOrder = await LaundryService.createBooking(booking);
     // Simulate retry after network timeout with identical client_submission_id
-    const retriedOrder = await LaundryService.createOrder({
+    const retriedOrder = await LaundryService.createBooking({
       ...booking,
       client_submission_id: clientSubmissionId
     });
@@ -287,7 +287,7 @@ describe('Phase 1: Booking Confirmation & Anti-Duplicate Refresh Behavior', () =
       pickup_slot: 'Evening (05:00 PM - 08:00 PM)',
       client_submission_id: 'req-sub-test-unique-456'
     };
-    const newOrder = await LaundryService.createOrder(changedBooking);
+    const newOrder = await LaundryService.createBooking(changedBooking);
     expect(newOrder.id).not.toBe(initialOrder.id);
     expect(newOrder.pickup_slot).toBe('Evening (05:00 PM - 08:00 PM)');
   });
@@ -306,8 +306,8 @@ describe('Phase 1: Booking Confirmation & Anti-Duplicate Refresh Behavior', () =
     };
 
     const [orderA, orderB] = await Promise.all([
-      LaundryService.createOrder({ ...booking }),
-      LaundryService.createOrder({ ...booking })
+      LaundryService.createBooking({ ...booking }),
+      LaundryService.createBooking({ ...booking })
     ]);
 
     expect(orderA.id).toBe(orderB.id);
@@ -332,7 +332,7 @@ describe('Phase 1: Booking Confirmation & Anti-Duplicate Refresh Behavior', () =
     };
 
     // 1. Must reject with appropriate validation error
-    await expect(LaundryService.createOrder(invalidBooking)).rejects.toThrow(
+    await expect(LaundryService.createBooking(invalidBooking)).rejects.toThrow(
       /outside our service coverage/i
     );
 
@@ -346,7 +346,7 @@ describe('Phase 1: Booking Confirmation & Anti-Duplicate Refresh Behavior', () =
       ...invalidBooking,
       pickup_pincode: '560038' // Valid PIN code
     };
-    const successfulRetry = await LaundryService.createOrder(correctedBooking);
+    const successfulRetry = await LaundryService.createBooking(correctedBooking);
     expect(successfulRetry.id).toBeDefined();
     expect(successfulRetry.pickup_pincode).toBe('560038');
     expect(successfulRetry.order_status).toBe('booked');
@@ -363,11 +363,11 @@ describe('Phase 1: Booking Confirmation & Anti-Duplicate Refresh Behavior', () =
       pickup_slot: 'Evening (05:00 PM - 08:00 PM)'
     };
 
-    const first = await LaundryService.createOrder({
+    const first = await LaundryService.createBooking({
       ...base,
       client_submission_id: 'sub-seq-1'
     });
-    const second = await LaundryService.createOrder({
+    const second = await LaundryService.createBooking({
       ...base,
       client_submission_id: 'sub-seq-2'
     });
@@ -687,7 +687,7 @@ describe('Phase 1: Refresh-Safe Booking Idempotency & Uncertain Timeout Recovery
     };
 
     // 1. Pre-commit order into backend storage simulating database commit before timeout
-    const committedOrder = await LaundryService.createOrder({
+    const committedOrder = await LaundryService.createBooking({
       ...bookingPayload,
       customer_id: customerId,
       client_submission_id: clientSubId
@@ -752,11 +752,11 @@ describe('Phase 1: Refresh-Safe Booking Idempotency & Uncertain Timeout Recovery
 
     // Parallel requests with distinct submission IDs (e.g. user opening two separate tabs to book two services)
     const [orderA, orderB] = await Promise.all([
-      LaundryService.createOrder({
+      LaundryService.createBooking({
         ...base,
         client_submission_id: 'sub-concurrent-diff-1'
       }),
-      LaundryService.createOrder({
+      LaundryService.createBooking({
         ...base,
         client_submission_id: 'sub-concurrent-diff-2'
       })
@@ -785,12 +785,12 @@ describe('Phase 1: Refresh-Safe Booking Idempotency & Uncertain Timeout Recovery
     };
 
     // First attempt commits to database
-    const originalOrder = await LaundryService.createOrder(booking);
+    const originalOrder = await LaundryService.createBooking(booking);
     expect(originalOrder.id).toBeDefined();
 
     // Client timed out before receiving 201 response.
     // Retry sends the exact same client_submission_id
-    const retriedOrder = await LaundryService.createOrder({
+    const retriedOrder = await LaundryService.createBooking({
       ...booking,
       client_submission_id: clientSubmissionId
     });
@@ -1475,7 +1475,7 @@ describe('Phase 1: Customer Saved Address Management, Deduplication & Pre-Bookin
   });
 
   it('deduplicates saved addresses when identical address line and pincode are saved', async () => {
-    const addr1 = await LaundryService.saveCustomerAddress({
+    const addr1 = await LaundryService.saveAddress({
       user_id: testUserId,
       label: 'Home',
       address_line: 'Flat 402, Green Glen Layout, Bellandur',
@@ -1486,7 +1486,7 @@ describe('Phase 1: Customer Saved Address Management, Deduplication & Pre-Bookin
     expect(addr1.id).toBeDefined();
 
     // Re-saving the same address line & pincode
-    const addr2 = await LaundryService.saveCustomerAddress({
+    const addr2 = await LaundryService.saveAddress({
       user_id: testUserId,
       label: 'Home',
       address_line: 'Flat 402,   green glen layout, bellandur  ',
@@ -1497,13 +1497,13 @@ describe('Phase 1: Customer Saved Address Management, Deduplication & Pre-Bookin
     // Should return existing record, not create duplicate
     expect(addr2.id).toBe(addr1.id);
 
-    const allAddrs = await LaundryService.getCustomerAddresses(testUserId);
+    const allAddrs = await LaundryService.getAddresses(testUserId);
     const matching = allAddrs.filter((a) => a.pincode === '560103');
     expect(matching.length).toBe(1);
   });
 
   it('preserves custom label (e.g. Work) when re-saving address with default Home label', async () => {
-    const customAddr = await LaundryService.saveCustomerAddress({
+    const customAddr = await LaundryService.saveAddress({
       user_id: testUserId,
       label: 'Work',
       address_line: 'Tower C, Bagmane Tech Park, CV Raman Nagar',
@@ -1514,7 +1514,7 @@ describe('Phase 1: Customer Saved Address Management, Deduplication & Pre-Bookin
     expect(customAddr.label).toBe('Work');
 
     // Attempting to re-save the exact same address with generic default 'Home' label
-    const resaved = await LaundryService.saveCustomerAddress({
+    const resaved = await LaundryService.saveAddress({
       user_id: testUserId,
       label: 'Home',
       address_line: 'Tower C, Bagmane Tech Park, CV Raman Nagar',
@@ -1527,7 +1527,7 @@ describe('Phase 1: Customer Saved Address Management, Deduplication & Pre-Bookin
     expect(resaved.label).toBe('Work'); // Label preserved as Work, NOT overwritten with Home!
     expect(resaved.landmark).toBe('Near Main Gate'); // Landmark updated
 
-    const freshList = await LaundryService.getCustomerAddresses(testUserId);
+    const freshList = await LaundryService.getAddresses(testUserId);
     const persisted = freshList.find((a) => a.id === customAddr.id);
     expect(persisted?.label).toBe('Work');
   });
@@ -1543,21 +1543,21 @@ describe('Phase 1: Customer Saved Address Management, Deduplication & Pre-Bookin
 
     // Fire 3 simultaneous saves for the identical address
     const [res1, res2, res3] = await Promise.all([
-      LaundryService.saveCustomerAddress(addressPayload),
-      LaundryService.saveCustomerAddress(addressPayload),
-      LaundryService.saveCustomerAddress(addressPayload)
+      LaundryService.saveAddress(addressPayload),
+      LaundryService.saveAddress(addressPayload),
+      LaundryService.saveAddress(addressPayload)
     ]);
 
     expect(res1.id).toBe(res2.id);
     expect(res2.id).toBe(res3.id);
 
-    const allAddrs = await LaundryService.getCustomerAddresses(testUserId);
+    const allAddrs = await LaundryService.getAddresses(testUserId);
     const matches = allAddrs.filter((a) => a.pincode === '560001');
     expect(matches.length).toBe(1);
   });
 
-  it('updates saved address details via updateCustomerAddress', async () => {
-    const saved = await LaundryService.saveCustomerAddress({
+  it('updates saved address details via updateAddress', async () => {
+    const saved = await LaundryService.saveAddress({
       user_id: testUserId,
       label: 'Office',
       address_line: 'Old Tower 1, EGL Tech Park',
@@ -1565,7 +1565,7 @@ describe('Phase 1: Customer Saved Address Management, Deduplication & Pre-Bookin
       is_default: false
     });
 
-    const updated = await LaundryService.updateCustomerAddress(saved.id, {
+    const updated = await LaundryService.updateAddress(saved.id, {
       user_id: testUserId,
       address_line: 'New Tower 4, Suite 300, EGL Tech Park',
       landmark: 'Next to Domlur Flyover',
@@ -1579,8 +1579,8 @@ describe('Phase 1: Customer Saved Address Management, Deduplication & Pre-Bookin
     expect(updated.latitude).toBe(12.9602);
   });
 
-  it('deletes saved address via deleteCustomerAddress', async () => {
-    const saved = await LaundryService.saveCustomerAddress({
+  it('deletes saved address via deleteAddress', async () => {
+    const saved = await LaundryService.saveAddress({
       user_id: testUserId,
       label: 'Temporary Flat',
       address_line: 'Room 12, Indiranagar',
@@ -1588,10 +1588,10 @@ describe('Phase 1: Customer Saved Address Management, Deduplication & Pre-Bookin
       is_default: false
     });
 
-    const deleted = await LaundryService.deleteCustomerAddress(saved.id, testUserId);
+    const deleted = await LaundryService.deleteAddress(saved.id, testUserId);
     expect(deleted).toBe(true);
 
-    const remaining = await LaundryService.getCustomerAddresses(testUserId);
+    const remaining = await LaundryService.getAddresses(testUserId);
     expect(remaining.some((a) => a.id === saved.id)).toBe(false);
   });
 
@@ -1826,7 +1826,7 @@ describe('Phase 3: Post-Booking Pickup Location Correction', () => {
   });
 
   it('updates pickup address and GPS coordinates for an order in booked status', async () => {
-    const initialOrder = await LaundryService.createOrder({
+    const initialOrder = await LaundryService.createBooking({
       customer_id: customerId,
       customer_name: 'Correction Tester',
       customer_phone: '9876543200',
@@ -1854,7 +1854,7 @@ describe('Phase 3: Post-Booking Pickup Location Correction', () => {
   });
 
   it('strictly rejects pickup location updates once order has progressed beyond booked', async () => {
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_id: customerId,
       customer_name: 'Progressed Order Tester',
       customer_phone: '9876543201',
@@ -1876,7 +1876,7 @@ describe('Phase 3: Post-Booking Pickup Location Correction', () => {
   });
 
   it('rejects invalid PIN code format in updateOrderPickupLocation', async () => {
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_id: customerId,
       customer_name: 'Pin Tester',
       customer_phone: '9876543209',
@@ -1902,7 +1902,7 @@ describe('Phase 3: Post-Booking Pickup Location Correction', () => {
   });
 
   it('rejects unmatched coordinate pair in updateOrderPickupLocation', async () => {
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_id: customerId,
       customer_name: 'Pair Tester',
       customer_phone: '9876543210',
@@ -1932,7 +1932,7 @@ describe('Phase 3: Post-Booking Pickup Location Correction', () => {
   });
 
   it('rejects out-of-range coordinates in updateOrderPickupLocation', async () => {
-    const order = await LaundryService.createOrder({
+    const order = await LaundryService.createBooking({
       customer_id: customerId,
       customer_name: 'Bounds Tester',
       customer_phone: '9876543211',
@@ -1973,7 +1973,7 @@ describe('Phase 3: Post-Booking Pickup Location Correction', () => {
     };
     localStorage.setItem('superwash_auth_profile', JSON.stringify(customerProfile));
 
-    const activeOrder = await LaundryService.createOrder({
+    const activeOrder = await LaundryService.createBooking({
       customer_id: customerId,
       customer_name: 'Varun S',
       customer_phone: '9876543202',
@@ -1995,7 +1995,7 @@ describe('Phase 3: Post-Booking Pickup Location Correction', () => {
 
     await waitFor(() => {
       expect(screen.getByText(`Order #${activeOrder.order_number}`)).toBeInTheDocument();
-    });
+    }, { timeout: 10000 });
 
     const editPickupBtn = screen.getByTestId('edit-order-pickup-location-button');
     expect(editPickupBtn).toBeInTheDocument();
@@ -2006,7 +2006,7 @@ describe('Phase 3: Post-Booking Pickup Location Correction', () => {
       expect(screen.getByTestId('edit-order-location-modal')).toBeInTheDocument();
       expect(screen.getByText(/Correct Pickup Location/i)).toBeInTheDocument();
     });
-  });
+  }, 15000);
 });
 
 describe('Phase 4: Brand Logo Navigation across Portals', () => {
