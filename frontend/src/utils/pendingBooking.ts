@@ -216,6 +216,8 @@ export function isAmbiguousNetworkError(error: any): boolean {
     msg.includes('violates check constraint') ||
     msg.includes('security violation') ||
     msg.includes('authentication required') ||
+    msg.includes('permission denied') ||
+    error?.code === '42501' ||
     status === 400 ||
     status === 401 ||
     status === 403 ||

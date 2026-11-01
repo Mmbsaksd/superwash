@@ -1334,13 +1334,10 @@ export class LaundryService {
         p_service_id: data.service_id || null,
         p_pickup_latitude: data.pickup_latitude || null,
         p_pickup_longitude: data.pickup_longitude || null,
-        p_notes: data.notes || null
+        p_notes: data.notes || null,
+        p_coupon_code: data.coupon_code ? data.coupon_code.trim().toUpperCase() : null,
+        p_discount_paise: data.discount_paise || 0
       };
-
-      if (data.coupon_code) {
-        rpcPayload.p_coupon_code = data.coupon_code;
-        rpcPayload.p_discount_paise = data.discount_paise || 0;
-      }
 
       try {
         let { data: resOrder, error: err } = await supabase.rpc(
@@ -1348,14 +1345,16 @@ export class LaundryService {
           rpcPayload
         );
 
-        // Graceful fallback if database schema does not yet have new coupon parameters on the RPC
-        if (err && data.coupon_code && (err.code === 'PGRST202' || err.message?.includes('could not find the function'))) {
+        // Graceful fallback for legacy database schemas that only have the 12-parameter overload
+        if (err && (err.code === 'PGRST202' || err.message?.includes('could not find the function'))) {
           const basePayload = { ...rpcPayload };
           delete basePayload.p_coupon_code;
           delete basePayload.p_discount_paise;
           const retryRes = await supabase.rpc('create_booking_idempotent', basePayload);
-          resOrder = retryRes.data;
-          err = retryRes.error;
+          if (!retryRes.error && retryRes.data) {
+            resOrder = retryRes.data;
+            err = null;
+          }
         }
 
         rpcOrder = resOrder as Order | null;

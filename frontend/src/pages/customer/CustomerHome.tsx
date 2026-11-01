@@ -1128,11 +1128,14 @@ export const CustomerHome: React.FC = () => {
               return;
             }
 
-            // Guard against creating a duplicate booking while an uncertain submission is unresolved
+            // Guard against creating a duplicate booking while an uncertain submission is unresolved:
+            // Intelligently route to completing or verifying the pending booking
             if (pendingRecovery?.status === 'uncertain_timeout') {
-              setBookingError(
-                'You have an unconfirmed booking attempt pending verification. Please click "Verify & Complete Booking" in the banner above before creating a new booking.'
-              );
+              if (statusCheckOutcome === 'not_found') {
+                handleCompleteUncommittedBooking();
+                return;
+              }
+              handleResolvePendingBooking();
               return;
             }
 
@@ -1296,16 +1299,7 @@ export const CustomerHome: React.FC = () => {
               const primaryOrder = createdOrders[0];
               commitConfirmedBookingState(primaryOrder, createdOrders);
             } catch (err: any) {
-              if (isAmbiguousNetworkError(err)) {
-                // Retain pending record with 'uncertain_timeout' status
-                const updated = updatePendingBookingStatus('uncertain_timeout');
-                if (updated) {
-                  setPendingRecovery(updated);
-                }
-                setBookingError(
-                  'Network connection timed out. Your request may have reached our server. Please click "Verify & Complete Booking" to resolve your order without creating a duplicate.'
-                );
-              } else if (err?.code === 'BOOKING_SERVICE_UNAVAILABLE' || err?.code === 'SCHEMA_OR_SERVICE_UNAVAILABLE') {
+              if (err?.code === 'BOOKING_SERVICE_UNAVAILABLE' || err?.code === 'SCHEMA_OR_SERVICE_UNAVAILABLE') {
                 // Database migration missing or service undergoing upgrades: PRESERVE pending record!
                 const updated = updatePendingBookingStatus('uncertain_timeout');
                 if (updated) {
@@ -1313,6 +1307,15 @@ export const CustomerHome: React.FC = () => {
                 }
                 setBookingError(
                   'The booking service is temporarily undergoing upgrades. Your pending booking is safely preserved. Please retry once the service is available.'
+                );
+              } else if (isAmbiguousNetworkError(err)) {
+                // Retain pending record with 'uncertain_timeout' status
+                const updated = updatePendingBookingStatus('uncertain_timeout');
+                if (updated) {
+                  setPendingRecovery(updated);
+                }
+                setBookingError(
+                  'Network connection timed out. Your request may have reached our server. Please click "Verify & Complete Booking" to resolve your order without creating a duplicate.'
                 );
               } else {
                 // Definitive validation rejection: safe to clear pending record
@@ -1349,11 +1352,9 @@ export const CustomerHome: React.FC = () => {
                 return;
               }
 
-              // 2. If no order exists in database, update status check outcome
+              // 2. If no order exists in database, update status check outcome (clear bookingError so no contradictory red alert appears)
               setStatusCheckOutcome('not_found');
-              setBookingError(
-                'Verified: No order was created for this previous attempt. You can now complete the booking or start fresh.'
-              );
+              setBookingError(null);
             } catch (err: any) {
               if (err?.code === 'SCHEMA_OR_SERVICE_UNAVAILABLE' || err?.code === 'BOOKING_SERVICE_UNAVAILABLE') {
                 setBookingError(
@@ -1392,13 +1393,13 @@ export const CustomerHome: React.FC = () => {
               setSubmissionId(generateClientSubmissionId());
               commitConfirmedBookingState(order);
             } catch (err: any) {
-              if (isAmbiguousNetworkError(err)) {
-                setBookingError(
-                  'Network is still unresponsive. We are keeping your pending booking record safe. Please check your connection and retry.'
-                );
-              } else if (err?.code === 'BOOKING_SERVICE_UNAVAILABLE' || err?.code === 'SCHEMA_OR_SERVICE_UNAVAILABLE') {
+              if (err?.code === 'BOOKING_SERVICE_UNAVAILABLE' || err?.code === 'SCHEMA_OR_SERVICE_UNAVAILABLE') {
                 setBookingError(
                   'The booking service is temporarily unavailable while database upgrades are pending. Your pending booking is safely preserved. Please try again in a few moments.'
+                );
+              } else if (isAmbiguousNetworkError(err)) {
+                setBookingError(
+                  'Network connection timed out. We are keeping your pending booking record safe. Please check your connection and retry.'
                 );
               } else {
                 clearPendingBooking(currentUser.id);
@@ -1890,8 +1891,8 @@ export const CustomerHome: React.FC = () => {
                 </div>
               </div>
 
-              {/* Main Responsive Body */}
-              <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full flex-1 space-y-6">
+              {/* Main Responsive Body (with pb-28 mobile clearance for fixed CustomerBottomNav) */}
+              <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 pb-28 md:pb-8 w-full flex-1 space-y-6">
                 {/* Customer Error Banner on Data Load Failure */}
                 {dataLoadError && (
                   <div
@@ -1986,7 +1987,8 @@ export const CustomerHome: React.FC = () => {
                         </div>
                       )}
 
-                      {bookingError && (
+                      {/* Show error banner when not handling pending recovery or when in standard error states */}
+                      {bookingError && !pendingRecovery && (
                         <div className="p-3.5 bg-red-50 border border-red-200 rounded-2xl text-red-700 text-xs flex items-center gap-2">
                           <AlertCircle className="w-4 h-4 shrink-0" />
                           <span>{bookingError}</span>
@@ -1995,27 +1997,51 @@ export const CustomerHome: React.FC = () => {
 
                       {/* Recovery Banner for Ambiguous / Timeout Pending Bookings */}
                       {pendingRecovery && (
-                        <div className="p-4 bg-amber-50 border-2 border-amber-300 rounded-2xl text-amber-950 shadow-sm animate-fade-in space-y-3">
+                        <div className={`p-4 rounded-2xl shadow-sm animate-fade-in space-y-3 ${
+                          statusCheckOutcome === 'not_found'
+                            ? 'bg-sky-50 border-2 border-sky-300 text-sky-950'
+                            : 'bg-amber-50 border-2 border-amber-300 text-amber-950'
+                        }`}>
                           <div className="flex items-start justify-between gap-3">
                             <div className="flex items-start gap-3">
-                              <div className="w-9 h-9 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-sm mt-0.5">
-                                <AlertTriangle className="w-5 h-5" />
+                              <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 shadow-sm mt-0.5 text-white ${
+                                statusCheckOutcome === 'not_found' ? 'bg-sky-600' : 'bg-amber-500'
+                              }`}>
+                                {statusCheckOutcome === 'not_found' ? (
+                                  <CheckCircle2 className="w-5 h-5" />
+                                ) : (
+                                  <AlertTriangle className="w-5 h-5" />
+                                )}
                               </div>
                               <div>
-                                <h3 className="font-black text-sm text-amber-950">
+                                <h3 className={`font-black text-sm ${
+                                  statusCheckOutcome === 'not_found' ? 'text-sky-950' : 'text-amber-950'
+                                }`}>
                                   Unconfirmed Booking Attempt Detected
                                 </h3>
-                                <p className="text-xs text-amber-800 mt-1">
+                                <p className={`text-xs mt-1 ${
+                                  statusCheckOutcome === 'not_found' ? 'text-sky-800' : 'text-amber-800'
+                                }`}>
                                   {statusCheckOutcome === 'not_found'
                                     ? 'Status check verified: No order was created for this previous attempt. You can now complete the booking or start fresh.'
                                     : `A network timeout interrupted your previous booking request for ${pendingRecovery.payload.pickup_date} during ${pendingRecovery.payload.pickup_slot}. Verify whether the order was recorded to prevent duplicate scheduling.`}
                                 </p>
+                                {bookingError && (
+                                  <div className="mt-2 p-2.5 bg-red-50 border border-red-200 rounded-xl text-red-700 text-xs flex items-center gap-1.5">
+                                    <AlertCircle className="w-4 h-4 shrink-0" />
+                                    <span>{bookingError}</span>
+                                  </div>
+                                )}
                               </div>
                             </div>
                             <button
                               type="button"
                               onClick={() => handleDiscardPendingBooking(false)}
-                              className="text-amber-600 hover:text-amber-900 p-1.5 rounded-xl hover:bg-amber-100 transition"
+                              className={`p-1.5 rounded-xl transition ${
+                                statusCheckOutcome === 'not_found'
+                                  ? 'text-sky-600 hover:text-sky-900 hover:bg-sky-100'
+                                  : 'text-amber-600 hover:text-amber-900 hover:bg-amber-100'
+                              }`}
                               title="Discard notice"
                             >
                               <X className="w-4 h-4" />
@@ -2046,7 +2072,11 @@ export const CustomerHome: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => handleDiscardPendingBooking(false)}
-                              className="py-1.5 px-2 text-amber-800 hover:text-amber-950 font-bold text-xs underline cursor-pointer"
+                              className={`py-1.5 px-2 font-bold text-xs underline cursor-pointer ${
+                                statusCheckOutcome === 'not_found'
+                                  ? 'text-sky-800 hover:text-sky-950'
+                                  : 'text-amber-800 hover:text-amber-950'
+                              }`}
                             >
                               Discard & Start Fresh
                             </button>
@@ -2920,14 +2950,26 @@ export const CustomerHome: React.FC = () => {
 
                             <button
                               type="submit"
-                              disabled={isBookingSubmitting || !hasAvailablePaymentMethod}
+                              disabled={isBookingSubmitting || isResolvingPending || !hasAvailablePaymentMethod}
                               className="w-full sm:w-auto py-3.5 px-8 bg-brand-600 hover:bg-brand-700 text-white font-black text-sm rounded-xl shadow-lg transition flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
                             >
-                              {pendingRecovery?.status === 'uncertain_timeout' ? (
+                              {isBookingSubmitting || isResolvingPending ? (
                                 <>
-                                  <RefreshCw className="w-4 h-4" />
-                                  <span>Verify Unconfirmed Booking First</span>
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                  <span>{isResolvingPending ? 'Resolving Booking...' : 'Confirming Pickup Booking...'}</span>
                                 </>
+                              ) : pendingRecovery?.status === 'uncertain_timeout' ? (
+                                statusCheckOutcome === 'not_found' ? (
+                                  <>
+                                    <CheckCircle2 className="w-4 h-4" />
+                                    <span>Complete Booking</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <RefreshCw className="w-4 h-4" />
+                                    <span>Verify Unconfirmed Booking First</span>
+                                  </>
+                                )
                               ) : !hasAvailablePaymentMethod ? (
                                 <>
                                   <AlertCircle className="w-4 h-4" />
@@ -3037,14 +3079,26 @@ export const CustomerHome: React.FC = () => {
                         <div className="hidden lg:block pt-2">
                           <button
                             onClick={handleCreateBooking}
-                            disabled={isBookingSubmitting}
+                            disabled={isBookingSubmitting || isResolvingPending}
                             className="w-full py-3.5 bg-white hover:bg-slate-100 active:scale-[0.99] text-brand-700 font-black text-sm rounded-2xl shadow-lg transition flex items-center justify-center gap-2 disabled:opacity-50"
                           >
-                            {pendingRecovery?.status === 'uncertain_timeout' ? (
+                            {isBookingSubmitting || isResolvingPending ? (
                               <>
-                                <RefreshCw className="w-5 h-5" />
-                                <span>Verify Unconfirmed Booking First</span>
+                                <Loader2 className="w-5 h-5 animate-spin" />
+                                <span>{isResolvingPending ? 'Resolving Booking...' : 'Confirming Pickup Booking...'}</span>
                               </>
+                            ) : pendingRecovery?.status === 'uncertain_timeout' ? (
+                              statusCheckOutcome === 'not_found' ? (
+                                <>
+                                  <CheckCircle2 className="w-5 h-5" />
+                                  <span>Complete Booking</span>
+                                </>
+                              ) : (
+                                <>
+                                  <RefreshCw className="w-5 h-5" />
+                                  <span>Verify Unconfirmed Booking First</span>
+                                </>
+                              )
                             ) : currentUser ? (
                               <>
                                 <CheckCircle2 className="w-5 h-5" />
