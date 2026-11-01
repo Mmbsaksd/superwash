@@ -12,9 +12,24 @@ export type OrderStatus =
   | 'delivered'
   | 'cancelled';
 
-export type PaymentStatus = 'pending' | 'partially_paid' | 'paid';
+export type PaymentStatus =
+  | 'pending'
+  | 'partially_paid'
+  | 'paid'
+  | 'refund_pending'
+  | 'partially_refunded'
+  | 'refunded';
 
-export type PaymentMethod = 'cash' | 'upi_manual';
+export type PaymentMethod = 'cash' | 'upi_manual' | 'razorpay';
+export type PaymentType = 'advance' | 'balance' | 'full' | 'refund';
+export type PaymentLedgerStatus =
+  | 'requested'
+  | 'initiated'
+  | 'confirmed'
+  | 'failed'
+  | 'refund_requested'
+  | 'refund_completed'
+  | 'refund_failed';
 
 export interface Profile {
   id: string;
@@ -24,6 +39,7 @@ export interface Profile {
   avatar_url?: string | null;
   role: UserRole;
   is_active: boolean;
+  deleted_at?: string | null;
   created_at: string;
 }
 
@@ -81,6 +97,22 @@ export interface BusinessSettings {
   allow_delivery_payment_recording: boolean;
   whatsapp_enabled: boolean;
   serviceable_pincodes?: string[];
+  // Advance payment configuration
+  advance_payment_enabled?: boolean;
+  advance_payment_type?: 'fixed' | 'percentage';
+  advance_payment_amount_paise?: number;
+  advance_payment_percentage?: number;
+  // Independent minimum restriction configurations
+  min_order_spend_enabled?: boolean;
+  min_order_spend_paise?: number;
+  min_weight_restriction_enabled?: boolean;
+  min_weight_restriction_grams?: number;
+  // Payment gateway toggles
+  online_payment_enabled?: boolean;
+  cod_payment_enabled?: boolean;
+  // Customer notification preferences (Section 8 Cost Minimization)
+  notify_pickup_assigned?: boolean;
+  notify_out_for_delivery?: boolean;
   updated_at?: string;
 }
 
@@ -181,6 +213,7 @@ export interface Order {
   service_id?: string;
   service_name?: string;
   pricing_unit?: string;
+  pricing_version_id?: string | null;
   pickup_measured_weight?: number | null; // Doorstep portable scale weight
   pickup_weighed_at?: string;
   pickup_weighed_by?: string;
@@ -297,11 +330,77 @@ export interface Payment {
   order_id: string;
   amount_paise: number;
   payment_method: PaymentMethod;
+  payment_type?: PaymentType;
+  status?: PaymentLedgerStatus;
   transaction_reference?: string;
   notes?: string;
   recorded_by?: string;
   idempotency_key?: string;
   created_at: string;
+}
+
+export type PricingVersionStatus = 'draft' | 'active' | 'archived' | 'scheduled';
+
+export interface PricingVersionItem {
+  id: string;
+  pricing_version_id: string;
+  service_id: string;
+  price_paise: number;
+  min_weight_grams: number;
+  created_at?: string;
+}
+
+export interface PricingVersion {
+  id: string;
+  version_number: number;
+  effective_from: string;
+  effective_to?: string | null;
+  status: PricingVersionStatus;
+  notes?: string | null;
+  created_by?: string | null;
+  created_at: string;
+  items?: PricingVersionItem[];
+}
+
+export interface ActiveServicePricing {
+  pricing_version_id: string;
+  version_number: number;
+  service_id: string;
+  service_name: string;
+  pricing_unit: string;
+  price_paise: number;
+  min_weight_grams: number;
+  min_weight_kg: number;
+}
+
+export interface CouponReservation {
+  id: string;
+  coupon_id: string;
+  user_id: string;
+  order_id: string;
+  status: 'reserved' | 'applied' | 'unqualified' | 'expired' | 'cancelled';
+  expires_at: string;
+  created_at: string;
+}
+
+export interface CouponRedemption {
+  id: string;
+  coupon_id: string;
+  order_id: string;
+  user_id: string;
+  discount_paise: number;
+  subtotal_paise: number;
+  final_paise: number;
+  redeemed_at: string;
+}
+
+export interface PaymentEvent {
+  id: string;
+  event_id: string;
+  provider: 'razorpay' | string;
+  event_type: string;
+  payload: Record<string, any>;
+  processed_at: string;
 }
 
 export interface NotificationLog {

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Order } from '../types';
 import { LaundryService } from '../services/laundryService';
+import { PricingEngine } from '../services/pricingEngine';
 import { Scale, X, AlertTriangle, CheckCircle } from 'lucide-react';
 
 interface WeightEntryModalProps {
@@ -33,13 +34,13 @@ export const WeightEntryModal: React.FC<WeightEntryModalProps> = ({
 
   // Live bill preview
   const billPreview = isValidWeight
-    ? LaundryService.calculateBill(
-        numWeight,
-        order.price_per_kg_paise,
-        order.min_weight_kg,
-        order.delivery_charge_paise,
-        order.pricing_unit || 'per_kg'
-      )
+    ? PricingEngine.calculateOrderPricing({
+        measuredWeightKg: numWeight,
+        unitPricePaise: order.price_per_kg_paise,
+        minWeightKg: order.min_weight_kg,
+        deliveryChargePaise: order.delivery_charge_paise,
+        pricingUnit: order.pricing_unit || 'per_kg'
+      })
     : null;
 
   const handleSubmit = async (e: React.FormEvent) => {

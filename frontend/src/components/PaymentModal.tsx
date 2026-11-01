@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { X, Banknote, QrCode, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { X, Banknote, QrCode, CheckCircle2, AlertCircle, Loader2, CreditCard, ShieldCheck } from 'lucide-react';
 import { Order, BusinessSettings } from '../types';
 import { LaundryService } from '../services/laundryService';
+import { RazorpayService } from '../services/razorpayService';
+import { PricingEngine } from '../services/pricingEngine';
 import { useAuth } from '../context/AuthContext';
 
 interface PaymentModalProps {
@@ -56,6 +58,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   const upiPayLink = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=SuperWash%20Exprez&am=${payAmountNum > 0 ? payAmountNum : balanceRs}&cu=INR&tn=Order%20${order.order_number}`;
   const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(upiPayLink)}`;
 
+  // Staff manual recording handler
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const amountVal = parseFloat(amountInput);
@@ -110,13 +113,50 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     }
   };
 
+  // Customer online payment handler via Razorpay
+  const handleCustomerOnlinePayment = async () => {
+    if (balancePaise <= 0) {
+      setError('This order is already settled. No payment required.');
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const result = await RazorpayService.processOnlinePayment(order, balancePaise);
+      if (result.success) {
+        setSuccessMsg(`Online payment of ₹${balanceRs} confirmed successfully!`);
+        const updated = await LaundryService.getOrderById(order.id);
+        const resolvedOrder: Order = updated || {
+          ...order,
+          paid_amount_paise: totalPaise,
+          payment_status: 'paid',
+          payment_method: 'razorpay'
+        };
+        setTimeout(() => {
+          onPaymentSuccess(resolvedOrder);
+          onClose();
+        }, 1000);
+      } else {
+        setError(result.message || 'Payment verification failed');
+      }
+    } catch (err: any) {
+      setError(err.message || 'Online payment was cancelled or failed');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
       <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
         {/* Header */}
         <div className="bg-slate-900 p-4 text-white flex justify-between items-center">
           <div>
-            <h3 className="font-bold text-base leading-tight">Record Payment</h3>
+            <h3 className="font-bold text-base leading-tight">
+              {isStaff ? 'Record Payment' : 'Order Payment'}
+            </h3>
             <p className="text-xs text-slate-400">Order #{order.order_number} • {order.customer_name}</p>
           </div>
           <button
@@ -154,161 +194,246 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
             </div>
           )}
 
-          {/* Payment Method Selector */}
-          <div>
-            <label className="block text-xs font-bold text-slate-700 mb-1.5">
-              Select Payment Method
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setMethod('upi_manual')}
-                className={`py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition ${
-                  method === 'upi_manual'
-                    ? 'border-brand-600 bg-brand-50 text-brand-700 ring-2 ring-brand-500/20'
-                    : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                <QrCode className="w-4 h-4 text-brand-600" />
-                UPI / QR Code
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setMethod('cash')}
-                className={`py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition ${
-                  method === 'cash'
-                    ? 'border-emerald-600 bg-emerald-50 text-emerald-700 ring-2 ring-emerald-500/20'
-                    : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                <Banknote className="w-4 h-4 text-emerald-600" />
-                Cash Collected
-              </button>
-            </div>
-          </div>
-
-          {/* UPI QR Display */}
-          {method === 'upi_manual' && (
-            <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col items-center text-center">
-              <span className="text-[11px] font-bold text-slate-700 mb-1">Scan to Pay via Any UPI App</span>
-              <p className="text-[10px] text-slate-500 mb-2">GPay, PhonePe, Paytm, or BHIM</p>
-              
-              <div className="p-2 bg-white rounded-xl shadow-sm border border-slate-200 mb-2">
-                <img
-                  src={qrCodeUrl}
-                  alt="UPI QR Code"
-                  className="w-36 h-36 object-contain"
-                />
-              </div>
-
-              <div className="bg-white px-3 py-1.5 rounded-lg border border-slate-200 text-xs">
-                <span className="text-slate-400 text-[10px] block">UPI ID:</span>
-                <span className="font-mono font-bold text-slate-800">{upiId}</span>
-              </div>
-            </div>
-          )}
-
-          {/* Form for recording payment */}
           {isStaff ? (
-            <form onSubmit={handleSubmit} className="space-y-3 pt-2">
+            /* ================= STAFF PAYMENT RECORDING ================= */
+            <>
+              {/* Payment Method Selector */}
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Amount Received (₹) <span className="text-red-500">*</span>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                  Select Payment Method
                 </label>
-                <div className="relative">
-                  <span className="absolute left-3.5 top-2.5 font-bold text-slate-400 text-sm">₹</span>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="1"
-                    max={balanceRs}
-                    placeholder="0.00"
-                    value={amountInput}
-                    onChange={(e) => setAmountInput(e.target.value)}
-                    className="w-full pl-8 pr-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-bold text-slate-900 text-base"
-                    required
-                  />
-                </div>
-                <div className="flex gap-2 mt-1">
+                <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => setAmountInput(balanceRs)}
-                    className="text-[10px] font-semibold text-brand-600 hover:underline"
+                    onClick={() => setMethod('upi_manual')}
+                    className={`py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition ${
+                      method === 'upi_manual'
+                        ? 'border-brand-600 bg-brand-50 text-brand-700 ring-2 ring-brand-500/20'
+                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                    }`}
                   >
-                    Full Balance (₹{balanceRs})
+                    <QrCode className="w-4 h-4 text-brand-600" />
+                    UPI / QR Code
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setMethod('cash')}
+                    disabled={settings?.cod_payment_enabled === false && currentUser?.role === 'delivery'}
+                    className={`py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition ${
+                      method === 'cash'
+                        ? 'border-emerald-600 bg-emerald-50 text-emerald-700 ring-2 ring-emerald-500/20'
+                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                    } ${settings?.cod_payment_enabled === false && currentUser?.role === 'delivery' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    title={settings?.cod_payment_enabled === false && currentUser?.role === 'delivery' ? 'Cash collection is disabled by store policy' : ''}
+                  >
+                    <Banknote className="w-4 h-4 text-emerald-600" />
+                    Cash Collected
                   </button>
                 </div>
               </div>
 
+              {/* UPI QR Display for Staff Collection */}
               {method === 'upi_manual' && (
+                <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col items-center text-center">
+                  <span className="text-[11px] font-bold text-slate-700 mb-1">Customer Scans UPI QR Code</span>
+                  <p className="text-[10px] text-slate-500 mb-2">GPay, PhonePe, Paytm, or BHIM</p>
+                  
+                  <div className="p-2 bg-white rounded-xl shadow-sm border border-slate-200 mb-2">
+                    <img
+                      src={qrCodeUrl}
+                      alt="UPI QR Code"
+                      className="w-36 h-36 object-contain"
+                    />
+                  </div>
+
+                  <div className="bg-white px-3 py-1.5 rounded-lg border border-slate-200 text-xs">
+                    <span className="text-slate-400 text-[10px] block">UPI ID:</span>
+                    <span className="font-mono font-bold text-slate-800">{upiId}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Form for recording payment */}
+              <form onSubmit={handleSubmit} className="space-y-3 pt-2">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
-                    UPI 12-Digit Reference / UTR Number <span className="text-red-500">*</span>
+                    Amount Received (₹) <span className="text-red-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3.5 top-2.5 font-bold text-slate-400 text-sm">₹</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="1"
+                      max={balanceRs}
+                      placeholder="0.00"
+                      value={amountInput}
+                      onChange={(e) => setAmountInput(e.target.value)}
+                      className="w-full pl-8 pr-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-bold text-slate-900 text-base"
+                      required
+                    />
+                  </div>
+                  <div className="flex gap-2 mt-1">
+                    <button
+                      type="button"
+                      onClick={() => setAmountInput(balanceRs)}
+                      className="text-[10px] font-semibold text-brand-600 hover:underline"
+                    >
+                      Full Balance (₹{balanceRs})
+                    </button>
+                  </div>
+                </div>
+
+                {method === 'upi_manual' && (
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      UPI 12-Digit Reference / UTR Number <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 428901234567"
+                      value={utrReference}
+                      onChange={(e) => setUtrReference(e.target.value)}
+                      className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono"
+                      required
+                    />
+                    <p className="text-[10px] text-slate-400 mt-0.5">
+                      Verify the reference on customer's phone or store SMS before recording.
+                    </p>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Optional Notes
                   </label>
                   <input
                     type="text"
-                    placeholder="e.g. 428901234567"
-                    value={utrReference}
-                    onChange={(e) => setUtrReference(e.target.value)}
-                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono"
-                    required
+                    placeholder="e.g. Received at doorstep"
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500"
                   />
-                  <p className="text-[10px] text-slate-400 mt-0.5">
-                    Verify the reference on your UPI app/SMS before recording.
+                </div>
+
+                <div className="flex items-center gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    disabled={isLoading}
+                    className="flex-1 py-2.5 px-3 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50 font-semibold text-xs"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isLoading || balancePaise <= 0}
+                    className="flex-1 py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md shadow-emerald-600/20 transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  >
+                    {isLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="w-4 h-4" />
+                    )}
+                    Confirm & Record
+                  </button>
+                </div>
+              </form>
+            </>
+          ) : (
+            /* ================= CUSTOMER PAYMENT EXPERIENCE ================= */
+            <div className="space-y-4 pt-1">
+              {balancePaise > 0 ? (
+                <>
+                  {/* Option 1: Instant Online Payment via Razorpay */}
+                  {settings?.online_payment_enabled !== false ? (
+                    <div className="p-4 bg-gradient-to-br from-brand-50 to-cyan-50 border border-brand-200 rounded-2xl space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <CreditCard className="w-5 h-5 text-brand-600" />
+                          <span className="font-bold text-xs text-slate-900">Instant Online Payment</span>
+                        </div>
+                        <span className="text-[10px] font-bold px-2 py-0.5 bg-brand-100 text-brand-700 rounded-full">
+                          Recommended
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600">
+                        Pay instantly via any UPI app (GPay, PhonePe, Paytm), Credit/Debit Card, or NetBanking.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleCustomerOnlinePayment}
+                        disabled={isLoading}
+                        className="w-full py-3 bg-brand-600 hover:bg-brand-700 active:scale-[0.99] text-white font-black text-xs rounded-xl shadow-md shadow-brand-600/20 transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                      >
+                        {isLoading ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span>Processing Gateway...</span>
+                          </>
+                        ) : (
+                          <>
+                            <ShieldCheck className="w-4 h-4 text-brand-200" />
+                            <span>Pay ₹{balanceRs} Online via Razorpay</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-1.5">
+                      <div className="flex items-center gap-2">
+                        <CreditCard className="w-4 h-4 text-slate-400" />
+                        <span className="font-bold text-xs text-slate-700">Online Payments Temporarily Disabled</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 leading-relaxed">
+                        Automated online gateway payments are currently paused by store management. Please settle your balance via Cash on Delivery or UPI upon doorstep delivery.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Option 2: Cash on Delivery */}
+                  {settings?.cod_payment_enabled !== false ? (
+                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex items-start gap-3">
+                      <Banknote className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <h4 className="font-bold text-xs text-slate-900">Cash on Delivery (COD)</h4>
+                        <p className="text-[11px] text-slate-600 leading-relaxed">
+                          Prefer to pay with cash? You can hand cash directly to our delivery executive when your washed clothes are delivered to your doorstep.
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <h4 className="font-bold text-xs text-amber-900">Cash Collection Paused</h4>
+                        <p className="text-[11px] text-amber-800 leading-relaxed">
+                          Cash on delivery is currently disabled by store management. Please settle payments via digital methods.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="p-6 text-center space-y-2">
+                  <CheckCircle2 className="w-10 h-10 text-emerald-600 mx-auto" />
+                  <h4 className="font-bold text-sm text-slate-900">Order Fully Paid</h4>
+                  <p className="text-xs text-slate-500">
+                    No outstanding balance remains for this order. Thank you!
                   </p>
                 </div>
               )}
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Optional Notes
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Received at doorstep"
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500"
-                />
-              </div>
-
-              <div className="flex items-center gap-2 pt-2">
+              <div className="pt-2">
                 <button
                   type="button"
                   onClick={onClose}
-                  disabled={isLoading}
-                  className="flex-1 py-2.5 px-3 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50 font-semibold text-xs"
+                  className="w-full py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs transition cursor-pointer"
                 >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isLoading || balancePaise <= 0}
-                  className="flex-1 py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md shadow-emerald-600/20 transition flex items-center justify-center gap-1.5 disabled:opacity-50"
-                >
-                  {isLoading ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <CheckCircle2 className="w-4 h-4" />
-                  )}
-                  Confirm & Record
+                  Close
                 </button>
               </div>
-            </form>
-          ) : (
-            /* Customer View */
-            <div className="space-y-3">
-              <p className="text-xs text-slate-600 text-center">
-                Scan the QR code or send payment to the UPI ID above. Please share your payment screenshot or 12-digit UTR with the delivery agent or store staff.
-              </p>
-              <button
-                type="button"
-                onClick={onClose}
-                className="w-full py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs transition"
-              >
-                Close QR Code
-              </button>
             </div>
           )}
         </div>

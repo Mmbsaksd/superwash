@@ -2,6 +2,7 @@ import React, { useRef } from 'react';
 import { Order, BusinessSettings, Profile } from '../types';
 import { X, Printer, CheckCircle2, AlertCircle, Tag, Scale, Building2, User, Phone, MapPin } from 'lucide-react';
 import { PaymentBadge } from './StatusBadge';
+import { PricingEngine } from '../services/pricingEngine';
 
 interface InvoiceModalProps {
   isOpen: boolean;
@@ -87,10 +88,15 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
     if (item.total_amount_paise !== null && item.total_amount_paise !== undefined) {
       itemCharge = item.total_amount_paise + (item.discount_paise || 0) - (item.delivery_charge_paise || 0);
     } else {
-      const billableWt = measuredWeight !== null && measuredWeight !== undefined
-        ? Math.max(measuredWeight, minWeight)
-        : minWeight;
-      itemCharge = Math.round(rate * billableWt);
+      const pricingResult = PricingEngine.calculateOrderPricing({
+        measuredWeightKg: measuredWeight !== null && measuredWeight !== undefined ? measuredWeight : minWeight,
+        unitPricePaise: rate,
+        minWeightKg: minWeight,
+        pricingUnit: item.pricing_unit || 'per_kg',
+        deliveryChargePaise: item.delivery_charge_paise || 0,
+        discountPaise: item.discount_paise || 0
+      });
+      itemCharge = pricingResult.subtotalPaise;
     }
 
     totalSubtotalPaise += Math.max(0, itemCharge);

@@ -1,12 +1,14 @@
 import {
-  Order, OrderStatus, PaymentStatus, PaymentMethod, BusinessSettings,
+  Order, OrderStatus, PaymentStatus, PaymentMethod, PaymentType, PaymentLedgerStatus, BusinessSettings,
   PickupSlot, Profile, CustomerAddress, Payment, WeightChangeHistory, OrderStatusHistory,
   OrderFeedback, FeedbackStatus, FeedbackSummaryMetrics,
   ServiceArea, LaundryServiceItem, PeriodFilter, DashboardPeriodAnalytics, UserRole,
-  Coupon, CouponValidationResult, CouponSnapshot, PublicPromotion
+  Coupon, CouponValidationResult, CouponSnapshot, PublicPromotion,
+  PricingVersion, PricingVersionItem, ActiveServicePricing
 } from '../types';
 import { supabase, isSupabaseConfigured } from './supabase';
 import { WhatsAppService } from './whatsappService';
+import { PricingEngine } from './pricingEngine';
 
 export let isLiveMode = isSupabaseConfigured && import.meta.env.VITE_DEMO_MODE !== 'true';
 
@@ -41,7 +43,19 @@ export const DEFAULT_SETTINGS: BusinessSettings = {
   upi_id: 'superwash@upi',
   allow_delivery_payment_recording: true,
   whatsapp_enabled: false,
-  serviceable_pincodes: ['560111', '560070']
+  serviceable_pincodes: ['560111', '560070'],
+  advance_payment_enabled: false,
+  advance_payment_type: 'fixed',
+  advance_payment_amount_paise: 0,
+  advance_payment_percentage: 0.0,
+  min_order_spend_enabled: false,
+  min_order_spend_paise: 0,
+  min_weight_restriction_enabled: true,
+  min_weight_restriction_grams: 1000,
+  online_payment_enabled: false,
+  cod_payment_enabled: true,
+  notify_pickup_assigned: true,
+  notify_out_for_delivery: true
 };
 
 const DEFAULT_SLOTS: PickupSlot[] = [
@@ -167,16 +181,39 @@ export const STORAGE_KEYS = {
   SERVICE_AREAS: 'superwash_service_areas',
   SERVICES: 'superwash_services',
   COUPONS: 'superwash_coupons',
+  PRICING_VERSIONS: 'superwash_pricing_versions',
 };
+
+export const DEFAULT_PRICING_VERSIONS: PricingVersion[] = [
+  {
+    id: 'pv-default-1',
+    version_number: 1,
+    effective_from: new Date().toISOString(),
+    effective_to: null,
+    status: 'active',
+    notes: 'Launch pricing version 1: Standard Wash & Fold ₹79.00/kg with 1.0 kg (1000g) minimum billable weight.',
+    created_at: new Date().toISOString(),
+    items: [
+      {
+        id: 'pvi-default-1',
+        pricing_version_id: 'pv-default-1',
+        service_id: 'srv-1',
+        price_paise: 7900,
+        min_weight_grams: 1000,
+        created_at: new Date().toISOString()
+      }
+    ]
+  }
+];
 
 export const DEFAULT_COUPONS: Coupon[] = [
   {
     id: 'coupon-welcome50',
     code: 'WELCOME50',
-    description: 'Flat ₹50 OFF on your first laundry order (Min. ₹200)',
+    description: 'New Customer Welcome: Flat ₹50 OFF on orders over ₹150',
     discount_type: 'fixed',
     discount_value: 5000, // ₹50 in paise
-    min_order_paise: 20000, // ₹200 min order
+    min_order_paise: 15000, // ₹150 min order
     max_discount_paise: null,
     max_redemptions: 500,
     total_redemptions: 0,
@@ -190,10 +227,10 @@ export const DEFAULT_COUPONS: Coupon[] = [
   {
     id: 'coupon-exprez10',
     code: 'EXPREZ10',
-    description: '10% OFF on all orders up to ₹100 discount',
+    description: 'SuperWash Exprez: 10% Off up to ₹100 on orders over ₹200',
     discount_type: 'percentage',
     discount_value: 10, // 10%
-    min_order_paise: 15000, // ₹150 min order
+    min_order_paise: 20000, // ₹200 min order
     max_discount_paise: 10000, // Max ₹100 discount
     max_redemptions: 1000,
     total_redemptions: 0,
@@ -300,11 +337,11 @@ export class LaundryService {
         if (Array.isArray(defaultData) ? Array.isArray(parsed) && parsed.length > 0 : parsed) {
           return parsed as T;
         }
-      } catch {}
+      } catch { }
     }
     try {
       localStorage.setItem(storageKey, JSON.stringify(defaultData));
-    } catch {}
+    } catch { }
     return defaultData;
   }
 
@@ -318,7 +355,7 @@ export class LaundryService {
       try {
         const parsed = JSON.parse(currentProfileStr);
         storedRole = parsed?.role;
-      } catch {}
+      } catch { }
     }
     const effectiveRole = callerRole || storedRole;
     if (effectiveRole && effectiveRole !== 'owner') {
@@ -347,42 +384,14 @@ export class LaundryService {
     discountPaise: number;
     deliveryChargePaise: number;
   } {
-    const safeMeasured = Math.max(0, measuredWeightKg);
-    let billableWeightKg = safeMeasured;
-    let laundryChargePaise = 0;
-    let minWeightApplied = false;
-
-    if (pricingUnit === 'per_kg') {
-      minWeightApplied = safeMeasured < minWeightKg && minWeightKg > 0;
-      billableWeightKg = Math.max(safeMeasured, minWeightKg);
-      laundryChargePaise = Math.round(billableWeightKg * pricePerKgPaise);
-    } else if (pricingUnit === 'per_piece' || pricingUnit === 'per_item') {
-      const safeUnits = Math.round(safeMeasured);
-      billableWeightKg = safeUnits;
-      laundryChargePaise = Math.round(safeUnits * pricePerKgPaise);
-    } else if (pricingUnit === 'per_load') {
-      const safeLoads = Math.max(1, Math.round(safeMeasured || 1));
-      billableWeightKg = safeLoads;
-      laundryChargePaise = Math.round(safeLoads * pricePerKgPaise);
-    } else if (pricingUnit === 'per_order') {
-      billableWeightKg = 1;
-      laundryChargePaise = pricePerKgPaise;
-    } else {
-      billableWeightKg = Math.max(safeMeasured, minWeightKg);
-      laundryChargePaise = Math.round(billableWeightKg * pricePerKgPaise);
-    }
-
-    const effectiveDiscount = Math.max(0, Math.min(discountPaise, laundryChargePaise));
-    const totalAmountPaise = Math.max(0, laundryChargePaise - effectiveDiscount + deliveryChargePaise);
-    return {
-      measuredWeightKg: safeMeasured,
-      billableWeightKg,
-      totalAmountPaise,
-      minWeightApplied,
-      subtotalPaise: laundryChargePaise,
-      discountPaise: effectiveDiscount,
-      deliveryChargePaise
-    };
+    return PricingEngine.calculateOrderPricing({
+      measuredWeightKg,
+      unitPricePaise: pricePerKgPaise,
+      minWeightKg,
+      deliveryChargePaise,
+      pricingUnit,
+      discountPaise
+    });
   }
 
   static async resolveFinalOrderDiscount(
@@ -496,6 +505,169 @@ export class LaundryService {
   }
 
   // ----------------------------------------------------
+  // Pricing Versions & Tariff Management
+  // ----------------------------------------------------
+  static async getPricingVersions(): Promise<PricingVersion[]> {
+    if (isLiveMode && import.meta.env.MODE !== 'test') {
+      try {
+        const { data: versions, error: vErr } = await supabase
+          .from('pricing_versions')
+          .select(`
+            *,
+            items:pricing_version_items(*)
+          `)
+          .order('version_number', { ascending: false });
+
+        if (!vErr && versions && versions.length > 0) {
+          localStorage.setItem(STORAGE_KEYS.PRICING_VERSIONS, JSON.stringify(versions));
+          return versions as PricingVersion[];
+        }
+      } catch (e) {
+        console.warn('Failed to load pricing versions from DB, falling back:', e);
+      }
+    }
+    return this.getLocalFallback(STORAGE_KEYS.PRICING_VERSIONS, DEFAULT_PRICING_VERSIONS);
+  }
+
+  static async createPricingVersion(data: {
+    notes?: string;
+    items: Array<{ service_id: string; price_paise: number; min_weight_grams: number }>;
+  }): Promise<PricingVersion> {
+    const existing = await this.getPricingVersions();
+    const nextVersionNumber = existing.length > 0 ? Math.max(...existing.map((v) => v.version_number)) + 1 : 1;
+    const newVersionId = generateUUID();
+    const now = new Date().toISOString();
+
+    const newVersion: PricingVersion = {
+      id: newVersionId,
+      version_number: nextVersionNumber,
+      effective_from: now,
+      effective_to: null,
+      status: 'draft',
+      notes: data.notes || `Tariff Revision ${nextVersionNumber}`,
+      created_at: now,
+      items: data.items.map((it) => ({
+        id: generateUUID(),
+        pricing_version_id: newVersionId,
+        service_id: it.service_id,
+        price_paise: it.price_paise,
+        min_weight_grams: it.min_weight_grams,
+        created_at: now
+      }))
+    };
+
+    if (isLiveMode && import.meta.env.MODE !== 'test') {
+      const { error: vErr } = await supabase
+        .from('pricing_versions')
+        .insert({
+          id: newVersionId,
+          version_number: nextVersionNumber,
+          effective_from: now,
+          status: 'draft',
+          notes: newVersion.notes
+        });
+
+      if (vErr) throw new Error(vErr.message || 'Failed to create pricing version');
+
+      if (data.items.length > 0) {
+        const itemRows = data.items.map((it) => ({
+          pricing_version_id: newVersionId,
+          service_id: it.service_id,
+          price_paise: it.price_paise,
+          min_weight_grams: it.min_weight_grams
+        }));
+        const { error: itemsErr } = await supabase.from('pricing_version_items').insert(itemRows);
+        if (itemsErr) console.warn('Error inserting pricing version items:', itemsErr);
+      }
+    }
+
+    const updated = [newVersion, ...existing];
+    localStorage.setItem(STORAGE_KEYS.PRICING_VERSIONS, JSON.stringify(updated));
+    return newVersion;
+  }
+
+  static async activatePricingVersion(versionId: string): Promise<boolean> {
+    if (isLiveMode && import.meta.env.MODE !== 'test') {
+      try {
+        const { error } = await supabase.rpc('activate_pricing_version', { p_version_id: versionId });
+        if (error) {
+          throw new Error(error.message || 'Failed to activate pricing version RPC');
+        }
+      } catch (err: any) {
+        // Fallback: direct update if RPC is missing
+        await supabase
+          .from('pricing_versions')
+          .update({ status: 'archived', effective_to: new Date().toISOString() })
+          .eq('status', 'active');
+        const { error: actErr } = await supabase
+          .from('pricing_versions')
+          .update({ status: 'active', effective_from: new Date().toISOString(), effective_to: null })
+          .eq('id', versionId);
+        if (actErr) throw new Error(actErr.message || 'Failed to activate pricing version');
+      }
+    }
+
+    const versions = await this.getPricingVersions();
+    const target = versions.find((v) => v.id === versionId);
+    if (!target) throw new Error('Target pricing version not found');
+
+    const updated = versions.map((v) => {
+      if (v.id === versionId) {
+        return { ...v, status: 'active' as const, effective_from: new Date().toISOString(), effective_to: null };
+      } else if (v.status === 'active') {
+        return { ...v, status: 'archived' as const, effective_to: new Date().toISOString() };
+      }
+      return v;
+    });
+
+    localStorage.setItem(STORAGE_KEYS.PRICING_VERSIONS, JSON.stringify(updated));
+
+    if (target.items && target.items.length > 0) {
+      const primaryItem = target.items[0];
+      await this.updateSettings({
+        price_per_kg_paise: primaryItem.price_paise,
+        min_weight_restriction_grams: primaryItem.min_weight_grams,
+        min_weight_kg: Number((primaryItem.min_weight_grams / 1000).toFixed(2))
+      });
+    }
+
+    return true;
+  }
+
+  static async getActivePricing(): Promise<ActiveServicePricing[]> {
+    if (isLiveMode && import.meta.env.MODE !== 'test') {
+      try {
+        const { data, error } = await supabase.rpc('get_active_pricing');
+        if (!error && Array.isArray(data) && data.length > 0) {
+          return data as ActiveServicePricing[];
+        }
+      } catch (e) {
+        console.warn('RPC get_active_pricing failed, deriving from versions:', e);
+      }
+    }
+
+    const versions = await this.getPricingVersions();
+    const active = versions.find((v) => v.status === 'active') || versions[0];
+    const services = await this.getServices();
+
+    if (!active || !active.items) return [];
+
+    return active.items.map((it) => {
+      const srv = services.find((s) => s.id === it.service_id);
+      return {
+        pricing_version_id: active.id,
+        version_number: active.version_number,
+        service_id: it.service_id,
+        service_name: srv?.name || 'Laundry Service',
+        pricing_unit: srv?.pricing_unit || 'per_kg',
+        price_paise: it.price_paise,
+        min_weight_grams: it.min_weight_grams,
+        min_weight_kg: Number((it.min_weight_grams / 1000).toFixed(2))
+      };
+    });
+  }
+
+  // ----------------------------------------------------
   // Pickup Slots
   // ----------------------------------------------------
   static async getSlots(): Promise<PickupSlot[]> {
@@ -525,7 +697,7 @@ export class LaundryService {
     } else {
       const saved = localStorage.getItem(`${STORAGE_KEYS.ADDRESSES}_${userId}`);
       if (saved) {
-        try { addresses = JSON.parse(saved); } catch {}
+        try { addresses = JSON.parse(saved); } catch { }
       } else {
         addresses = [
           {
@@ -562,9 +734,9 @@ export class LaundryService {
         }
         // 3. Merge missing coordinates without blindly overwriting existing valid coordinates
         const hasExistingCoords = existing.latitude !== null && existing.latitude !== undefined &&
-                                  existing.longitude !== null && existing.longitude !== undefined;
+          existing.longitude !== null && existing.longitude !== undefined;
         const hasNewCoords = addr.latitude !== null && addr.latitude !== undefined &&
-                             addr.longitude !== null && addr.longitude !== undefined;
+          addr.longitude !== null && addr.longitude !== undefined;
         if (!hasExistingCoords && hasNewCoords) {
           existing.latitude = addr.latitude;
           existing.longitude = addr.longitude;
@@ -680,7 +852,7 @@ export class LaundryService {
       targetKey = `${STORAGE_KEYS.ADDRESSES}_${userId}`;
       const saved = localStorage.getItem(targetKey);
       if (saved) {
-        try { list = JSON.parse(saved); } catch {}
+        try { list = JSON.parse(saved); } catch { }
       }
     } else {
       for (let i = 0; i < localStorage.length; i++) {
@@ -693,7 +865,7 @@ export class LaundryService {
               targetKey = key;
               break;
             }
-          } catch {}
+          } catch { }
         }
       }
     }
@@ -751,7 +923,7 @@ export class LaundryService {
             return true;
           }
         }
-      } catch {}
+      } catch { }
     }
     return true;
   }
@@ -779,7 +951,7 @@ export class LaundryService {
 
     const saved = localStorage.getItem(STORAGE_KEYS.ORDERS);
     if (saved) {
-      try { return JSON.parse(saved); } catch {}
+      try { return JSON.parse(saved); } catch { }
     }
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(INITIAL_SAMPLE_ORDERS));
     return INITIAL_SAMPLE_ORDERS;
@@ -934,7 +1106,7 @@ export class LaundryService {
           }
         }
       }
-    } catch {}
+    } catch { }
 
     this.localSequenceCounter = Math.max(this.localSequenceCounter, maxSeq);
     let nextSeq = this.localSequenceCounter + 1;
@@ -1116,7 +1288,7 @@ export class LaundryService {
       pickup_latitude: data.pickup_latitude || null,
       pickup_longitude: data.pickup_longitude || null,
       client_submission_id: data.client_submission_id,
-      
+
       // Extensible Service & Pricing Snapshots (immutable once booked)
       service_id: serviceId,
       service_name: serviceName,
@@ -1124,12 +1296,12 @@ export class LaundryService {
       price_per_kg_paise: unitPricePaise,
       min_weight_kg: minWeightKg,
       delivery_charge_paise: settings.delivery_charge_paise,
-      
+
       measured_weight: null,
       billable_weight: null,
       total_amount_paise: null, // Pending weight
       paid_amount_paise: 0,
-      
+
       payment_status: 'pending',
       payment_method: 'cash',
       order_status: 'booked',
@@ -1137,7 +1309,7 @@ export class LaundryService {
       coupon_code: data.coupon_code || null,
       discount_paise: data.discount_paise || 0,
       coupon_snapshot: couponSnapshot,
-      
+
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
@@ -1303,8 +1475,8 @@ export class LaundryService {
         const batchId = pickupBatchMatch[1];
         const siblingOrders = orders.filter(
           o => o.id !== order.id &&
-               o.notes?.includes(batchId) &&
-               (o.order_status === 'booked' || o.order_status === 'pickup_assigned')
+            o.notes?.includes(batchId) &&
+            (o.order_status === 'booked' || o.order_status === 'pickup_assigned')
         );
         for (const sib of siblingOrders) {
           sib.assigned_pickup_id = staffId;
@@ -1325,8 +1497,8 @@ export class LaundryService {
         const batchId = pickupBatchMatch[1];
         const siblingOrders = orders.filter(
           o => o.id !== order.id &&
-               o.notes?.includes(batchId) &&
-               (o.order_status === 'booked' || o.order_status === 'pickup_assigned')
+            o.notes?.includes(batchId) &&
+            (o.order_status === 'booked' || o.order_status === 'pickup_assigned')
         );
         for (const sib of siblingOrders) {
           sib.assigned_pickup_id = staffId;
@@ -1340,10 +1512,13 @@ export class LaundryService {
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
 
-    await WhatsAppService.sendNotification(
+    await WhatsAppService.notifyPickupAssigned(
+      order.order_number,
       order.customer_phone,
-      'pickup_assigned',
-      `Hello ${order.customer_name}, our pickup executive ${staffName} (${staffPhone}) has been assigned for Order #${order.order_number}. They will arrive at your address during the scheduled slot (${order.pickup_slot}).`,
+      staffName,
+      staffPhone,
+      order.pickup_slot,
+      undefined,
       order.id
     );
 
@@ -1392,8 +1567,8 @@ export class LaundryService {
         const batchId = batchMatch[1];
         const siblingOrders = orders.filter(
           o => o.id !== order.id &&
-               o.notes?.includes(batchId) &&
-               (o.order_status === 'ready_for_delivery' || o.order_status === 'delivery_assigned')
+            o.notes?.includes(batchId) &&
+            (o.order_status === 'ready_for_delivery' || o.order_status === 'delivery_assigned')
         );
         for (const sib of siblingOrders) {
           sib.assigned_delivery_id = staffId;
@@ -1416,8 +1591,8 @@ export class LaundryService {
         const batchId = batchMatch[1];
         const siblingOrders = orders.filter(
           o => o.id !== order.id &&
-               o.notes?.includes(batchId) &&
-               (o.order_status === 'ready_for_delivery' || o.order_status === 'delivery_assigned')
+            o.notes?.includes(batchId) &&
+            (o.order_status === 'ready_for_delivery' || o.order_status === 'delivery_assigned')
         );
         for (const sib of siblingOrders) {
           sib.assigned_delivery_id = staffId;
@@ -1853,6 +2028,20 @@ export class LaundryService {
       );
     }
 
+    // Official paid customer communication on dispatch out for delivery (Section 8)
+    if (newStatus === 'out_for_delivery') {
+      const duePaise = Math.max(0, (order.total_amount_paise || 0) - (order.paid_amount_paise || 0));
+      await WhatsAppService.notifyOutForDelivery(
+        order.order_number,
+        order.customer_phone,
+        order.assigned_delivery_name || 'Delivery Associate',
+        order.assigned_delivery_phone || '9876543215',
+        duePaise / 100,
+        undefined,
+        order.id
+      );
+    }
+
     // Customer communication on delivery completion with optional next-order retention promotion
     if (newStatus === 'delivered') {
       let retentionPromoCode: string | undefined;
@@ -1860,13 +2049,23 @@ export class LaundryService {
         const coupons = await this.getCoupons(false);
         const promo = coupons.find(c => !c.first_time_only && c.is_active);
         if (promo) retentionPromoCode = promo.code;
-      } catch {}
+      } catch { }
 
       await WhatsAppService.notifyDelivered(
         order.order_number,
         order.customer_phone,
         order.id,
         retentionPromoCode
+      );
+    }
+
+    // Customer communication on order cancellation
+    if (newStatus === 'cancelled') {
+      await WhatsAppService.notifyCancelled(
+        order.order_number,
+        order.customer_phone,
+        cancellationReason || notes,
+        order.id
       );
     }
 
@@ -1878,7 +2077,7 @@ export class LaundryService {
   // ----------------------------------------------------
   static hasValidCoordinates(order: { pickup_latitude?: number | null; pickup_longitude?: number | null }): boolean {
     if (order.pickup_latitude === null || order.pickup_latitude === undefined ||
-        order.pickup_longitude === null || order.pickup_longitude === undefined) {
+      order.pickup_longitude === null || order.pickup_longitude === undefined) {
       return false;
     }
     const lat = typeof order.pickup_latitude === 'number' ? order.pickup_latitude : parseFloat(String(order.pickup_latitude));
@@ -1924,7 +2123,8 @@ export class LaundryService {
     notes?: string,
     recordedByOrName?: string,
     recordedByNameDisplay?: string,
-    idempotencyKey?: string
+    idempotencyKey?: string,
+    paymentType: PaymentType = 'full'
   ): Promise<Order & { payment: Payment }> {
     if (!amountPaise || amountPaise <= 0 || !Number.isInteger(amountPaise)) {
       throw new Error('Payment amount must be a positive integer value greater than zero (in paise).');
@@ -1938,7 +2138,7 @@ export class LaundryService {
       throw new Error('Cannot record payment for a cancelled order.');
     }
 
-    if (order.total_amount_paise === null || order.total_amount_paise === undefined) {
+    if (paymentType !== 'advance' && (order.total_amount_paise === null || order.total_amount_paise === undefined)) {
       throw new Error('Cannot record payment: Order has not yet been weighed and billed.');
     }
 
@@ -2021,6 +2221,8 @@ export class LaundryService {
       order_id: order.id,
       amount_paise: amountPaise,
       payment_method: paymentMethod,
+      payment_type: paymentType,
+      status: 'confirmed',
       transaction_reference: transactionReference?.trim(),
       notes: finalNotes,
       recorded_by: recordedByUuid || undefined,
@@ -2030,14 +2232,19 @@ export class LaundryService {
 
     if (isLiveMode) {
       // Execute via atomic PostgreSQL database RPC
-      const { data: rpcData, error: rpcError } = await supabase.rpc('record_order_payment', {
+      const rpcParams: Record<string, any> = {
         p_order_id: order.id,
         p_amount_paise: amountPaise,
         p_payment_method: paymentMethod,
         p_transaction_reference: transactionReference?.trim() || null,
         p_notes: finalNotes || null,
         p_idempotency_key: effectiveIdempotencyKey || null
-      });
+      };
+      if (paymentType && paymentType !== 'full') {
+        rpcParams.p_payment_type = paymentType;
+      }
+
+      const { data: rpcData, error: rpcError } = await supabase.rpc('record_order_payment', rpcParams);
 
       if (rpcError || !rpcData) {
         if (this.isRpcMissing(rpcError, 'record_order_payment')) {
@@ -2050,14 +2257,14 @@ export class LaundryService {
         payment.id = rpcData.payment_id;
       }
       order.paid_amount_paise = rpcData.paid_amount_paise ?? (order.paid_amount_paise + amountPaise);
-      order.payment_status = rpcData.payment_status ?? ((order.paid_amount_paise >= totalDue) ? 'paid' : 'partially_paid');
+      order.payment_status = rpcData.payment_status ?? ((totalDue > 0 && order.paid_amount_paise >= totalDue) ? 'paid' : (order.paid_amount_paise > 0 ? 'partially_paid' : 'pending'));
       order.payment_method = paymentMethod;
       order.updated_at = new Date().toISOString();
     } else {
       const newPaidAmount = order.paid_amount_paise + amountPaise;
       order.paid_amount_paise = newPaidAmount;
       order.payment_method = paymentMethod;
-      order.payment_status = (totalDue > 0 && newPaidAmount >= totalDue) ? 'paid' : 'partially_paid';
+      order.payment_status = (totalDue > 0 && newPaidAmount >= totalDue) ? 'paid' : (newPaidAmount > 0 ? 'partially_paid' : 'pending');
       order.updated_at = new Date().toISOString();
     }
 
@@ -2070,6 +2277,78 @@ export class LaundryService {
       `Receipt: Received ₹${amountPaise / 100} via ${paymentMethod === 'cash' ? 'Cash' : 'UPI'} for SuperWash Order #${order.order_number}. Remaining Balance: ₹${Math.max(0, totalDue - order.paid_amount_paise) / 100}. Thank you!`,
       order.id
     );
+
+    return Object.assign(order, { payment });
+  }
+
+  // ----------------------------------------------------
+  // Formal Refund Processing (RPC & Ledger Integration)
+  // ----------------------------------------------------
+  static async recordRefund(
+    orderId: string,
+    amountPaise: number,
+    reason: string,
+    transactionReference?: string,
+    idempotencyKey?: string
+  ): Promise<Order & { payment: Payment }> {
+    if (!amountPaise || amountPaise <= 0 || !Number.isInteger(amountPaise)) {
+      throw new Error('Refund amount must be a positive integer value greater than zero (in paise).');
+    }
+
+    const orders = await this.getOrders();
+    const order = orders.find(o => o.id === orderId);
+    if (!order) throw new Error('Order not found');
+
+    if (amountPaise > order.paid_amount_paise) {
+      throw new Error(`Refund amount (₹${amountPaise / 100}) cannot exceed amount paid (₹${order.paid_amount_paise / 100}).`);
+    }
+
+    const storedPayments: Payment[] = JSON.parse(localStorage.getItem(STORAGE_KEYS.PAYMENTS) || '[]');
+    const effectiveIdempotencyKey = idempotencyKey?.trim() || undefined;
+
+    let payment: Payment = {
+      id: generateUUID(),
+      order_id: order.id,
+      amount_paise: amountPaise,
+      payment_method: order.payment_method || 'upi_manual',
+      payment_type: 'refund',
+      status: 'refund_completed',
+      transaction_reference: transactionReference?.trim(),
+      notes: reason || 'Refund processed',
+      idempotency_key: effectiveIdempotencyKey,
+      created_at: new Date().toISOString()
+    };
+
+    if (isLiveMode) {
+      const { data: rpcData, error: rpcError } = await supabase.rpc('record_order_refund', {
+        p_order_id: order.id,
+        p_amount_paise: amountPaise,
+        p_reason: reason,
+        p_transaction_reference: transactionReference?.trim() || null,
+        p_idempotency_key: effectiveIdempotencyKey || null
+      });
+
+      if (rpcError || !rpcData) {
+        if (this.isRpcMissing(rpcError, 'record_order_refund')) {
+          throw new Error('The refund processing service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
+        }
+        throw new Error(rpcError?.message || 'Refund transaction failed in database RPC.');
+      }
+
+      if (rpcData.payment_id) {
+        payment.id = rpcData.payment_id;
+      }
+      order.paid_amount_paise = rpcData.paid_amount_paise ?? Math.max(0, order.paid_amount_paise - amountPaise);
+      order.payment_status = rpcData.payment_status ?? (order.paid_amount_paise === 0 ? 'refunded' : 'partially_refunded');
+      order.updated_at = new Date().toISOString();
+    } else {
+      order.paid_amount_paise = Math.max(0, order.paid_amount_paise - amountPaise);
+      order.payment_status = order.paid_amount_paise === 0 ? 'refunded' : 'partially_refunded';
+      order.updated_at = new Date().toISOString();
+    }
+
+    localStorage.setItem(STORAGE_KEYS.PAYMENTS, JSON.stringify([payment, ...storedPayments]));
+    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
 
     return Object.assign(order, { payment });
   }
@@ -2271,8 +2550,8 @@ export class LaundryService {
 
     const all = await this.getOrders();
     const cleanPhone = phone ? phone.replace(/[^0-9]/g, '').slice(-10) : '';
-    return all.filter(o => 
-      (userId && o.customer_id === userId) || 
+    return all.filter(o =>
+      (userId && o.customer_id === userId) ||
       (cleanPhone && o.customer_phone.replace(/[^0-9]/g, '').slice(-10) === cleanPhone)
     );
   }
@@ -2327,7 +2606,7 @@ export class LaundryService {
     return order;
   }
 
-  static async getStaffProfiles(includeInactive: boolean = true): Promise<Profile[]> {
+  static async getStaffProfiles(includeInactive: boolean = true, operationalOnly: boolean = false): Promise<Profile[]> {
     if (isLiveMode) {
       try {
         let query = supabase
@@ -2335,12 +2614,20 @@ export class LaundryService {
           .select('*')
           .neq('role', 'customer');
 
+        if (operationalOnly) {
+          query = query.in('role', ['manager', 'delivery']);
+        }
+
         if (!includeInactive) {
           query = query.eq('is_active', true);
         }
 
         const { data, error } = await query.order('created_at', { ascending: true });
         if (!error && data) {
+          let staffData = operationalOnly
+            ? data.filter((p) => (p.role === 'manager' || p.role === 'delivery') && (!p.deleted_at || includeInactive))
+            : data.filter((p) => p.role !== 'customer' && (!p.deleted_at || includeInactive));
+
           // Include active unclaimed staff pre-registrations so owner sees invited accounts
           try {
             const { data: preRegs } = await supabase
@@ -2349,10 +2636,14 @@ export class LaundryService {
               .is('claimed_at', null);
 
             if (preRegs && preRegs.length > 0) {
-              const existingEmails = new Set(data.map((p) => p.email?.toLowerCase()).filter(Boolean));
+              const existingEmails = new Set(staffData.map((p) => p.email?.toLowerCase()).filter(Boolean));
               for (const reg of preRegs) {
-                if (!existingEmails.has(reg.email.toLowerCase())) {
-                  data.push({
+                if (
+                  (!operationalOnly || reg.role === 'manager' || reg.role === 'delivery') &&
+                  reg.is_active !== false &&
+                  !existingEmails.has(reg.email?.toLowerCase())
+                ) {
+                  staffData.push({
                     id: reg.id,
                     email: reg.email,
                     phone: reg.phone,
@@ -2364,10 +2655,10 @@ export class LaundryService {
                 }
               }
             }
-          } catch {}
+          } catch { }
 
-          localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(data));
-          return data;
+          localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(staffData));
+          return staffData;
         }
         if (error) {
           console.warn('Notice querying remote staff profiles:', error.message);
@@ -2382,11 +2673,16 @@ export class LaundryService {
       try {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return includeInactive ? parsed : parsed.filter((p: Profile) => p.is_active);
+          const filtered = operationalOnly
+            ? parsed.filter((p: Profile) => (p.role === 'manager' || p.role === 'delivery') && (!p.deleted_at || includeInactive))
+            : parsed.filter((p: Profile) => p.role !== 'customer' && (!p.deleted_at || includeInactive));
+          return includeInactive ? filtered : filtered.filter((p: Profile) => p.is_active);
         }
-      } catch {}
+      } catch { }
     }
-    const initial = DEMO_PROFILES.filter(p => p.role !== 'customer');
+    const initial = operationalOnly
+      ? DEMO_PROFILES.filter(p => (p.role === 'manager' || p.role === 'delivery') && (!p.deleted_at || includeInactive))
+      : DEMO_PROFILES.filter(p => p.role !== 'customer' && (!p.deleted_at || includeInactive));
     localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(initial));
     return includeInactive ? initial : initial.filter(p => p.is_active);
   }
@@ -2531,7 +2827,7 @@ export class LaundryService {
               const errText = await ctx.text();
               if (errText) detailedMessage = errText;
             }
-          } catch {}
+          } catch { }
 
           if (!detailedMessage.startsWith('[HTTP')) {
             detailedMessage = `[HTTP ${httpStatus}] ${detailedMessage}`;
@@ -2785,40 +3081,7 @@ export class LaundryService {
       }
     }
 
-    // 5. Inspect foreign keys, order assignments, and audit records
-    let hasOrderAssignments = false;
-    try {
-      if (isLiveMode) {
-        const { data: assignedOrders, error: checkErr } = await supabase
-          .from('orders')
-          .select('id')
-          .or(`assigned_pickup_id.eq.${staffId},assigned_delivery_id.eq.${staffId},pickup_weighed_by.eq.${staffId}`)
-          .limit(1);
-
-        if (!checkErr && assignedOrders && assignedOrders.length > 0) {
-          hasOrderAssignments = true;
-        }
-      } else {
-        const orders = await this.getOrders();
-        hasOrderAssignments = orders.some(
-          o => o.assigned_pickup_id === staffId || o.assigned_delivery_id === staffId
-        );
-      }
-    } catch {
-      // In case of query issue, proceed safely
-    }
-
-    // 6. If referenced by orders, deactivate instead to preserve audit history & referential integrity
-    if (hasOrderAssignments) {
-      await this.toggleStaffStatus(staffId, false, callerId, callerRole);
-      return {
-        success: true,
-        deactivatedInstead: true,
-        message: `Staff member ${staff.full_name} is assigned to existing orders. To preserve audit history and referential integrity, their account has been safely deactivated instead of deleted.`
-      };
-    }
-
-    // 7. Atomic secure deletion via SECURITY DEFINER database RPC (Direct table DELETE is intentionally disabled)
+    // 5. Atomic secure deletion via SECURITY DEFINER database RPC in live mode
     if (isLiveMode) {
       const { data: rpcData, error: rpcErr } = await supabase.rpc('delete_staff_profile', {
         p_staff_id: staffId
@@ -2838,15 +3101,44 @@ export class LaundryService {
       if (rpcData.deactivated_instead) {
         // Synchronize local cache to show deactivated status
         const cached = profiles.find(p => p.id === staffId);
-        if (cached) cached.is_active = false;
+        if (cached) {
+          cached.is_active = false;
+          cached.deleted_at = new Date().toISOString();
+        }
         localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(profiles));
         const demoProfile = DEMO_PROFILES.find(p => p.id === staffId);
-        if (demoProfile) demoProfile.is_active = false;
+        if (demoProfile) {
+          demoProfile.is_active = false;
+          demoProfile.deleted_at = new Date().toISOString();
+        }
 
         return {
           success: true,
           deactivatedInstead: true,
           message: rpcData.message || `Staff member ${staff.full_name} has historical records and was safely deactivated instead of deleted.`
+        };
+      }
+    } else {
+      // Offline / Demo Mode: Inspect foreign keys and order assignments locally
+      const orders = await this.getOrders();
+      const hasOrderAssignments = orders.some(
+        o => o.assigned_pickup_id === staffId || o.assigned_delivery_id === staffId
+      );
+
+      if (hasOrderAssignments) {
+        await this.toggleStaffStatus(staffId, false, callerId, callerRole);
+        staff.is_active = false;
+        staff.deleted_at = new Date().toISOString();
+        localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(profiles));
+        const demoProfile = DEMO_PROFILES.find(p => p.id === staffId);
+        if (demoProfile) {
+          demoProfile.is_active = false;
+          demoProfile.deleted_at = new Date().toISOString();
+        }
+        return {
+          success: true,
+          deactivatedInstead: true,
+          message: `Staff member ${staff.full_name} is assigned to existing orders. To preserve audit history and referential integrity, their account has been safely deactivated instead of deleted.`
         };
       }
     }
@@ -2956,6 +3248,20 @@ export class LaundryService {
   }
 
   static async getAllPayments(): Promise<Payment[]> {
+    if (isLiveMode && import.meta.env.MODE !== 'test') {
+      try {
+        const { data, error } = await supabase
+          .from('payments')
+          .select('*')
+          .order('created_at', { ascending: false });
+        if (!error && data) {
+          localStorage.setItem(STORAGE_KEYS.PAYMENTS, JSON.stringify(data));
+          return data as Payment[];
+        }
+      } catch (e) {
+        console.warn('Notice querying remote payments:', e);
+      }
+    }
     return this.getLocalFallback<Payment[]>(STORAGE_KEYS.PAYMENTS, []);
   }
 
@@ -2991,63 +3297,63 @@ export class LaundryService {
 
   static async addServiceArea(data: Omit<ServiceArea, 'id' | 'created_at' | 'updated_at'>): Promise<ServiceArea> {
     const cleanPin = (data.pincode || '').trim().replace(/[^0-9]/g, '');
-    if (cleanPin.length !== 6) {
-      throw new Error('Please enter a valid 6-digit Indian PIN code.');
-    }
-
-    const areaName = (data.area_name || (data as any).name || '').trim();
-    if (!areaName) {
-      throw new Error('Please provide an area or locality name.');
-    }
-
-    const areas = await this.getServiceAreas();
-    if (areas.some(a => a.pincode === cleanPin)) {
-      throw new Error(`PIN code ${cleanPin} is already registered (${areas.find(a => a.pincode === cleanPin)?.area_name || 'Service Area'}).`);
-    }
-
-    // Precise database payload matching public.service_areas table schema:
-    // (id, pincode, area_name, city, state, is_active, created_at, updated_at)
-    // Note: 'name' is NOT a database column, so it is strictly excluded from dbPayload.
-    const nowIso = new Date().toISOString();
-    const dbPayload = {
-      id: generateUUID(),
-      pincode: cleanPin,
-      area_name: areaName,
-      city: (data.city || 'Bengaluru').trim(),
-      state: (data.state || 'Karnataka').trim(),
-      is_active: data.is_active !== undefined ? data.is_active : true,
-      created_at: nowIso,
-      updated_at: nowIso
-    };
-
-    if (isLiveMode) {
-      const { data: inserted, error } = await supabase
-        .from('service_areas')
-        .insert(dbPayload)
-        .select()
-        .single();
-
-      if (error) {
-        throw new Error(`Failed to save service area in database: ${error.message}`);
+      if (cleanPin.length !== 6 || !/^[1-9][0-9]{5}$/.test(cleanPin)) {
+        throw new Error('Please enter a valid 6-digit Indian PIN code.');
       }
 
-      const result: ServiceArea = {
-        ...(inserted || dbPayload),
-        name: (inserted || dbPayload).area_name
-      };
-      const updatedList = [...areas.filter(a => a.id !== result.id), result];
-      localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(updatedList));
-      return result;
-    }
+      const areaName = (data.area_name || (data as any).name || '').trim();
+      if (!areaName) {
+        throw new Error('Please provide an area or locality name.');
+      }
 
-    const newArea: ServiceArea = {
-      ...dbPayload,
-      name: areaName
-    };
-    const updated = [...areas, newArea];
-    localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(updated));
-    return newArea;
-  }
+      const areas = await this.getServiceAreas();
+      if (areas.some(a => a.pincode === cleanPin)) {
+        throw new Error(`PIN code ${cleanPin} is already registered (${areas.find(a => a.pincode === cleanPin)?.area_name || 'Service Area'}).`);
+      }
+
+      // Precise database payload matching public.service_areas table schema:
+      // (id, pincode, area_name, city, state, is_active, created_at, updated_at)
+      // Note: 'name' is NOT a database column, so it is strictly excluded from dbPayload.
+      const nowIso = new Date().toISOString();
+      const dbPayload = {
+        id: generateUUID(),
+        pincode: cleanPin,
+        area_name: areaName,
+        city: (data.city || 'Bengaluru').trim(),
+        state: (data.state || 'Karnataka').trim(),
+        is_active: data.is_active !== undefined ? data.is_active : true,
+        created_at: nowIso,
+        updated_at: nowIso
+      };
+
+      if (isLiveMode) {
+        const { data: inserted, error } = await supabase
+          .from('service_areas')
+          .insert(dbPayload)
+          .select()
+          .single();
+
+        if (error) {
+          throw new Error(`Failed to save service area in database: ${error.message}`);
+        }
+
+        const result: ServiceArea = {
+          ...(inserted || dbPayload),
+          name: (inserted || dbPayload).area_name
+        };
+        const updatedList = [...areas.filter(a => a.id !== result.id), result];
+        localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(updatedList));
+        return result;
+      }
+
+      const newArea: ServiceArea = {
+        ...dbPayload,
+        name: areaName
+      };
+      const updated = [...areas, newArea];
+      localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(updated));
+      return newArea;
+    }
 
   static async updateServiceArea(id: string, updates: Partial<ServiceArea>): Promise<ServiceArea> {
     const areas = await this.getServiceAreas();
@@ -3098,8 +3404,8 @@ export class LaundryService {
   }
 
   static async isPincodeServiceable(pincode: string): Promise<boolean> {
-    const cleanPin = pincode.trim().replace(/[^0-9]/g, '');
-    if (cleanPin.length !== 6) return false;
+    const cleanPin = (pincode || '').trim().replace(/[^0-9]/g, '');
+    if (cleanPin.length !== 6 || !/^[1-9][0-9]{5}$/.test(cleanPin)) return false;
 
     try {
       const areas = await this.getServiceAreas();
@@ -3109,11 +3415,49 @@ export class LaundryService {
           return Boolean(found.is_active);
         }
       }
-    } catch {}
+    } catch { }
 
-    const settings = await this.getSettings();
-    const supported = settings.serviceable_pincodes || ['560038', '560008', '560103', '560075', '560001', '560066', '560037'];
-    return supported.includes(cleanPin);
+    // Fall back to business settings serviceable_pincodes array if configured
+    try {
+      const settings = await this.getSettings();
+      if (settings.serviceable_pincodes && Array.isArray(settings.serviceable_pincodes) && settings.serviceable_pincodes.length > 0) {
+        return settings.serviceable_pincodes.includes(cleanPin);
+      }
+    } catch { }
+
+    return false;
+  }
+
+  /**
+   * Retrieves the configured service area details (locality name, city, active status)
+   * for a given Indian PIN code.
+   */
+  static async getServiceAreaForPincode(pincode: string): Promise<ServiceArea | undefined> {
+    const cleanPin = (pincode || '').trim().replace(/[^0-9]/g, '');
+    if (cleanPin.length !== 6 || !/^[1-9][0-9]{5}$/.test(cleanPin)) return undefined;
+
+    try {
+      const areas = await this.getServiceAreas();
+      const found = areas.find(a => a.pincode === cleanPin);
+      if (found) return found;
+    } catch { }
+
+    try {
+      const settings = await this.getSettings();
+      if (settings.serviceable_pincodes?.includes(cleanPin)) {
+        return {
+          id: `pin-${cleanPin}`,
+          pincode: cleanPin,
+          area_name: 'Bengaluru Active Zone',
+          name: 'Bengaluru Active Zone',
+          city: 'Bengaluru',
+          state: 'Karnataka',
+          is_active: true
+        };
+      }
+    } catch { }
+
+    return undefined;
   }
 
   static async checkSlotAvailability(date: string, slotName: string): Promise<{ available: boolean; bookedCount: number; maxCapacity: number }> {
@@ -3249,7 +3593,7 @@ export class LaundryService {
     const updatedItem: LaundryServiceItem = {
       ...item,
       ...updates,
-      min_weight_kg: (updates.pricing_unit || item.pricing_unit) === 'per_kg' 
+      min_weight_kg: (updates.pricing_unit || item.pricing_unit) === 'per_kg'
         ? (updates.min_weight_kg !== undefined ? updates.min_weight_kg : item.min_weight_kg)
         : 0,
       updated_at: new Date().toISOString()
@@ -3447,12 +3791,12 @@ export class LaundryService {
 
     // Operational Metrics
     const ordersBooked = currentOrders.length;
-    const ordersInProgress = orders.filter(o => 
+    const ordersInProgress = orders.filter(o =>
       ['pickup_assigned', 'collected', 'washing', 'ready_for_delivery', 'out_for_delivery'].includes(o.order_status)
     ).length;
     const ordersDelivered = currentOrders.filter(o => o.order_status === 'delivered').length;
     const ordersCancelled = currentOrders.filter(o => o.order_status === 'cancelled').length;
-    const ordersAwaitingWeight = orders.filter(o => 
+    const ordersAwaitingWeight = orders.filter(o =>
       o.order_status !== 'cancelled' && (o.measured_weight === null || o.measured_weight === undefined)
     ).length;
     const ordersReadyForDelivery = orders.filter(o => o.order_status === 'ready_for_delivery').length;
@@ -3467,11 +3811,15 @@ export class LaundryService {
     const currentPayments = allPayments.filter(p => paymentInPeriod(p, startDate, endDate));
     const prevPayments = allPayments.filter(p => paymentInPeriod(p, prevStartDate, prevEndDate));
 
-    const actualCollectedPaise = currentPayments.reduce((acc, p) => acc + p.amount_paise, 0);
-    const previousPeriodCollectedPaise = prevPayments.reduce((acc, p) => acc + p.amount_paise, 0);
+    // Only confirmed collections count toward verified revenue
+    const confirmedCurrentPayments = currentPayments.filter(p => !p.status || p.status === 'confirmed');
+    const confirmedPrevPayments = prevPayments.filter(p => !p.status || p.status === 'confirmed');
 
-    const cashCollectedPaise = currentPayments.filter(p => p.payment_method === 'cash').reduce((acc, p) => acc + p.amount_paise, 0);
-    const upiCollectedPaise = currentPayments.filter(p => p.payment_method === 'upi_manual').reduce((acc, p) => acc + p.amount_paise, 0);
+    const actualCollectedPaise = confirmedCurrentPayments.reduce((acc, p) => acc + p.amount_paise, 0);
+    const previousPeriodCollectedPaise = confirmedPrevPayments.reduce((acc, p) => acc + p.amount_paise, 0);
+
+    const cashCollectedPaise = confirmedCurrentPayments.filter(p => p.payment_method === 'cash').reduce((acc, p) => acc + p.amount_paise, 0);
+    const upiCollectedPaise = confirmedCurrentPayments.filter(p => p.payment_method === 'upi_manual').reduce((acc, p) => acc + p.amount_paise, 0);
 
     const nonCancelledAll = orders.filter(o => o.order_status !== 'cancelled');
     const outstandingBalancePaise = nonCancelledAll.reduce((acc, o) => {
@@ -3479,7 +3827,7 @@ export class LaundryService {
       return acc + Math.max(0, bill - o.paid_amount_paise);
     }, 0);
 
-    const ordersAwaitingPayment = nonCancelledAll.filter(o => 
+    const ordersAwaitingPayment = nonCancelledAll.filter(o =>
       o.payment_status !== 'paid' && (o.total_amount_paise || 0) > 0
     ).length;
 
@@ -3889,7 +4237,7 @@ export class LaundryService {
             total_redemptions: data.total_redemptions !== undefined ? data.total_redemptions : item.total_redemptions
           };
         }
-      } catch {}
+      } catch { }
     }
     return { id: item.id, total_redemptions: item.total_redemptions };
   }
@@ -4009,7 +4357,8 @@ export class LaundryService {
     rawCode: string,
     customerPhone: string,
     subtotalPaise: number,
-    serviceId?: string
+    serviceId?: string,
+    isBookingEstimate: boolean = false
   ): Promise<CouponValidationResult> {
     const cleanCode = (rawCode || '').trim().toUpperCase();
     if (!cleanCode) {
@@ -4024,7 +4373,8 @@ export class LaundryService {
           p_code: cleanCode,
           p_customer_phone: cleanPhone,
           p_subtotal_paise: subtotalPaise,
-          p_service_id: isUuid ? serviceId : null
+          p_service_id: isUuid ? serviceId : null,
+          p_is_booking_estimate: isBookingEstimate
         });
         if (error) {
           console.warn('Server coupon validation error:', error.message);
@@ -4086,6 +4436,24 @@ export class LaundryService {
     }
 
     if (coupon.min_order_paise > 0 && subtotalPaise < coupon.min_order_paise) {
+      if (isBookingEstimate) {
+        // Option A: Allow customer to reserve coupon during preliminary booking estimate.
+        // Full threshold eligibility is finalized upon actual physical scale weigh-in.
+        const minRs = (coupon.min_order_paise / 100).toFixed(0);
+        return {
+          valid: true,
+          code: cleanCode,
+          reason: `Coupon "${cleanCode}" attached! Minimum order of ₹${minRs} will be verified upon physical scale weigh-in.`,
+          discount_type: coupon.discount_type,
+          discount_value: coupon.discount_value,
+          discount_paise: coupon.discount_type === 'percentage'
+            ? Math.round(coupon.min_order_paise * (coupon.discount_value / 100))
+            : coupon.discount_value,
+          min_order_paise: coupon.min_order_paise,
+          coupon_id: coupon.id
+        };
+      }
+
       const minRs = (coupon.min_order_paise / 100).toFixed(0);
       return {
         valid: false,

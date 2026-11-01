@@ -151,10 +151,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (session?.user && !sessionError) {
             const profile = await syncSupabaseProfile(session.user);
             if (isMounted) {
-              setCurrentUser(profile);
-              if (profile && profile.is_active !== false) {
-                localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profile));
+              if (profile && (profile.is_active === false || profile.deleted_at)) {
+                await supabase.auth.signOut();
+                localStorage.removeItem(AUTH_STORAGE_KEY);
+                setCurrentUser(null);
+                setIsLoading(false);
+                return;
               }
+              setCurrentUser(profile);
+              localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profile));
               setIsLoading(false);
               return;
             }
@@ -327,7 +332,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return { success: false, message: error?.message || 'Invalid email or password' };
         }
         const profile = await syncSupabaseProfile(data.user);
-        if (profile && profile.is_active === false) {
+        if (profile && (profile.is_active === false || profile.deleted_at)) {
           await supabase.auth.signOut();
           localStorage.removeItem(AUTH_STORAGE_KEY);
           setCurrentUser(null);
@@ -347,7 +352,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const matchedProfile = DEMO_PROFILES.find(p => p.email === email);
     if (matchedProfile) {
-      if (matchedProfile.is_active === false) {
+      if (matchedProfile.is_active === false || matchedProfile.deleted_at) {
         return {
           success: false,
           message: 'Your staff account has been deactivated. Please contact the business owner.'
