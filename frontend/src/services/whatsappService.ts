@@ -1,5 +1,6 @@
 import { NotificationLog, BusinessSettings } from '../types';
 import { supabase, isSupabaseConfigured } from './supabase';
+import { STORAGE_KEYS } from './laundryService';
 
 export type WhatsAppEventType =
   | 'booking_confirmed'
@@ -168,7 +169,9 @@ export class WhatsAppService {
     let effectiveSettings: BusinessSettings | null = settings || null;
     if (!effectiveSettings) {
       try {
-        const stored = localStorage.getItem('superwash_business_settings');
+        const stored =
+          localStorage.getItem(STORAGE_KEYS.SETTINGS) ||
+          localStorage.getItem('superwash_business_settings');
         if (stored) effectiveSettings = JSON.parse(stored);
       } catch {}
     }

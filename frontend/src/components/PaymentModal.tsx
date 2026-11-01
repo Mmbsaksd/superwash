@@ -14,6 +14,7 @@ interface PaymentModalProps {
   recordedBy?: string;
   recordedByName?: string;
   isStaff?: boolean;
+  settings?: BusinessSettings | null;
 }
 
 export const PaymentModal: React.FC<PaymentModalProps> = ({
@@ -23,10 +24,11 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   onPaymentSuccess,
   recordedBy,
   recordedByName,
-  isStaff = true
+  isStaff = true,
+  settings: initialSettings = null
 }) => {
   const { currentUser } = useAuth();
-  const [settings, setSettings] = useState<BusinessSettings | null>(null);
+  const [settings, setSettings] = useState<BusinessSettings | null>(initialSettings);
   const [method, setMethod] = useState<'cash' | 'upi_manual'>('upi_manual');
   const [amountInput, setAmountInput] = useState<string>('');
   const [utrReference, setUtrReference] = useState<string>('');
@@ -42,14 +44,18 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      LaundryService.getSettings().then(setSettings);
+      if (initialSettings) {
+        setSettings(initialSettings);
+      } else {
+        LaundryService.getSettings().then(setSettings);
+      }
       setAmountInput(balanceRs);
       setError(null);
       setSuccessMsg(null);
       setUtrReference('');
       setNotes('');
     }
-  }, [isOpen, balanceRs]);
+  }, [isOpen, balanceRs, initialSettings]);
 
   if (!isOpen) return null;
 
@@ -346,8 +352,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
             <div className="space-y-4 pt-1">
               {balancePaise > 0 ? (
                 <>
-                  {/* Option 1: Instant Online Payment via Razorpay */}
-                  {settings?.online_payment_enabled !== false ? (
+                  {/* Option 1: Instant Online Payment via Razorpay - Only shown if explicitly enabled */}
+                  {Boolean(settings?.online_payment_enabled) && (
                     <div className="p-4 bg-gradient-to-br from-brand-50 to-cyan-50 border border-brand-200 rounded-2xl space-y-3">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
@@ -355,7 +361,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                           <span className="font-bold text-xs text-slate-900">Instant Online Payment</span>
                         </div>
                         <span className="text-[10px] font-bold px-2 py-0.5 bg-brand-100 text-brand-700 rounded-full">
-                          Recommended
+                          Online
                         </span>
                       </div>
                       <p className="text-[11px] text-slate-600">
@@ -380,39 +386,51 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                         )}
                       </button>
                     </div>
-                  ) : (
-                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-1.5">
-                      <div className="flex items-center gap-2">
-                        <CreditCard className="w-4 h-4 text-slate-400" />
-                        <span className="font-bold text-xs text-slate-700">Online Payments Temporarily Disabled</span>
-                      </div>
-                      <p className="text-[11px] text-slate-500 leading-relaxed">
-                        Automated online gateway payments are currently paused by store management. Please settle your balance via Cash on Delivery or UPI upon doorstep delivery.
-                      </p>
-                    </div>
                   )}
 
-                  {/* Option 2: Cash on Delivery */}
+                  {/* Cash on Delivery (Approved Default Policy) */}
                   {settings?.cod_payment_enabled !== false ? (
-                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex items-start gap-3">
-                      <Banknote className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
-                      <div className="space-y-1">
-                        <h4 className="font-bold text-xs text-slate-900">Cash on Delivery (COD)</h4>
-                        <p className="text-[11px] text-slate-600 leading-relaxed">
-                          Prefer to pay with cash? You can hand cash directly to our delivery executive when your washed clothes are delivered to your doorstep.
+                    <div className="p-4 bg-emerald-50/70 border border-emerald-200 rounded-2xl space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Banknote className="w-5 h-5 text-emerald-600" />
+                          <span className="font-bold text-xs text-slate-900">Cash on Delivery (Doorstep Payment)</span>
+                        </div>
+                        <span className="text-[10px] font-bold px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded-full">
+                          Standard Policy
+                        </span>
+                      </div>
+                      <div className="bg-white/90 p-3 rounded-xl border border-emerald-100 flex items-center justify-between">
+                        <span className="text-xs font-semibold text-slate-700">Amount Due at Delivery:</span>
+                        <span className="text-sm font-black text-emerald-700">₹{balanceRs}</span>
+                      </div>
+                      <div className="space-y-1.5 text-[11px] text-slate-600 leading-relaxed">
+                        <p className="flex items-start gap-1.5">
+                          <span className="text-emerald-600 font-bold">•</span>
+                          <span>Payment is collected in cash by our verified delivery courier when your order arrives.</span>
+                        </p>
+                        <p className="flex items-start gap-1.5">
+                          <span className="text-emerald-600 font-bold">•</span>
+                          <span>Our staff will immediately record the payment and provide a digital receipt upon handover.</span>
+                        </p>
+                        <p className="flex items-start gap-1.5">
+                          <span className="text-emerald-600 font-bold">•</span>
+                          <span>No advance payment or online pre-payment is required.</span>
                         </p>
                       </div>
                     </div>
                   ) : (
-                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3">
-                      <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-                      <div className="space-y-1">
-                        <h4 className="font-bold text-xs text-amber-900">Cash Collection Paused</h4>
-                        <p className="text-[11px] text-amber-800 leading-relaxed">
-                          Cash on delivery is currently disabled by store management. Please settle payments via digital methods.
-                        </p>
+                    !settings?.online_payment_enabled && (
+                      <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3">
+                        <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                        <div className="space-y-1">
+                          <h4 className="font-bold text-xs text-amber-900">Payment Collection Notice</h4>
+                          <p className="text-[11px] text-amber-800 leading-relaxed">
+                            Please contact store support to coordinate settlement for order #{order.order_number}.
+                          </p>
+                        </div>
                       </div>
-                    </div>
+                    )
                   )}
                 </>
               ) : (

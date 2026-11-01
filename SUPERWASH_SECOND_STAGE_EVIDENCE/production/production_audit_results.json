@@ -1,0 +1,98 @@
+[
+  {
+    "testId": "PROD-SEC-RLS-ORDERS-01",
+    "category": "Production RLS Enforcement",
+    "description": "Anonymous API request to /rest/v1/orders table",
+    "expected": "RLS restricts query; returns 0 rows, preventing exposure of real customer order data",
+    "actual": "Orders returned to anon: 0 (Status: 200)",
+    "status": "PASS",
+    "evidence": "N/A",
+    "severity": "Critical",
+    "notes": "",
+    "timestamp": "2026-11-01T09:59:44.479Z"
+  },
+  {
+    "testId": "PROD-SEC-NOTIF-LOGS-01",
+    "category": "Production Privacy & Role Protection",
+    "description": "Anonymous API request to /rest/v1/notification_logs table containing customer phone numbers",
+    "expected": "PostgreSQL table privileges deny access (HTTP 401/42501)",
+    "actual": "HTTP Status: 401, Message: \"permission denied for table notification_logs\"",
+    "status": "PASS",
+    "evidence": "N/A",
+    "severity": "Critical",
+    "notes": "",
+    "timestamp": "2026-11-01T09:59:44.480Z"
+  },
+  {
+    "testId": "PROD-SEC-COUPONS-ENCAPSULATION-01",
+    "category": "Production API Surface Encapsulation",
+    "description": "Anonymous direct SELECT on /rest/v1/coupons table",
+    "expected": "Direct SELECT denied to anon (HTTP 401/42501); validation strictly routed through validate_coupon RPC",
+    "actual": "HTTP Status: 401, Code: 42501",
+    "status": "PASS",
+    "evidence": "N/A",
+    "severity": "High",
+    "notes": "",
+    "timestamp": "2026-11-01T09:59:44.480Z"
+  },
+  {
+    "testId": "PROD-UI-LANDING-01",
+    "category": "Production Visual & Brand Integrity",
+    "description": "Customer navigates to production landing page (https://superwash.pages.dev)",
+    "expected": "Page loads with brand \"SuperWash Exprez\", official contact \"+91 8217541193\", and standard tariff ₹79/kg",
+    "actual": "Brand found: true, Phone found: true, Rate ₹79 found: true, Title: \"SuperWash Exprez | Laundry Pickup & Delivery\"",
+    "status": "PASS",
+    "evidence": "production/01_production_homepage.png",
+    "severity": "Critical",
+    "notes": "",
+    "timestamp": "2026-11-01T09:59:49.100Z"
+  },
+  {
+    "testId": "PROD-UI-CAROUSEL-01",
+    "category": "Production Marketing & Promotional Display",
+    "description": "Inspection of promotional carousel banner on live production",
+    "expected": "Displays WELCOME50 promotional offer with explicit ₹150 minimum spend rule",
+    "actual": "Banner visible: true, ₹150 min spend mentioned: true",
+    "status": "PASS",
+    "evidence": "production/02_production_welcome_banner.png",
+    "severity": "High",
+    "notes": "",
+    "timestamp": "2026-11-01T09:59:49.274Z"
+  },
+  {
+    "testId": "PROD-UI-BOOKING-01",
+    "category": "Production Customer Booking Journey",
+    "description": "Customer navigates to booking flow on production (https://superwash.pages.dev/customer?tab=book)",
+    "expected": "Booking form renders with address input, slot picker, and service selection",
+    "actual": "Address input visible: true, Slot options visible: true",
+    "status": "PASS",
+    "evidence": "production/03_production_booking_page.png",
+    "severity": "Critical",
+    "notes": "",
+    "timestamp": "2026-11-01T09:59:52.290Z"
+  },
+  {
+    "testId": "PROD-UI-HOWITWORKS-01",
+    "category": "Production Educational Architecture",
+    "description": "Customer inspects How It Works page on production",
+    "expected": "Displays full 4-step laundry workflow: Schedule, Pickup, Wash, Express Delivery",
+    "actual": "4-step workflow visible: true",
+    "status": "PASS",
+    "evidence": "production/04_production_how_it_works.png",
+    "severity": "Medium",
+    "notes": "",
+    "timestamp": "2026-11-01T09:59:55.310Z"
+  },
+  {
+    "testId": "PROD-UI-AUTH-01",
+    "category": "Production Authentication Gateway",
+    "description": "Customer/Staff accesses authentication portal on production (https://superwash.pages.dev/login)",
+    "expected": "Authentication portal loads securely with official brand header and sign-in options",
+    "actual": "Authentication portal loaded: true",
+    "status": "PASS",
+    "evidence": "production/05_production_auth_login.png",
+    "severity": "Critical",
+    "notes": "",
+    "timestamp": "2026-11-01T09:59:57.062Z"
+  }
+]

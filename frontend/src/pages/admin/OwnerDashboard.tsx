@@ -1058,51 +1058,51 @@ export const OwnerDashboard: React.FC = () => {
     };
 
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-24">
+      <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-24 w-full max-w-full overflow-x-hidden">
         {/* Header */}
         <div className="bg-slate-900 text-white shadow-md sticky top-0 z-30">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
+          <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-4 flex items-center justify-between gap-2">
             <Link
               to="/admin"
               onClick={() => setActiveTab('overview')}
-              className="flex items-center gap-3 group hover:opacity-90 transition"
+              className="flex items-center gap-2 sm:gap-3 group hover:opacity-90 transition min-w-0"
               title="SuperWash Business Owner Portal"
             >
-              <div className="w-10 h-10 rounded-2xl bg-amber-400/20 text-amber-400 flex items-center justify-center group-hover:scale-105 transition-transform">
-                <Shield className="w-6 h-6" />
+              <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-2xl bg-amber-400/20 text-amber-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                <Shield className="w-5 h-5 sm:w-6 sm:h-6" />
               </div>
-              <div>
-                <h1 className="font-black text-lg leading-tight">SuperWash Exprez • Business Owner</h1>
-                <p className="text-xs text-slate-400">Operations, Settings & Quality Portal</p>
+              <div className="min-w-0">
+                <h1 className="font-black text-sm sm:text-lg leading-tight truncate">SuperWash Exprez</h1>
+                <p className="text-[10px] sm:text-xs text-slate-400 truncate">Owner Portal</p>
               </div>
             </Link>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
               <PwaInstallPrompt
                 variant="inline-button"
                 portalName="Business Owner"
-                className="bg-slate-800 hover:bg-slate-700 text-slate-300"
+                className="bg-slate-800 hover:bg-slate-700 text-slate-300 hidden md:inline-flex"
               />
               <button
                 onClick={() => setIsCreatingManualOrder(true)}
-                className="py-2 px-3.5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-sm transition"
+                className="py-1.5 sm:py-2 px-2.5 sm:px-3.5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-sm transition"
               >
-                <Plus className="w-4 h-4" />
-                <span>+ Manual Order</span>
+                <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                <span className="hidden sm:inline">+ Manual Order</span>
               </button>
               <button
                 onClick={loadAllData}
-                className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl transition cursor-pointer"
+                className="p-1.5 sm:p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl transition cursor-pointer"
                 title="Refresh"
               >
-                <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${isLoading ? 'animate-spin' : ''}`} />
               </button>
               <button
                 onClick={logout}
-                className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl transition cursor-pointer flex items-center gap-1.5 text-xs font-semibold"
+                className="p-1.5 sm:p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl transition cursor-pointer flex items-center gap-1 text-xs font-semibold"
                 title="Sign Out"
               >
-                <LogOut className="w-4 h-4" />
+                <LogOut className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                 <span className="hidden sm:inline">Sign Out</span>
               </button>
             </div>

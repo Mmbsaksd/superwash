@@ -3480,14 +3480,25 @@ export const CustomerHome: React.FC = () => {
                               </button>
 
                               {currentActiveOrder.total_amount_paise && currentActiveOrder.payment_status !== 'paid' && (
-                                <button
-                                  type="button"
-                                  onClick={() => setSelectedPaymentOrder(currentActiveOrder)}
-                                  className="flex-1 py-2.5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer"
-                                >
-                                  <CreditCard className="w-4 h-4" />
-                                  <span>Pay Online (₹{((currentActiveOrder.total_amount_paise - currentActiveOrder.paid_amount_paise) / 100).toFixed(2)})</span>
-                                </button>
+                                isOnlineAvailable ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedPaymentOrder(currentActiveOrder)}
+                                    className="flex-1 py-2.5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer"
+                                  >
+                                    <CreditCard className="w-4 h-4" />
+                                    <span>Pay Online (₹{((currentActiveOrder.total_amount_paise - currentActiveOrder.paid_amount_paise) / 100).toFixed(2)})</span>
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedPaymentOrder(currentActiveOrder)}
+                                    className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-md shadow-emerald-600/20 transition flex items-center justify-center gap-2 cursor-pointer"
+                                  >
+                                    <Banknote className="w-4 h-4" />
+                                    <span>Cash on Delivery (₹{((currentActiveOrder.total_amount_paise - currentActiveOrder.paid_amount_paise) / 100).toFixed(2)} due at doorstep)</span>
+                                  </button>
+                                )
                               )}
                             </div>
                           </div>
@@ -4017,6 +4028,7 @@ export const CustomerHome: React.FC = () => {
                     setSelectedPaymentOrder(null);
                   }}
                   isStaff={false}
+                  settings={settings}
                 />
               )}
 

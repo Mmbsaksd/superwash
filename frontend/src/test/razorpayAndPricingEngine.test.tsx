@@ -6,6 +6,7 @@ import { RazorpayService } from '../services/razorpayService';
 import { PaymentModal } from '../components/PaymentModal';
 import { Order, BusinessSettings } from '../types';
 import { AuthProvider } from '../context/AuthContext';
+import { DEFAULT_SETTINGS } from '../services/laundryService';
 
 describe('PricingEngine Deterministic Calculations', () => {
   it('correctly calculates billable weight and handles minimum weight thresholds', () => {
@@ -44,24 +45,40 @@ describe('PricingEngine Deterministic Calculations', () => {
     expect(pricing.totalAmountPaise).toBe(26650);
   });
 
-  it('evaluates Option A coupon discount strictly against actual measured subtotal', () => {
+  it('evaluates Option A coupon discount strictly against actual measured subtotal with authoritative WELCOME50 rules (min ₹150)', () => {
     const coupon = {
       code: 'WELCOME50',
       discount_type: 'fixed' as const,
-      discount_value: 5000, // ₹50
-      min_order_paise: 20000 // ₹200
+      discount_value: 5000, // Flat ₹50 off
+      min_order_paise: 15000 // Authoritative production threshold: ₹150 (15,000 paise)
     };
 
-    // Subtotal ₹158 (15800 paise) -> below ₹200 -> ineligible
-    const under = PricingEngine.evaluateCouponDiscount(coupon, 15800);
+    // Boundary 1: ₹149.99 (14,999 paise) -> 1 paise below ₹150 threshold -> ineligible
+    const under = PricingEngine.evaluateCouponDiscount(coupon, 14999);
     expect(under.isEligible).toBe(false);
     expect(under.discountPaise).toBe(0);
-    expect(under.shortfallPaise).toBe(4200);
+    expect(under.shortfallPaise).toBe(1);
 
-    // Subtotal ₹237 (23700 paise) -> above ₹200 -> eligible, discount is 5000 paise
-    const over = PricingEngine.evaluateCouponDiscount(coupon, 23700);
+    // Legacy test subtotal ₹140 (14000 paise) -> ineligible, shortfall = 1000 paise (₹10)
+    const wellUnder = PricingEngine.evaluateCouponDiscount(coupon, 14000);
+    expect(wellUnder.isEligible).toBe(false);
+    expect(wellUnder.discountPaise).toBe(0);
+    expect(wellUnder.shortfallPaise).toBe(1000);
+
+    // Boundary 2: Exactly ₹150.00 (15,000 paise) -> eligible, discount is 5000 paise
+    const exact = PricingEngine.evaluateCouponDiscount(coupon, 15000);
+    expect(exact.isEligible).toBe(true);
+    expect(exact.discountPaise).toBe(5000);
+
+    // Boundary 3: ₹200.00 (20,000 paise) -> comfortably above threshold -> eligible, discount remains 5000 paise
+    const over = PricingEngine.evaluateCouponDiscount(coupon, 20000);
     expect(over.isEligible).toBe(true);
     expect(over.discountPaise).toBe(5000);
+
+    // Subtotal ₹237 (23700 paise) -> eligible, discount is 5000 paise
+    const higher = PricingEngine.evaluateCouponDiscount(coupon, 23700);
+    expect(higher.isEligible).toBe(true);
+    expect(higher.discountPaise).toBe(5000);
   });
 
   it('correctly calculates advance payments and payment ledger summaries', () => {
@@ -134,7 +151,7 @@ describe('RazorpayService & Modal Client Integration', () => {
     expect(verification.success).toBe(true);
   });
 
-  it('renders Customer Payment Modal with Instant Online Payment and COD options', async () => {
+  it('renders Customer Payment Modal with approved COD-only guidance when online payments are disabled', async () => {
     const onPaymentSuccess = vi.fn();
     const onClose = vi.fn();
 
@@ -146,21 +163,30 @@ describe('RazorpayService & Modal Client Integration', () => {
           onClose={onClose}
           onPaymentSuccess={onPaymentSuccess}
           isStaff={false}
+          settings={{
+            ...DEFAULT_SETTINGS,
+            online_payment_enabled: false,
+            cod_payment_enabled: true
+          }}
         />
       </AuthProvider>
     );
 
-    // Assert customer-facing elements are present
+    // Assert customer-facing elements are present under approved COD policy
     expect(screen.getByText('Order Payment')).toBeDefined();
-    expect(screen.getByText(/Instant Online Payment/i)).toBeDefined();
-    expect(screen.getByText(/Pay ₹237.00 Online via Razorpay/i)).toBeDefined();
-    expect(screen.getByText(/Cash on Delivery \(COD\)/i)).toBeDefined();
+    expect(screen.getByText(/Cash on Delivery \(Doorstep Payment\)/i)).toBeDefined();
+    expect(screen.getByText(/Amount Due at Delivery:/i)).toBeDefined();
+    expect(screen.getAllByText('₹237.00').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/Payment is collected in cash by our verified delivery courier/i)).toBeDefined();
 
-    // Verify manual UPI UTR input is NOT shown to the customer
+    // Verify online gateway button and manual UPI inputs are strictly NOT shown to the customer
+    expect(screen.queryByText(/Pay ₹237.00 Online via Razorpay/i)).toBeNull();
+    expect(screen.queryByText(/Instant Online Payment/i)).toBeNull();
     expect(screen.queryByText(/UPI 12-Digit Reference/i)).toBeNull();
+    expect(screen.queryByText(/Confirm & Record/i)).toBeNull();
   });
 
-  it('triggers online payment flow and confirms order when customer clicks Pay Online', async () => {
+  it('renders Instant Online Payment when online_payment_enabled is explicitly activated', async () => {
     const onPaymentSuccess = vi.fn();
     const onClose = vi.fn();
 
@@ -172,11 +198,20 @@ describe('RazorpayService & Modal Client Integration', () => {
           onClose={onClose}
           onPaymentSuccess={onPaymentSuccess}
           isStaff={false}
+          settings={{
+            ...DEFAULT_SETTINGS,
+            online_payment_enabled: true,
+            cod_payment_enabled: true
+          }}
         />
       </AuthProvider>
     );
 
+    // Online payment button is present when explicitly enabled
+    expect(screen.getByText(/Instant Online Payment/i)).toBeDefined();
     const payBtn = screen.getByText(/Pay ₹237.00 Online via Razorpay/i);
+    expect(payBtn).toBeDefined();
+
     fireEvent.click(payBtn);
 
     // Wait for success confirmation

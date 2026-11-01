@@ -34,7 +34,7 @@ export const RoleSwitcherBar: React.FC = () => {
   };
 
   return (
-    <div className="bg-slate-900 text-slate-200 text-xs py-2 px-3 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
+    <div className="bg-slate-900 text-slate-200 text-xs py-2 px-3 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 max-w-full overflow-hidden">
       <div className="flex items-center gap-2">
         <span className="font-semibold text-slate-400 uppercase tracking-wider text-[10px]">
           Active Role:
@@ -44,7 +44,7 @@ export const RoleSwitcherBar: React.FC = () => {
         </span>
       </div>
 
-      <div className="flex items-center gap-1.5 overflow-x-auto py-0.5">
+      <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 max-w-full">
         <button
           onClick={() => navigate('/')}
           className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition"

@@ -1,0 +1,74 @@
+[
+  {
+    "testId": "RECON-RATE-01",
+    "category": "Base Pricing Schedule",
+    "description": "Authoritative base tariff rate on Supabase production (ierbhbfgqleobjepamrx)",
+    "expected": "Base price is strictly ₹79.00/kg (price_per_kg_paise = 7900)",
+    "actual": "Retrieved: ₹79/kg (paise: 7900)",
+    "status": "PASS",
+    "evidence": "N/A",
+    "severity": "Critical",
+    "notes": "Reconciles legacy ₹80 documentation. Authoritative standard is strictly ₹79/kg.",
+    "timestamp": "2026-11-01T09:59:42.925Z"
+  },
+  {
+    "testId": "RECON-MIN-WEIGHT-01",
+    "category": "Weight Restrictions",
+    "description": "Authoritative minimum billable weight threshold on Supabase production",
+    "expected": "Minimum billable weight is strictly 1.00 kg (min_weight_kg = 1.00, min_weight_restriction_grams = 1000)",
+    "actual": "Retrieved: min_weight_kg=1, grams=1000",
+    "status": "PASS",
+    "evidence": "N/A",
+    "severity": "Critical",
+    "notes": "Reconciles legacy 3.0 kg documentation. Authoritative standard is strictly 1.0 kg.",
+    "timestamp": "2026-11-01T09:59:42.926Z"
+  },
+  {
+    "testId": "RECON-SERVICE-CATALOGUE-01",
+    "category": "Service Catalogue Synchronization",
+    "description": "Primary service catalogue rate synchronized with business settings",
+    "expected": "Wash & Fold (Normal) is active with unit_price_paise = 7900 and min_weight_kg = 1",
+    "actual": "Found service: \"Wash & Fold (Normal)\", unit_price_paise: 7900, min_weight_kg: 1, is_active: true",
+    "status": "PASS",
+    "evidence": "N/A",
+    "severity": "High",
+    "notes": "",
+    "timestamp": "2026-11-01T09:59:43.105Z"
+  },
+  {
+    "testId": "RECON-WELCOME50-MINSPEND-01",
+    "category": "Promotional Coupon Thresholds",
+    "description": "Authoritative minimum spend validation for WELCOME50 on production Supabase",
+    "expected": "Authoritative min_order_paise is strictly 15000 (₹150.00). Reconciles fixture discrepancy in razorpayAndPricingEngine.test.tsx (which used ₹200).",
+    "actual": "Eligible subtotal (₹200) -> valid: true, discount: ₹50; Ineligible subtotal (₹100) -> valid: false, reason: \"Minimum order subtotal of ₹150 required for coupon 'WELCOME50'.\"",
+    "status": "PASS",
+    "evidence": "N/A",
+    "severity": "Critical",
+    "notes": "Authoritative database trigger & RPC contract enforces ₹150.00 minimum spend across all environments.",
+    "timestamp": "2026-11-01T09:59:43.419Z"
+  },
+  {
+    "testId": "RECON-EXPREZ10-RULES-01",
+    "category": "Promotional Coupon Thresholds",
+    "description": "EXPREZ10 percentage calculation, ceiling cap (₹100), and minimum spend (₹200) on production",
+    "expected": "Calculates 10% discount, caps at ₹100.00 maximum discount, and enforces ₹200.00 minimum subtotal",
+    "actual": "₹300 order -> discount: ₹30; ₹1500 order -> discount: ₹100 (capped at ₹100); ₹100 order -> valid: false",
+    "status": "PASS",
+    "evidence": "N/A",
+    "severity": "High",
+    "notes": "",
+    "timestamp": "2026-11-01T09:59:43.858Z"
+  },
+  {
+    "testId": "RECON-DYNAMIC-PIN-01",
+    "category": "Service Coverage & Pincodes",
+    "description": "Active service coverage zones configured in production service_areas",
+    "expected": "Service areas configured with active serviceable PIN codes in Bengaluru (e.g. 560111, 560070)",
+    "actual": "Active PIN codes in database: [560111, 560070], Areas: Kumaraswamy Layout, Banashankari",
+    "status": "PASS",
+    "evidence": "N/A",
+    "severity": "High",
+    "notes": "Database trigger check_order_serviceability() dynamically resolves active PINs from service_areas.",
+    "timestamp": "2026-11-01T09:59:44.004Z"
+  }
+]
