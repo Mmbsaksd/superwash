@@ -185,6 +185,33 @@ export function clearPendingBooking(userId?: string | null): void {
 }
 
 /**
+ * Detects whether an error is caused by authentication expiry, missing session, or insufficient role.
+ */
+export function isAuthExpiredError(error: any): boolean {
+  if (!error) return false;
+  const msg = String(error?.message || error || '').toLowerCase();
+  const code = String(error?.code || '');
+  const status = error?.status || error?.statusCode;
+
+  return (
+    status === 401 ||
+    status === 403 ||
+    code === '401' ||
+    code === '403' ||
+    code === '42501' ||
+    code === 'PGRST301' ||
+    msg.includes('jwt') ||
+    msg.includes('token') ||
+    msg.includes('session') ||
+    msg.includes('unauthorized') ||
+    msg.includes('not authenticated') ||
+    msg.includes('unauthenticated') ||
+    msg.includes('authentication required') ||
+    msg.includes('permission denied')
+  );
+}
+
+/**
  * Distinguishes ambiguous connection/timeout failures from definitive validation/authorization rejections.
  * Returns true if the failure is ambiguous (where database may have committed the transaction before
  * the response could reach the client), and false for definitive business rejections.
@@ -194,15 +221,39 @@ export function isAmbiguousNetworkError(error: any): boolean {
 
   const msg = String(error?.message || error || '').toLowerCase();
   const name = String(error?.name || '').toLowerCase();
+  const code = String(error?.code || '');
   const status = error?.status || error?.statusCode;
 
   // Service unavailable errors (e.g. pending DB migration) must preserve the pending booking
   if (
-    error?.code === 'BOOKING_SERVICE_UNAVAILABLE' ||
+    code === 'BOOKING_SERVICE_UNAVAILABLE' ||
+    code === 'SCHEMA_OR_SERVICE_UNAVAILABLE' ||
     msg.includes('booking service is temporarily unavailable') ||
     msg.includes('temporarily unavailable while database upgrades')
   ) {
     return true;
+  }
+
+  // Definitive auth/session rejections — NOT ambiguous
+  if (isAuthExpiredError(error)) {
+    return false;
+  }
+
+  // Definitive PostgreSQL database exceptions (P0001 = raise_exception, 23xxx = constraints, 22xxx = data format, 42xxx = syntax/schema)
+  if (
+    code === 'P0001' ||
+    code === '23505' ||
+    code === '23514' ||
+    code === '23503' ||
+    code === '22P02' ||
+    code === '22007' ||
+    code === '22008' ||
+    code === '42703' ||
+    code === '42883' ||
+    code === '42P01' ||
+    code.startsWith('PGRST')
+  ) {
+    return false;
   }
 
   // Definitive client/business validation errors — NOT ambiguous
@@ -215,12 +266,18 @@ export function isAmbiguousNetworkError(error: any): boolean {
     msg.includes('row-level security') ||
     msg.includes('violates check constraint') ||
     msg.includes('security violation') ||
-    msg.includes('authentication required') ||
-    msg.includes('permission denied') ||
-    error?.code === '42501' ||
+    msg.includes('idempotency conflict') ||
+    msg.includes('submission id conflict') ||
+    msg.includes('cannot be in the past') ||
+    msg.includes('pickup date') ||
+    msg.includes('invalid request') ||
+    msg.includes('coupon') ||
+    msg.includes('pickup slot') ||
     status === 400 ||
     status === 401 ||
     status === 403 ||
+    status === 404 ||
+    status === 409 ||
     status === 422
   ) {
     return false;
@@ -234,6 +291,7 @@ export function isAmbiguousNetworkError(error: any): boolean {
     msg.includes('timed out') ||
     msg.includes('abort') ||
     msg.includes('connection refused') ||
+    msg.includes('econnrefused') ||
     msg.includes('gateway') ||
     name === 'aborterror' ||
     name === 'typeerror' ||
@@ -245,6 +303,14 @@ export function isAmbiguousNetworkError(error: any): boolean {
     return true;
   }
 
-  // Default to treating generic unexpected errors during network request as ambiguous to prevent double-booking
-  return true;
+  // Only truly unclassified network failures default to ambiguous
+  return typeof navigator !== 'undefined' && !navigator.onLine;
+}
+
+/**
+ * Returns true if an error is a definitive failure where the server definitely rejected the request
+ * or client-side validation failed, meaning safe retry with adjusted inputs is appropriate.
+ */
+export function isDefinitiveError(error: any): boolean {
+  return !isAmbiguousNetworkError(error);
 }

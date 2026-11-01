@@ -20,6 +20,7 @@ import {
   updatePendingBookingStatus,
   calculateBookingFingerprint,
   isAmbiguousNetworkError,
+  isAuthExpiredError,
   PendingBookingRecord
 } from '../../utils/pendingBooking';
 import {
@@ -1119,6 +1120,7 @@ export const CustomerHome: React.FC = () => {
 
           const handleCreateBooking = async (e: React.FormEvent) => {
             e.preventDefault();
+            if (isBookingSubmitting || isResolvingPending) return;
             setBookingError(null);
 
             // FIX 3: Unauthenticated booking guard - explain requirement and redirect preserving return destination
@@ -1331,7 +1333,7 @@ export const CustomerHome: React.FC = () => {
           };
 
           const handleResolvePendingBooking = async () => {
-            if (!currentUser || !pendingRecovery) return;
+            if (!currentUser || !pendingRecovery || isResolvingPending || isBookingSubmitting) return;
 
             setIsResolvingPending(true);
             setBookingError(null);
@@ -1356,7 +1358,11 @@ export const CustomerHome: React.FC = () => {
               setStatusCheckOutcome('not_found');
               setBookingError(null);
             } catch (err: any) {
-              if (err?.code === 'SCHEMA_OR_SERVICE_UNAVAILABLE' || err?.code === 'BOOKING_SERVICE_UNAVAILABLE') {
+              if (isAuthExpiredError(err)) {
+                setBookingError(
+                  'Your sign-in session has expired. Please sign in again to verify your booking status.'
+                );
+              } else if (err?.code === 'SCHEMA_OR_SERVICE_UNAVAILABLE' || err?.code === 'BOOKING_SERVICE_UNAVAILABLE') {
                 setBookingError(
                   'The booking verification service is temporarily unavailable while database upgrades are pending. Your pending booking is safely preserved. Please try checking again in a few moments.'
                 );
@@ -1375,15 +1381,21 @@ export const CustomerHome: React.FC = () => {
           };
 
           const handleCompleteUncommittedBooking = async () => {
-            if (!currentUser || !pendingRecovery) return;
+            if (!currentUser || !pendingRecovery || isResolvingPending || isBookingSubmitting) return;
 
             setIsResolvingPending(true);
             setBookingError(null);
+
+            // Normalize pickup date so it is never in the past (which PostgreSQL rejects with P0001)
+            const todayStr = new Date().toISOString().split('T')[0];
+            const payloadDate = pendingRecovery.payload.pickup_date;
+            const effectivePickupDate = (payloadDate && payloadDate >= todayStr) ? payloadDate : todayStr;
 
             try {
               const order = await LaundryService.createBooking({
                 customer_id: currentUser.id,
                 ...pendingRecovery.payload,
+                pickup_date: effectivePickupDate,
                 client_submission_id: pendingRecovery.clientSubmissionId
               });
 
@@ -1393,7 +1405,11 @@ export const CustomerHome: React.FC = () => {
               setSubmissionId(generateClientSubmissionId());
               commitConfirmedBookingState(order);
             } catch (err: any) {
-              if (err?.code === 'BOOKING_SERVICE_UNAVAILABLE' || err?.code === 'SCHEMA_OR_SERVICE_UNAVAILABLE') {
+              if (isAuthExpiredError(err)) {
+                setBookingError(
+                  'Your sign-in session has expired. Please sign in again to complete your booking.'
+                );
+              } else if (err?.code === 'BOOKING_SERVICE_UNAVAILABLE' || err?.code === 'SCHEMA_OR_SERVICE_UNAVAILABLE') {
                 setBookingError(
                   'The booking service is temporarily unavailable while database upgrades are pending. Your pending booking is safely preserved. Please try again in a few moments.'
                 );
@@ -1424,6 +1440,7 @@ export const CustomerHome: React.FC = () => {
             clearPendingBooking(currentUser?.id);
             setPendingRecovery(null);
             setStatusCheckOutcome(null);
+            setBookingError(null);
             setSubmissionId(generateClientSubmissionId());
           };
 
@@ -2051,7 +2068,7 @@ export const CustomerHome: React.FC = () => {
                             {statusCheckOutcome === 'not_found' ? (
                               <button
                                 type="button"
-                                disabled={isResolvingPending}
+                                disabled={isResolvingPending || isBookingSubmitting}
                                 onClick={handleCompleteUncommittedBooking}
                                 className="py-2 px-3.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 transition shadow-sm cursor-pointer disabled:opacity-50"
                               >
@@ -2061,7 +2078,7 @@ export const CustomerHome: React.FC = () => {
                             ) : (
                               <button
                                 type="button"
-                                disabled={isResolvingPending}
+                                disabled={isResolvingPending || isBookingSubmitting}
                                 onClick={handleResolvePendingBooking}
                                 className="py-2 px-3.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 transition shadow-sm cursor-pointer disabled:opacity-50"
                               >
@@ -2071,8 +2088,9 @@ export const CustomerHome: React.FC = () => {
                             )}
                             <button
                               type="button"
+                              disabled={isResolvingPending || isBookingSubmitting}
                               onClick={() => handleDiscardPendingBooking(false)}
-                              className={`py-1.5 px-2 font-bold text-xs underline cursor-pointer ${
+                              className={`py-1.5 px-2 font-bold text-xs underline cursor-pointer disabled:opacity-50 ${
                                 statusCheckOutcome === 'not_found'
                                   ? 'text-sky-800 hover:text-sky-950'
                                   : 'text-amber-800 hover:text-amber-950'

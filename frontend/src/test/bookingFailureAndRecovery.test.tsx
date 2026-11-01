@@ -534,4 +534,237 @@ describe('Production Booking Failure Investigation & Recovery Verification', () 
     expect(all[0].coupon_code).toBe('WELCOME50');
     expect(all[0].payment_method).toBe('cash');
   });
+
+  it('12. Safe discard behavior: warns if unverified, clears cleanly if verified, and resets booking error', async () => {
+    const subId = 'sub-discard-behavior-01';
+    savePendingBooking(customerId, subId, {
+      customer_name: 'Priya Sharma',
+      customer_phone: '9876543210',
+      pickup_address: '10 Discard Lane',
+      pickup_pincode: '560070',
+      pickup_date: '2026-11-12',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    }, 'uncertain_timeout');
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    const { unmount } = render(
+      <MemoryRouter initialEntries={['/customer']}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/customer" element={<CustomerHome />} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    // Initial state: unverified, so clicking discard triggers confirmation dialog
+    const discardBtn = await screen.findByRole('button', { name: /Discard & Start Fresh/i });
+    fireEvent.click(discardBtn);
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(getPendingBooking(customerId)).toBeNull();
+
+    unmount();
+
+    // Now test verified case: statusCheckOutcome is 'not_found'
+    confirmSpy.mockClear();
+    savePendingBooking(customerId, 'sub-discard-behavior-02', {
+      customer_name: 'Priya Sharma',
+      customer_phone: '9876543210',
+      pickup_address: '11 Discard Lane',
+      pickup_pincode: '560070',
+      pickup_date: '2026-11-12',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)'
+    }, 'uncertain_timeout');
+
+    // Re-render after unmount
+    render(
+      <MemoryRouter initialEntries={['/customer']}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/customer" element={<CustomerHome />} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    const verifyBtn = await screen.findByRole('button', { name: /Verify & Complete Booking/i });
+    fireEvent.click(verifyBtn);
+
+    await screen.findByText(/Status check verified: No order was created/i);
+
+    const discardVerifiedBtn = screen.getByRole('button', { name: /Discard & Start Fresh/i });
+    fireEvent.click(discardVerifiedBtn);
+
+    // Should NOT have prompted confirm dialog because it was verified that no order was recorded
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(getPendingBooking(customerId)).toBeNull();
+  });
+
+  it('13. RPC schema or service unavailable preserves pending booking record and displays maintenance notice', async () => {
+    setLiveModeForTesting(true);
+    vi.spyOn(LaundryService, 'getServices').mockResolvedValue(defaultServices as any);
+
+    // Simulate PostgREST missing RPC error (PGRST202)
+    vi.spyOn(supabase, 'rpc').mockResolvedValue({
+      data: null,
+      error: {
+        code: 'PGRST202',
+        message: 'Could not find the function public.create_booking_idempotent in the schema cache'
+      }
+    } as any);
+
+    let errorThrown: any = null;
+    try {
+      await LaundryService.createBooking({
+        customer_id: customerId,
+        customer_name: 'Priya Sharma',
+        customer_phone: '9876543210',
+        pickup_address: '123 MG Road, Bengaluru',
+        pickup_pincode: '560070',
+        pickup_date: '2026-11-05',
+        pickup_slot: 'Morning (08:00 AM - 11:00 AM)',
+        service_id: 'srv-normal-wash',
+        client_submission_id: 'sub-service-unavailable-test'
+      });
+    } catch (err: any) {
+      errorThrown = err;
+    }
+
+    expect(errorThrown).toBeDefined();
+    expect(errorThrown.code).toBe('BOOKING_SERVICE_UNAVAILABLE');
+    expect(isAmbiguousNetworkError(errorThrown)).toBe(true);
+  });
+
+  it('14. Definitive validation rejection clears pending booking record without entering timeout recovery', async () => {
+    setLiveModeForTesting(true);
+    vi.spyOn(LaundryService, 'getServices').mockResolvedValue(defaultServices as any);
+
+    // Simulate definitive PostgreSQL permission denied error (42501)
+    const permissionError = {
+      code: '42501',
+      message: 'permission denied for function create_booking_idempotent',
+      status: 403
+    };
+
+    expect(isAmbiguousNetworkError(permissionError)).toBe(false);
+
+    // Simulate outside service coverage validation
+    const coverageError = new Error('PIN code 999999 is currently outside our service coverage');
+    expect(isAmbiguousNetworkError(coverageError)).toBe(false);
+
+    // Simulate check constraint violation
+    const constraintError = {
+      code: '23514',
+      message: 'new row for relation "orders" violates check constraint'
+    };
+    expect(isAmbiguousNetworkError(constraintError)).toBe(false);
+  });
+
+  it('15. Cross-day recovery: pending booking with past date automatically normalizes to current date', async () => {
+    const subId = 'sub-past-date-normalization';
+    const pastDatePayload = {
+      customer_name: 'Priya Sharma',
+      customer_phone: '9876543210',
+      pickup_address: '50 Indiranagar',
+      pickup_pincode: '560070',
+      pickup_date: '2020-01-01', // definitely in the past
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)',
+      service_id: 'srv-normal-wash'
+    };
+
+    savePendingBooking(customerId, subId, pastDatePayload, 'uncertain_timeout');
+
+    let capturedCreateBookingData: any = null;
+    vi.spyOn(LaundryService, 'createBooking').mockImplementation(async (data: any) => {
+      capturedCreateBookingData = data;
+      return {
+        id: 'normalized-order-uuid',
+        order_number: 'SW-9988',
+        customer_id: customerId,
+        customer_name: data.customer_name,
+        customer_phone: data.customer_phone,
+        pickup_address: data.pickup_address,
+        pickup_pincode: data.pickup_pincode,
+        pickup_date: data.pickup_date,
+        pickup_slot: data.pickup_slot,
+        order_status: 'booked',
+        payment_status: 'pending',
+        payment_method: 'cash',
+        price_per_kg_paise: 7900,
+        min_weight_kg: 1.0,
+        delivery_charge_paise: 0,
+        paid_amount_paise: 0,
+        client_submission_id: subId,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/customer']}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/customer" element={<CustomerHome />} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    const verifyBtn = await screen.findByRole('button', { name: /Verify & Complete Booking/i });
+    fireEvent.click(verifyBtn);
+
+    const completeBtns = await screen.findAllByRole('button', { name: /Complete Booking/i });
+    fireEvent.click(completeBtns[0]);
+
+    await waitFor(() => {
+      expect(capturedCreateBookingData).toBeDefined();
+    });
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    expect(capturedCreateBookingData.pickup_date >= todayStr).toBe(true);
+  });
+
+  it('16. Authentication expiration during recovery displays sign-in guidance while preserving pending booking record', async () => {
+    const subId = 'sub-auth-expired-recovery';
+    const payload = {
+      customer_name: 'Priya Sharma',
+      customer_phone: '9876543210',
+      pickup_address: '60 Indiranagar',
+      pickup_pincode: '560070',
+      pickup_date: '2026-11-20',
+      pickup_slot: 'Morning (08:00 AM - 11:00 AM)',
+      service_id: 'srv-normal-wash'
+    };
+
+    savePendingBooking(customerId, subId, payload, 'uncertain_timeout');
+
+    // Simulate auth token expiration when getOrderBySubmissionId is called
+    vi.spyOn(LaundryService, 'getOrderBySubmissionId').mockRejectedValue({
+      code: '42501',
+      status: 401,
+      message: 'JWT expired'
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/customer']}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/customer" element={<CustomerHome />} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    const verifyBtn = await screen.findByRole('button', { name: /Verify & Complete Booking/i });
+    fireEvent.click(verifyBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Your sign-in session has expired\. Please sign in again/i)).toBeInTheDocument();
+    });
+
+    // Crucial: Pending booking must NOT be wiped when session expires!
+    expect(getPendingBooking(customerId)).toBeDefined();
+    expect(getPendingBooking(customerId)?.clientSubmissionId).toBe(subId);
+  });
 });

@@ -1324,19 +1324,19 @@ export class LaundryService {
 
       const rpcPayload: Record<string, any> = {
         p_client_submission_id: submissionId,
-        p_customer_name: data.customer_name,
-        p_customer_phone: data.customer_phone,
-        p_pickup_address: data.pickup_address,
-        p_pickup_landmark: data.pickup_landmark || null,
-        p_pickup_pincode: data.pickup_pincode,
+        p_customer_name: (data.customer_name || '').trim(),
+        p_customer_phone: dedupePhone || (data.customer_phone || '').trim(),
+        p_pickup_address: (data.pickup_address || '').trim(),
+        p_pickup_landmark: data.pickup_landmark ? data.pickup_landmark.trim() : null,
+        p_pickup_pincode: (data.pickup_pincode || '').trim(),
         p_pickup_date: data.pickup_date,
         p_pickup_slot: data.pickup_slot,
         p_service_id: data.service_id || null,
-        p_pickup_latitude: data.pickup_latitude || null,
-        p_pickup_longitude: data.pickup_longitude || null,
-        p_notes: data.notes || null,
+        p_pickup_latitude: typeof data.pickup_latitude === 'number' ? data.pickup_latitude : null,
+        p_pickup_longitude: typeof data.pickup_longitude === 'number' ? data.pickup_longitude : null,
+        p_notes: data.notes ? data.notes.trim() : null,
         p_coupon_code: data.coupon_code ? data.coupon_code.trim().toUpperCase() : null,
-        p_discount_paise: data.discount_paise || 0
+        p_discount_paise: typeof data.discount_paise === 'number' ? data.discount_paise : 0
       };
 
       try {
