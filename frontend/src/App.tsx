@@ -48,7 +48,7 @@ const PageFallback: React.FC = () => (
 );
 
 export const App: React.FC = () => {
-  const { currentUser: _currentUser, isLoading } = useAuth();
+  const { currentUser, isLoading } = useAuth();
   const location = useLocation();
 
   if (isLoading) {
@@ -59,12 +59,35 @@ export const App: React.FC = () => {
     );
   }
 
+  // Development/demo mode check
+  const isDemoOrDev = import.meta.env.DEV || import.meta.env.VITE_DEMO_MODE === 'true';
+
+  // Role Switcher Bar is strictly restricted to development/demo mode within the Owner Admin portal.
+  // It is NEVER rendered on the public website, customer portal, or for unauthenticated guests.
+  const isPublicOrCustomerRoute =
+    location.pathname === '/' ||
+    location.pathname.startsWith('/customer') ||
+    location.pathname === '/how-it-works' ||
+    location.pathname === '/contact' ||
+    location.pathname === '/privacy' ||
+    location.pathname === '/terms' ||
+    location.pathname === '/services' ||
+    location.pathname === '/book' ||
+    location.pathname === '/track' ||
+    location.pathname === '/login' ||
+    location.pathname === '/admin/login' ||
+    location.pathname === '/reset-password';
+
+  const showRoleSwitcher =
+    isDemoOrDev &&
+    !isPublicOrCustomerRoute &&
+    currentUser?.role === 'owner' &&
+    location.pathname.startsWith('/admin');
+
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col font-sans">
-      {/* Top Test & Role Switcher Bar */}
-      {location.pathname !== '/login' &&
-        location.pathname !== '/admin/login' &&
-        location.pathname !== '/reset-password' && <RoleSwitcherBar />}
+      {/* Top Test & Role Switcher Bar - strictly restricted to owner dev/demo administrative testing */}
+      {showRoleSwitcher && <RoleSwitcherBar />}
 
       {/* Main Content Viewports */}
       <main className="flex-1">

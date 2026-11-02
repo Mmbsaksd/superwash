@@ -3090,7 +3090,7 @@ export const CustomerHome: React.FC = () => {
                             1. We collect your laundry bag{isMultiService ? 's' : ''} at your doorstep. <br />
                             2. Service rate verified from official catalogue{isMultiService ? ' for each selected service.' : `: ₹${serviceRateStr} / ${serviceUnitLabel}.`} <br />
                             3. Exact bill generated upon store intake & digital scale verification. <br />
-                            4. Delivered clean & crisp. Pay via Cash or UPI.
+                            4. Delivered clean & crisp. Pay at your doorstep after your laundry is weighed (Cash on Delivery).
                           </p>
                         </div>
 

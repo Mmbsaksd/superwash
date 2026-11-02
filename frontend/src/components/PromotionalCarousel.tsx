@@ -33,7 +33,7 @@ export const BASE_PROMOTIONAL_BANNERS: PromotionalBanner[] = [
     ctaAction: '/customer?tab=book',
     gradientClass: 'from-brand-900 via-brand-800 to-cyan-900',
     accentClass: 'bg-cyan-500 hover:bg-cyan-400 text-slate-950',
-    features: ['Free Doorstep Collection', 'Certified Digital Scales', 'Hygienic Separate Batches']
+    features: ['Free Doorstep Collection', 'Calibrated Digital Scales', 'Hygienic Separate Batches']
   },
   {
     id: 'banner-welcome50',
@@ -68,12 +68,12 @@ export const BASE_PROMOTIONAL_BANNERS: PromotionalBanner[] = [
     theme: 'service',
     title: 'Steam Press & Gentle Fabric Care',
     tagline: 'Premium Sanitization & Garment Finish',
-    description: 'Skin-friendly eco detergents, antibacterial rinse, and crisp steam press on hangers or precision folding. Pay securely via Cash or UPI after weighing.',
+    description: 'Skin-friendly eco detergents, antibacterial rinse, and crisp steam press on hangers or precision folding. Pay at your doorstep after your laundry is weighed (Cash on Delivery).',
     ctaText: 'Book a Home Pickup',
     ctaAction: '/customer?tab=book',
     gradientClass: 'from-slate-900 via-brand-950 to-cyan-950',
     accentClass: 'bg-cyan-400 hover:bg-cyan-300 text-slate-950',
-    features: ['Eco-Certified Detergents', 'Steam Iron Finish', 'Pay on Delivery']
+    features: ['Gentle Eco Detergents', 'Steam Iron Finish', 'Pay on Delivery']
   }
 ];
 

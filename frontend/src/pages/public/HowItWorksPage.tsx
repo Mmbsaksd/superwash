@@ -16,7 +16,7 @@ export const HowItWorksPage: React.FC = () => {
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 space-y-16">
       <div className="text-center max-w-3xl mx-auto space-y-3">
-        <span className="text-xs font-bold uppercase tracking-widest text-brand-600">3 Flexible Channels</span>
+        <span className="text-xs font-bold uppercase tracking-widest text-brand-600">Flexible Service Channels</span>
         <h1 className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight">How SuperWash Works</h1>
         <p className="text-slate-600 text-sm">
           Whether you prefer dropping off your clothes on your daily commute or having our drivers pick up and deliver directly to your door, we've got you covered.
@@ -54,7 +54,7 @@ export const HowItWorksPage: React.FC = () => {
               </li>
               <li className="flex items-start gap-2.5">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                <span>Receive instant SMS notification when your order is bagged and ready for collection.</span>
+                <span>Receive instant order status updates in your account when your laundry is bagged and ready.</span>
               </li>
             </ul>
           </div>
@@ -125,7 +125,7 @@ export const HowItWorksPage: React.FC = () => {
         <div className="space-y-4 text-xs">
           <div className="p-4 bg-white rounded-xl border border-slate-200">
             <h4 className="font-bold text-slate-900 text-sm">How long does processing take?</h4>
-            <p className="text-slate-600 mt-1">Standard turnaround time is 24 to 48 hours for daily wash & steam press. Premium dry cleaning for heavy sarees or suits takes 48 to 72 hours.</p>
+            <p className="text-slate-600 mt-1">Standard turnaround time is 24 to 48 hours for washing, drying, and steam pressing.</p>
           </div>
 
           <div className="p-4 bg-white rounded-xl border border-slate-200">
@@ -135,7 +135,7 @@ export const HowItWorksPage: React.FC = () => {
 
           <div className="p-4 bg-white rounded-xl border border-slate-200">
             <h4 className="font-bold text-slate-900 text-sm">What payment options do you support?</h4>
-            <p className="text-slate-600 mt-1">We accept online UPI (GPay, PhonePe, Paytm), Debit/Credit Cards via Razorpay, Cash at the counter, or Cash/UPI upon delivery.</p>
+            <p className="text-slate-600 mt-1">We operate on a Cash on Delivery (COD) basis: Pay at your doorstep after your laundry is weighed on calibrated digital scales. No online prepayment is required to book.</p>
           </div>
         </div>
       </div>

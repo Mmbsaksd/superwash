@@ -1,44 +1,45 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { BusinessSettings, LaundryServiceItem, Order, PublicPromotion } from '../../types';
+import { BusinessSettings, LaundryServiceItem, Order, PublicPromotion, ServiceArea } from '../../types';
 import { LaundryService, DEFAULT_SETTINGS } from '../../services/laundryService';
 import { useAuth } from '../../context/AuthContext';
 import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
-import { PromotionalCarousel } from '../../components/PromotionalCarousel';
 import { CustomerOrderTracker } from '../../components/CustomerOrderTracker';
-import { CustomerBottomNav } from '../../components/CustomerBottomNav';
-import { CustomerTopNav } from '../../components/CustomerTopNav';
 import {
   Sparkles, Clock, Truck, ShieldCheck, CheckCircle2,
   CalendarCheck, ArrowRight, Scale, Phone, MapPin,
-  ChevronDown, HelpCircle, Check, Search, Lock,
-  ShoppingBag, User, Tag, Sparkle, Package, Shield
+  ChevronDown, HelpCircle, Check, Search, User, Tag,
+  ShoppingBag, Menu, X, ArrowUpRight, Zap
 } from 'lucide-react';
 
 export const LandingPage: React.FC = () => {
-  const { currentUser } = useAuth();
+  const { currentUser, logout } = useAuth();
   const navigate = useNavigate();
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [services, setServices] = useState<LaundryServiceItem[]>([]);
   const [coupons, setCoupons] = useState<PublicPromotion[]>([]);
+  const [serviceAreas, setServiceAreas] = useState<ServiceArea[]>([]);
   const [activeOrder, setActiveOrder] = useState<Order | null>(null);
   const [pincodeInput, setPincodeInput] = useState<string>('');
   const [pincodeResult, setPincodeResult] = useState<{ checked: boolean; serviceable: boolean; message: string } | null>(null);
   const [activeFaq, setActiveFaq] = useState<number | null>(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
 
   useEffect(() => {
     Promise.all([
       LaundryService.getSettings(),
       LaundryService.getServices(false),
-      LaundryService.getPublicPromotions()
-    ]).then(([s, srvList, promoList]) => {
+      LaundryService.getPublicPromotions(),
+      LaundryService.getServiceAreas()
+    ]).then(([s, srvList, promoList, areasList]) => {
       setSettings(s);
       setServices(srvList || []);
       setCoupons(promoList || []);
+      setServiceAreas(areasList || []);
     });
   }, []);
 
-  // Fetch customer's current order if signed in
+  // Fetch customer's active order if signed in
   useEffect(() => {
     if (!currentUser) {
       setActiveOrder(null);
@@ -65,16 +66,18 @@ export const LandingPage: React.FC = () => {
     }
     const serviceable = await LaundryService.isPincodeServiceable(clean);
     if (serviceable) {
+      const matchedArea = serviceAreas.find((a) => a.pincode === clean && a.is_active);
+      const areaLabel = matchedArea ? ` (${matchedArea.area_name})` : '';
       setPincodeResult({
         checked: true,
         serviceable: true,
-        message: `Great news! PIN code ${clean} is in our daily free pickup & delivery zone.`
+        message: `Great news! PIN code ${clean}${areaLabel} is in our daily free pickup & delivery zone.`
       });
     } else {
       setPincodeResult({
         checked: true,
         serviceable: false,
-        message: `PIN code ${clean} is outside our current scheduled zone. You can still drop off at our Indiranagar store!`
+        message: `PIN code ${clean} is outside our current scheduled pickup zone. You can contact us or drop off at our facility.`
       });
     }
   };
@@ -86,55 +89,218 @@ export const LandingPage: React.FC = () => {
     : (settings ? (settings.price_per_kg_paise / 100).toFixed(0) : '79');
   const minWeight = primaryPerKgService && primaryPerKgService.min_weight_kg > 0
     ? primaryPerKgService.min_weight_kg.toFixed(0)
-    : (settings ? settings.min_weight_kg.toFixed(0) : '3');
-  const minBill = ((parseFloat(pricePerKg) * parseFloat(minWeight))).toFixed(0);
+    : (settings && settings.min_weight_kg > 0 ? settings.min_weight_kg.toFixed(0) : '1');
+  const minBill = (parseFloat(pricePerKg) * parseFloat(minWeight)).toFixed(0);
   const phone = settings?.business_phone || DEFAULT_SETTINGS.business_phone;
   const address = settings?.business_address || DEFAULT_SETTINGS.business_address;
+  const cleanTel = phone.replace(/[^0-9+]/g, '');
 
   const faqList = [
     {
       q: 'How does per-kilogram laundry pricing work?',
-      a: `We weigh your entire laundry batch on calibrated digital scales at our facility. The rate is ₹${pricePerKg}/kg. If your laundry weighs less than the minimum billable weight of ${minWeight} kg, it is billed at the minimum charge of ₹${minBill}.`
+      a: `We weigh your entire laundry batch on calibrated digital scales at our facility. The rate is ₹${pricePerKg}/kg with a minimum billable weight of ${minWeight} kg (minimum charge ₹${minBill}). Pay strictly for what your laundry weighs.`
     },
     {
       q: 'Do I need to count or list individual garments?',
-      a: 'No! You do not need to list or count individual shirts, t-shirts, or trousers. Simply put all your clothes into a bag or basket. Our staff will weigh them and wash them together.'
+      a: 'No! You do not need to count or list individual garments. Simply put all your clothes into a bag or basket. Our staff will weigh them and wash them in hygienic individual machine drums.'
     },
     {
       q: 'How and when do I pay?',
-      a: 'No advance payment is needed to book. Once weighed at the facility, your verified bill is generated automatically. You can pay via UPI (GPay, PhonePe, Paytm, BHIM) or Cash either during delivery or pickup.'
+      a: 'No advance payment is needed to book. We follow a strict Cash on Delivery (COD) policy: Pay at your doorstep after your laundry is weighed on calibrated digital scales.'
     },
     {
       q: 'What is the turnaround time for delivery?',
-      a: 'Standard delivery is within 24 to 48 hours. Your clothes are washed, dried, steam-ironed, and neatly packed before being delivered to your doorstep.'
+      a: 'Standard delivery is within 24 to 48 hours. Your clothes are washed, dried, steam-ironed, and neatly packed before being delivered back to your doorstep.'
     },
     {
-      q: 'What areas and PIN codes do you cover?',
-      a: 'We cover major neighborhoods across East and Central Bengaluru including Indiranagar (560038), Ulsoor (560008), Bellandur (560103), Domlur (560071), CV Raman Nagar (560075), and Whitefield (560066).'
+      q: 'What areas and PIN codes do you cover in Bengaluru?',
+      a: 'We cover neighborhoods across Bengaluru. You can use our real-time Service Area Checker above to verify coverage for your specific 6-digit PIN code.'
     }
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-28 sm:pb-24 md:pb-12">
+    <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
       {/* PWA Installation Banner */}
       <PwaInstallPrompt variant="customer-banner" />
 
-      {/* Customer Top Navigation (Desktop & Mobile Header) */}
-      <CustomerTopNav
-        settings={settings}
-        hasActiveOrder={Boolean(activeOrder)}
-      />
+      {/* ================= A. PUBLIC HEADER ================= */}
+      <header className="sticky top-0 z-40 bg-white/95 backdrop-blur border-b border-slate-200">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center h-16 sm:h-20">
+            {/* Brand Logo */}
+            <Link
+              to="/"
+              className="flex items-center gap-2.5 group cursor-pointer"
+              title="SuperWash Exprez"
+            >
+              <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-brand-600 to-cyan-500 flex items-center justify-center text-white shadow-md shadow-brand-500/20 group-hover:scale-105 transition-transform shrink-0">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <span className="font-black text-xl text-slate-900 tracking-tight flex items-center leading-tight">
+                  Super<span className="text-brand-600">Wash</span>
+                </span>
+                <span className="block text-[10px] uppercase font-bold tracking-widest text-slate-500 -mt-0.5 truncate">
+                  Exprez • Bengaluru
+                </span>
+              </div>
+            </Link>
 
-      {/* Main Landing Content */}
-      <main className="flex-1 space-y-12 sm:space-y-16 pb-12">
-        {/* ================= 1. PROMOTIONAL CAROUSEL & HERO ================= */}
-        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 sm:pt-8">
-          <PromotionalCarousel
-            onSelectOffer={(code) => navigate(`/customer?tab=book&coupon=${code}`)}
-            className="mb-8"
-          />
+            {/* Desktop Navigation Links */}
+            <nav className="hidden md:flex items-center gap-7 text-sm font-semibold text-slate-700">
+              <Link to="/" className="text-brand-600 font-bold transition">Home</Link>
+              <a href="#services" className="hover:text-brand-600 transition">Our Services</a>
+              <a href="#how-it-works" className="hover:text-brand-600 transition">How It Works</a>
+              <a href="#pricing" className="hover:text-brand-600 transition">Pricing</a>
+              <a href="#coverage" className="hover:text-brand-600 transition">Coverage</a>
+              <a href="#contact" className="hover:text-brand-600 transition">Contact</a>
+            </nav>
 
-          {/* Customer's Live Order Tracker Banner (when an active order exists) */}
+            {/* Desktop Action & Auth State */}
+            <div className="hidden md:flex items-center gap-4">
+              {currentUser ? (
+                <div className="flex items-center gap-3">
+                  <Link
+                    to="/customer?tab=current"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand-50 text-brand-700 text-xs font-bold hover:bg-brand-100 transition border border-brand-200"
+                  >
+                    <ShoppingBag className="w-3.5 h-3.5" />
+                    <span>{currentUser.full_name?.split(' ')[0] || 'My Orders'}</span>
+                  </Link>
+                  <button
+                    onClick={() => logout()}
+                    className="text-xs text-slate-500 hover:text-red-600 font-semibold transition cursor-pointer"
+                  >
+                    Sign Out
+                  </button>
+                </div>
+              ) : (
+                <Link
+                  to="/login?redirect=/customer"
+                  className="text-sm font-bold text-slate-700 hover:text-brand-600 transition"
+                >
+                  Sign In
+                </Link>
+              )}
+
+              <Link
+                to="/customer?tab=book"
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-brand-600 to-cyan-600 text-white text-sm font-bold shadow-md shadow-brand-500/25 hover:from-brand-700 hover:to-cyan-700 active:scale-[0.98] transition"
+              >
+                <CalendarCheck className="w-4 h-4" />
+                <span>Book a Pickup</span>
+              </Link>
+            </div>
+
+            {/* Mobile Header Trigger & CTA */}
+            <div className="flex md:hidden items-center gap-2">
+              <Link
+                to="/customer?tab=book"
+                className="px-3.5 py-1.5 rounded-xl bg-brand-600 text-white text-xs font-bold shadow-sm"
+              >
+                Book
+              </Link>
+              <button
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                className="p-2 text-slate-600 hover:text-slate-900 focus:outline-none cursor-pointer"
+                aria-label="Toggle Navigation Menu"
+              >
+                {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Mobile Navigation Drawer */}
+        {mobileMenuOpen && (
+          <div className="md:hidden border-t border-slate-200 bg-white px-4 pt-3 pb-6 space-y-3 shadow-lg">
+            <Link
+              to="/"
+              onClick={() => setMobileMenuOpen(false)}
+              className="block py-2 text-slate-800 font-bold"
+            >
+              Home
+            </Link>
+            <a
+              href="#services"
+              onClick={() => setMobileMenuOpen(false)}
+              className="block py-2 text-slate-700 font-medium"
+            >
+              Our Services
+            </a>
+            <a
+              href="#how-it-works"
+              onClick={() => setMobileMenuOpen(false)}
+              className="block py-2 text-slate-700 font-medium"
+            >
+              How It Works
+            </a>
+            <a
+              href="#pricing"
+              onClick={() => setMobileMenuOpen(false)}
+              className="block py-2 text-slate-700 font-medium"
+            >
+              Pricing
+            </a>
+            <a
+              href="#coverage"
+              onClick={() => setMobileMenuOpen(false)}
+              className="block py-2 text-slate-700 font-medium"
+            >
+              Service Coverage
+            </a>
+            <a
+              href="#contact"
+              onClick={() => setMobileMenuOpen(false)}
+              className="block py-2 text-slate-700 font-medium"
+            >
+              Contact & Store
+            </a>
+
+            <div className="pt-3 border-t border-slate-100 space-y-2">
+              {currentUser ? (
+                <>
+                  <Link
+                    to="/customer?tab=current"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="block w-full py-2.5 text-center bg-brand-50 text-brand-700 font-bold text-sm rounded-xl border border-brand-200"
+                  >
+                    My Account ({currentUser.full_name?.split(' ')[0] || 'Customer'})
+                  </Link>
+                  <button
+                    onClick={() => { logout(); setMobileMenuOpen(false); }}
+                    className="block w-full py-2 text-center text-red-600 font-semibold text-xs"
+                  >
+                    Sign Out
+                  </button>
+                </>
+              ) : (
+                <Link
+                  to="/login?redirect=/customer"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="block w-full py-2.5 text-center bg-slate-100 text-slate-800 font-bold text-sm rounded-xl"
+                >
+                  Sign In / Register
+                </Link>
+              )}
+
+              <Link
+                to="/customer?tab=book"
+                onClick={() => setMobileMenuOpen(false)}
+                className="block w-full py-3 text-center bg-brand-600 text-white font-bold text-sm rounded-xl shadow-md"
+              >
+                Book a Home Pickup
+              </Link>
+            </div>
+          </div>
+        )}
+      </header>
+
+      {/* ================= MAIN CONTENT ================= */}
+      <main className="flex-1 space-y-16 sm:space-y-24 pb-16">
+        {/* ================= B. HERO SECTION ================= */}
+        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 sm:pt-10">
+          {/* Active Order Tracker Banner (when customer is logged in with active wash) */}
           {activeOrder && (
             <div className="mb-8 animate-fade-in">
               <CustomerOrderTracker
@@ -145,103 +311,105 @@ export const LandingPage: React.FC = () => {
             </div>
           )}
 
-          {/* Primary Call-to-Action Hero Box */}
-          <div className="bg-gradient-to-b from-brand-50/70 via-white to-slate-50 border border-slate-200/80 rounded-3xl p-6 sm:p-10 shadow-sm">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
-              <div className="lg:col-span-7 space-y-5 text-center lg:text-left">
-                <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand-100 text-brand-800 text-xs font-bold border border-brand-200 shadow-xs">
+          <div className="bg-gradient-to-b from-brand-50/80 via-white to-slate-50 border border-slate-200/90 rounded-3xl p-6 sm:p-12 shadow-sm">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-center">
+              <div className="lg:col-span-7 space-y-6 text-center lg:text-left">
+                <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand-100 text-brand-800 text-xs font-bold border border-brand-200">
                   <Sparkles className="w-4 h-4 text-brand-600" />
-                  <span>Simple Per-Kilogram Laundry • No Garment Counting</span>
+                  <span>Professional Laundry Pickup & Delivery in Bengaluru</span>
                 </div>
 
                 <h1 className="text-3xl sm:text-5xl lg:text-6xl font-black text-slate-900 tracking-tight leading-[1.12]">
-                  Fresh Clothes, <br className="hidden sm:inline" />
+                  Fresh Clothes.{' '}
                   <span className="bg-gradient-to-r from-brand-600 to-cyan-500 bg-clip-text text-transparent">
-                    Zero Effort.
-                  </span>
+                    Professional Care.
+                  </span><br />
+                  Delivered to Your Doorstep.
                 </h1>
 
                 <p className="text-sm sm:text-base text-slate-600 max-w-xl leading-relaxed">
-                  Home laundry pickup and delivery at just <strong>₹{pricePerKg} per kilogram</strong>. We pick up from your doorstep, weigh on certified digital scales, wash with skin-friendly detergents, and return clean & crisp.
+                  Book your laundry pickup from home. We collect, clean, care for and deliver your clothes conveniently across Bengaluru at transparent per-kilogram rates.
                 </p>
 
-                {/* Prominent Primary CTA Button */}
+                {/* Primary & Secondary CTAs */}
                 <div className="pt-2 flex flex-col sm:flex-row items-center gap-4 justify-center lg:justify-start">
                   <Link
                     to="/customer?tab=book"
                     className="w-full sm:w-auto py-3.5 px-8 bg-brand-600 hover:bg-brand-700 active:scale-[0.99] text-white font-black text-base rounded-2xl shadow-lg shadow-brand-500/25 transition flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <CalendarCheck className="w-5 h-5" />
-                    <span>Book a Home Pickup</span>
+                    <span>Book a Pickup</span>
                   </Link>
 
-                  <div className="text-left bg-white px-4 py-2.5 rounded-2xl border border-slate-200 shadow-xs">
-                    <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
-                      Authoritative Rate
-                    </span>
-                    <span className="text-base font-black text-slate-900">
-                      ₹{pricePerKg} / kg <span className="text-xs font-normal text-slate-500">(Min. {minWeight} kg = ₹{minBill})</span>
-                    </span>
-                  </div>
+                  <a
+                    href="#services"
+                    className="w-full sm:w-auto py-3.5 px-6 bg-white hover:bg-slate-100 text-slate-700 font-bold text-sm rounded-2xl border border-slate-200 shadow-xs transition flex items-center justify-center gap-1.5"
+                  >
+                    <span>Explore Services</span>
+                    <ArrowRight className="w-4 h-4 text-slate-400" />
+                  </a>
                 </div>
 
-                {/* Key feature pills */}
-                <div className="flex flex-wrap items-center justify-center lg:justify-start gap-4 pt-2 text-xs text-slate-600 font-semibold">
+                {/* Reassurance Value Badges */}
+                <div className="flex flex-wrap items-center justify-center lg:justify-start gap-4 pt-3 text-xs text-slate-600 font-semibold">
                   <div className="flex items-center gap-1.5">
                     <Check className="w-4 h-4 text-emerald-600" />
-                    <span>Free Home Pickup</span>
+                    <span>Free Doorstep Pickup</span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <Check className="w-4 h-4 text-emerald-600" />
-                    <span>Pay Cash or UPI on Delivery</span>
+                    <span>Calibrated Digital Scales</span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <Check className="w-4 h-4 text-emerald-600" />
-                    <span>Live 6-Stage Tracking</span>
+                    <span>Cash on Delivery</span>
                   </div>
                 </div>
               </div>
 
-              {/* Quick Hub Access Card */}
+              {/* Hero Showcase Card */}
               <div className="lg:col-span-5 space-y-4">
-                <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-md space-y-4">
+                <div className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200 shadow-md space-y-5">
                   <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                     <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                      Customer Quick Access
+                      Standard Laundry Rate
                     </span>
                     <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
-                      Indiranagar Hub
+                      Calibrated Scale Pricing
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <Link
-                      to={currentUser ? '/customer?tab=current' : '/login?redirect=/customer?tab=current'}
-                      className="p-3.5 rounded-2xl bg-slate-50 hover:bg-brand-50 border border-slate-200 hover:border-brand-300 transition group text-left"
-                    >
-                      <ShoppingBag className="w-5 h-5 text-brand-600 mb-2 group-hover:scale-110 transition-transform" />
-                      <span className="font-bold text-slate-900 text-xs block">My Orders</span>
-                      <span className="text-[11px] text-slate-500">Track current & past washes</span>
-                    </Link>
-
-                    <Link
-                      to={currentUser ? '/customer?tab=addresses' : '/login?redirect=/customer?tab=addresses'}
-                      className="p-3.5 rounded-2xl bg-slate-50 hover:bg-brand-50 border border-slate-200 hover:border-brand-300 transition group text-left"
-                    >
-                      <User className="w-5 h-5 text-brand-600 mb-2 group-hover:scale-110 transition-transform" />
-                      <span className="font-bold text-slate-900 text-xs block">My Profile</span>
-                      <span className="text-[11px] text-slate-500">Addresses & mobile info</span>
-                    </Link>
-                  </div>
-
-                  <div className="p-3.5 bg-brand-50/80 rounded-2xl border border-brand-100 text-xs text-brand-900 space-y-1">
-                    <span className="font-bold block flex items-center gap-1.5">
-                      <Scale className="w-4 h-4 text-brand-600" />
-                      Honest Scale Weighing
-                    </span>
-                    <p className="text-[11px] text-brand-800 leading-snug">
-                      No upfront estimation errors. Your clothes are weighed on calibrated scales at our Indiranagar facility; pay only for actual kilograms!
+                  <div className="space-y-1">
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-4xl font-black text-slate-900">₹{pricePerKg}</span>
+                      <span className="text-sm font-semibold text-slate-500">/ kilogram</span>
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      Minimum billable weight: <strong>{minWeight} kg</strong> (₹{minBill} minimum charge). Final bill based on actual measured weight.
                     </p>
+                  </div>
+
+                  <div className="p-4 bg-brand-50/70 rounded-2xl border border-brand-100 space-y-2 text-xs text-brand-950">
+                    <div className="flex items-center gap-2 font-bold">
+                      <Scale className="w-4 h-4 text-brand-600 shrink-0" />
+                      <span>Transparent Doorstep Payment</span>
+                    </div>
+                    <p className="text-[11px] text-brand-800 leading-relaxed">
+                      Pay at your doorstep after your laundry is weighed. No upfront estimation guesswork or premature online payments.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 pt-1">
+                    <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 text-left">
+                      <Truck className="w-4 h-4 text-brand-600 mb-1" />
+                      <span className="font-bold text-slate-900 text-xs block">24-48h Delivery</span>
+                      <span className="text-[10px] text-slate-500">Cleaned & folded</span>
+                    </div>
+                    <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 text-left">
+                      <ShieldCheck className="w-4 h-4 text-brand-600 mb-1" />
+                      <span className="font-bold text-slate-900 text-xs block">Private Batches</span>
+                      <span className="text-[10px] text-slate-500">Hygienic individual wash</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -249,82 +417,17 @@ export const LandingPage: React.FC = () => {
           </div>
         </section>
 
-        {/* ================= 2. VISUAL HOW IT WORKS SECTION ================= */}
-        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        {/* ================= C. SUPPORTED SERVICES ================= */}
+        <section id="services" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 scroll-mt-24">
           <div className="text-center max-w-2xl mx-auto mb-10 space-y-2">
             <span className="text-xs font-bold uppercase tracking-wider text-brand-600">
-              Effortless Doorstep Process
+              Supported Laundry Services
             </span>
             <h2 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
-              How SuperWash Works
+              Our Professional Laundry Services
             </h2>
             <p className="text-xs sm:text-sm text-slate-600">
-              From doorstep collection to clean delivery in 4 transparent stages.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
-            {[
-              {
-                step: '01',
-                title: 'Book Home Pickup',
-                desc: 'Select your preferred 3-hour pickup window and provide your doorstep address.',
-                icon: CalendarCheck,
-                color: 'bg-blue-50 text-blue-600'
-              },
-              {
-                step: '02',
-                title: 'Clothes Collected',
-                desc: 'Our delivery associate arrives at your doorstep to safely collect your laundry batch.',
-                icon: Truck,
-                color: 'bg-indigo-50 text-indigo-600'
-              },
-              {
-                step: '03',
-                title: 'Weighed & Washed',
-                desc: 'Clothes are digitally weighed and washed in private machine batches with gentle detergent.',
-                icon: Scale,
-                color: 'bg-purple-50 text-purple-600'
-              },
-              {
-                step: '04',
-                title: 'Returned & Paid',
-                desc: 'Neatly steam-ironed and packaged clothes returned to your door. Pay Cash or UPI on delivery.',
-                icon: CheckCircle2,
-                color: 'bg-emerald-50 text-emerald-600'
-              }
-            ].map((s) => {
-              const Icon = s.icon;
-              return (
-                <div
-                  key={s.step}
-                  className="bg-white rounded-3xl p-6 border border-slate-200 shadow-xs relative space-y-3 hover:shadow-md transition-shadow"
-                >
-                  <span className="text-4xl font-black text-slate-100 absolute top-4 right-4 select-none">
-                    {s.step}
-                  </span>
-                  <div className={`w-12 h-12 rounded-2xl ${s.color} flex items-center justify-center`}>
-                    <Icon className="w-6 h-6" />
-                  </div>
-                  <h3 className="font-bold text-slate-900 text-base">{s.title}</h3>
-                  <p className="text-xs text-slate-600 leading-relaxed">{s.desc}</p>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-
-        {/* ================= 3. REAL SERVICE CATALOGUE & PRICING ================= */}
-        <section id="services" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="text-center max-w-2xl mx-auto mb-10 space-y-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-brand-600">
-              Verified Service Catalogue
-            </span>
-            <h2 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
-              Laundry Services & Transparent Pricing
-            </h2>
-            <p className="text-xs sm:text-sm text-slate-600">
-              Configured rates from our official Bangalore facility. No surprise fees.
+              Authentic fabric care handled with skin-friendly detergents and professional equipment in Bengaluru.
             </p>
           </div>
 
@@ -336,7 +439,7 @@ export const LandingPage: React.FC = () => {
               return (
                 <div
                   key={srv.id}
-                  className="bg-white rounded-3xl p-6 border border-slate-200 shadow-sm flex flex-col justify-between space-y-4 hover:border-brand-400 transition"
+                  className="bg-white rounded-3xl p-6 border border-slate-200 shadow-sm flex flex-col justify-between space-y-4 hover:border-brand-400 hover:shadow-md transition"
                 >
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
@@ -368,7 +471,7 @@ export const LandingPage: React.FC = () => {
                     </div>
 
                     <Link
-                      to="/customer?tab=book"
+                      to={`/customer?tab=book&service=${srv.id}`}
                       className="py-2 px-3.5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-xs transition flex items-center gap-1"
                     >
                       <span>Book</span>
@@ -381,20 +484,152 @@ export const LandingPage: React.FC = () => {
           </div>
         </section>
 
-        {/* ================= 4. PROMOTIONS & OFFERS SECTION ================= */}
+        {/* ================= D. HOW IT WORKS ================= */}
+        <section id="how-it-works" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 scroll-mt-24">
+          <div className="text-center max-w-2xl mx-auto mb-10 space-y-2">
+            <span className="text-xs font-bold uppercase tracking-wider text-brand-600">
+              Three Simple Steps
+            </span>
+            <h2 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
+              How SuperWash Works
+            </h2>
+            <p className="text-xs sm:text-sm text-slate-600">
+              Convenient doorstep laundry in three easy, transparent stages.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200 shadow-xs relative space-y-4 hover:shadow-md transition">
+              <span className="text-4xl font-black text-slate-100 absolute top-4 right-5 select-none">
+                01
+              </span>
+              <div className="w-12 h-12 rounded-2xl bg-blue-50 text-brand-600 flex items-center justify-center">
+                <CalendarCheck className="w-6 h-6" />
+              </div>
+              <h3 className="font-bold text-slate-900 text-lg">1. Book your pickup</h3>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Choose your preferred pickup date, 3-hour time slot, and enter your Bengaluru address online. No advance payment required.
+              </p>
+            </div>
+
+            <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200 shadow-xs relative space-y-4 hover:shadow-md transition">
+              <span className="text-4xl font-black text-slate-100 absolute top-4 right-5 select-none">
+                02
+              </span>
+              <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                <Truck className="w-6 h-6" />
+              </div>
+              <h3 className="font-bold text-slate-900 text-lg">2. We collect and process your laundry</h3>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Our delivery associate collects your laundry. At our facility, clothes are weighed on calibrated digital scales and cleaned in hygienic individual drums.
+              </p>
+            </div>
+
+            <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200 shadow-xs relative space-y-4 hover:shadow-md transition">
+              <span className="text-4xl font-black text-slate-100 absolute top-4 right-5 select-none">
+                03
+              </span>
+              <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                <CheckCircle2 className="w-6 h-6" />
+              </div>
+              <h3 className="font-bold text-slate-900 text-lg">3. Receive your cleaned clothes at your doorstep</h3>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Fresh, neatly folded and crisp garments returned to your home. Pay at your doorstep after your laundry is weighed.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {/* ================= E. PRICING ================= */}
+        <section id="pricing" className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 scroll-mt-24">
+          <div className="bg-white rounded-3xl p-6 sm:p-10 border border-slate-200 shadow-md space-y-8">
+            <div className="text-center max-w-xl mx-auto space-y-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-brand-600">
+                Transparent Per-Kg Pricing
+              </span>
+              <h2 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
+                Simple, Honest Rates
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-600">
+                Pay strictly by actual measured weight. No hidden fees, no individual garment counting.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+              <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200 text-center space-y-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-500 block">
+                  Authoritative Rate
+                </span>
+                <span className="text-3xl font-black text-slate-900 block">₹{pricePerKg} <span className="text-sm font-normal text-slate-500">/ kg</span></span>
+                <p className="text-[11px] text-slate-500">Standard Wash & Fold</p>
+              </div>
+
+              <div className="p-5 rounded-2xl bg-brand-50/80 border border-brand-200 text-center space-y-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-brand-700 block">
+                  Minimum Billable Weight
+                </span>
+                <span className="text-3xl font-black text-brand-900 block">{minWeight} kg</span>
+                <p className="text-[11px] text-brand-700 font-semibold">Minimum charge: ₹{minBill}</p>
+              </div>
+
+              <div className="p-5 rounded-2xl bg-emerald-50 border border-emerald-200 text-center space-y-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-emerald-700 block">
+                  Payment Mode
+                </span>
+                <span className="text-xl font-black text-emerald-900 block mt-1">Cash on Delivery</span>
+                <p className="text-[11px] text-emerald-700 font-medium">Pay at your doorstep after weighing</p>
+              </div>
+            </div>
+
+            {/* Illustrative Weight Examples */}
+            <div className="border-t border-slate-100 pt-6">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-500 block mb-4 text-center sm:text-left">
+                Common Weight Estimates
+              </span>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-100 flex justify-between items-center">
+                  <div>
+                    <span className="font-bold text-slate-800 block">1 kg (Minimum)</span>
+                    <span className="text-[10px] text-slate-500">~4 to 5 casual t-shirts</span>
+                  </div>
+                  <span className="font-black text-slate-900 text-sm">₹{minBill}</span>
+                </div>
+                <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-100 flex justify-between items-center">
+                  <div>
+                    <span className="font-bold text-slate-800 block">3 kg (Individual)</span>
+                    <span className="text-[10px] text-slate-500">Weekly casual wardrobe</span>
+                  </div>
+                  <span className="font-black text-slate-900 text-sm">₹{(parseFloat(pricePerKg) * 3).toFixed(0)}</span>
+                </div>
+                <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-100 flex justify-between items-center">
+                  <div>
+                    <span className="font-bold text-slate-800 block">5 kg (Family Batch)</span>
+                    <span className="text-[10px] text-slate-500">Multi-person laundry</span>
+                  </div>
+                  <span className="font-black text-slate-900 text-sm">₹{(parseFloat(pricePerKg) * 5).toFixed(0)}</span>
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500 text-center sm:text-left mt-3">
+                * Final bill is determined strictly from calibrated digital scales when your clothes arrive at our facility.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {/* ================= F. PROMOTIONS & OFFERS ================= */}
         {coupons.length > 0 && (
-          <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="bg-gradient-to-r from-brand-900 to-indigo-950 text-white rounded-3xl p-6 sm:p-10 shadow-xl space-y-6">
+          <section className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="bg-gradient-to-r from-slate-900 via-brand-950 to-indigo-950 text-white rounded-3xl p-6 sm:p-10 shadow-xl space-y-6">
               <div className="max-w-xl space-y-2">
                 <span className="text-[11px] font-bold text-cyan-400 uppercase tracking-widest flex items-center gap-1.5">
                   <Tag className="w-3.5 h-3.5" />
                   Eligible Promotional Coupons
                 </span>
                 <h2 className="text-2xl sm:text-3xl font-black tracking-tight">
-                  Save on Your Next Laundry Schedule
+                  Discounts on Your Next Laundry Pickup
                 </h2>
                 <p className="text-xs sm:text-sm text-slate-300">
-                  Apply approved discount coupons during pickup booking. Discounts apply automatically on bill calculation!
+                  Select and apply an approved coupon when booking your pickup. Discount is automatically calculated on your verified measured bill!
                 </p>
               </div>
 
@@ -422,7 +657,7 @@ export const LandingPage: React.FC = () => {
 
                     <div className="pt-2 border-t border-white/10 flex items-center justify-between text-[11px]">
                       <span className="text-slate-400">
-                        {coupon.min_order_paise ? `Min. spend ₹${(coupon.min_order_paise / 100).toFixed(0)}` : 'No minimum spend'}
+                        {coupon.min_order_paise ? `Min. bill ₹${(coupon.min_order_paise / 100).toFixed(0)}` : 'No minimum bill'}
                       </span>
                       <button
                         type="button"
@@ -439,18 +674,18 @@ export const LandingPage: React.FC = () => {
           </section>
         )}
 
-        {/* ================= 5. SERVICE AREA CHECKER ================= */}
-        <section className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+        {/* ================= G. SERVICE AVAILABILITY CHECKER ================= */}
+        <section id="coverage" className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 scroll-mt-24">
           <div className="bg-slate-900 text-white rounded-3xl p-6 sm:p-10 shadow-xl space-y-6">
             <div className="max-w-xl space-y-2">
               <span className="text-[11px] font-bold text-cyan-400 uppercase tracking-widest">
-                Service Area Checker
+                Service Area Coverage
               </span>
               <h2 className="text-2xl sm:text-3xl font-black tracking-tight">
-                Check if We Cover Your PIN Code
+                Check Service Availability in Bengaluru
               </h2>
               <p className="text-xs sm:text-sm text-slate-300">
-                We currently service major neighborhoods across Bengaluru. Enter your 6-digit PIN code to check instant availability.
+                We provide scheduled doorstep pickup and delivery across Bengaluru. Enter your 6-digit PIN code to check instant coverage.
               </p>
             </div>
 
@@ -460,7 +695,7 @@ export const LandingPage: React.FC = () => {
                 <input
                   type="text"
                   maxLength={6}
-                  placeholder="e.g. 560038"
+                  placeholder="Enter 6-digit PIN code (e.g. 560034)"
                   value={pincodeInput}
                   onChange={(e) => setPincodeInput(e.target.value.replace(/[^0-9]/g, ''))}
                   className="w-full pl-10 pr-3 py-2.5 rounded-xl bg-white text-slate-900 font-mono font-bold text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400"
@@ -491,18 +726,22 @@ export const LandingPage: React.FC = () => {
               </div>
             )}
 
-            <div className="pt-2 border-t border-slate-800 text-[11px] text-slate-400 flex flex-wrap gap-2 items-center">
-              <span className="font-semibold text-slate-300">Popular covered hubs:</span>
-              <span>Indiranagar (560038)</span> •
-              <span>Ulsoor (560008)</span> •
-              <span>Bellandur (560103)</span> •
-              <span>Domlur (560071)</span> •
-              <span>Whitefield (560066)</span>
-            </div>
+            {/* Dynamic Active Service Areas Display */}
+            {serviceAreas.length > 0 && (
+              <div className="pt-2 border-t border-slate-800 text-[11px] text-slate-400 flex flex-wrap gap-2 items-center">
+                <span className="font-semibold text-slate-300">Active Service Zones:</span>
+                {serviceAreas.filter((a) => a.is_active).map((area, idx, arr) => (
+                  <React.Fragment key={area.pincode}>
+                    <span className="text-slate-300">{area.area_name} ({area.pincode})</span>
+                    {idx < arr.length - 1 && <span>•</span>}
+                  </React.Fragment>
+                ))}
+              </div>
+            )}
           </div>
         </section>
 
-        {/* ================= 6. FREQUENTLY ASKED QUESTIONS ================= */}
+        {/* ================= H. FREQUENTLY ASKED QUESTIONS ================= */}
         <section className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6">
           <div className="text-center space-y-2">
             <span className="text-xs font-bold uppercase tracking-wider text-brand-600">Got Questions?</span>
@@ -544,21 +783,21 @@ export const LandingPage: React.FC = () => {
           </div>
         </section>
 
-        {/* ================= 7. CONTACT & STORE LOCATION ================= */}
-        <section className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+        {/* ================= I. TRUST & CONTACT ================= */}
+        <section id="contact" className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 scroll-mt-24">
           <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200 shadow-sm grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
             <div className="space-y-3 text-xs">
               <span className="text-[10px] uppercase font-bold text-brand-600 tracking-wider">
                 Visit or Contact
               </span>
               <h2 className="text-2xl font-black text-slate-900 leading-tight">
-                SuperWash Exprez Shop
+                SuperWash Exprez
               </h2>
               <p className="text-slate-600">
-                You are welcome to drop off clothes directly at our facility counter or call us for any queries.
+                You are welcome to drop off clothes directly at our facility counter or call us for any questions.
               </p>
 
-              <div className="space-y-2 pt-2">
+              <div className="space-y-2.5 pt-2">
                 <div className="flex items-start gap-2.5 text-slate-700">
                   <MapPin className="w-4 h-4 text-brand-600 shrink-0 mt-0.5" />
                   <span>{address}</span>
@@ -570,8 +809,8 @@ export const LandingPage: React.FC = () => {
                 <div className="flex items-center gap-2.5 text-slate-700">
                   <Phone className="w-4 h-4 text-brand-600 shrink-0" />
                   <a
-                    href={`tel:${phone.replace(/[^0-9+]/g, '')}`}
-                    className="hover:text-brand-600 transition font-medium"
+                    href={`tel:${cleanTel}`}
+                    className="hover:text-brand-600 transition font-medium text-slate-900"
                   >
                     {phone}
                   </a>
@@ -583,7 +822,7 @@ export const LandingPage: React.FC = () => {
               <CalendarCheck className="w-8 h-8 text-brand-600 mx-auto" />
               <h3 className="font-bold text-slate-900 text-base">Ready for Fresh Clothes?</h3>
               <p className="text-xs text-slate-500">
-                Schedule your home pickup now in under 60 seconds.
+                Schedule your doorstep home pickup now in under 60 seconds.
               </p>
               <Link
                 to="/customer?tab=book"
@@ -597,25 +836,40 @@ export const LandingPage: React.FC = () => {
         </section>
       </main>
 
-      {/* Footer */}
-      <footer className="border-t border-slate-200 bg-white py-8 text-center text-xs text-slate-500">
-        <div className="max-w-7xl mx-auto px-4 space-y-2">
-          <p>© 2026 SuperWash Exprez. All rights reserved. • Bengaluru, Karnataka</p>
-          <div className="flex justify-center gap-4 text-[11px] text-slate-400">
-            <Link to="/privacy" className="hover:text-slate-600">Privacy Policy</Link>
-            <span>•</span>
-            <Link to="/terms" className="hover:text-slate-600">Terms of Service</Link>
-            <span>•</span>
-            <Link to="/contact" className="hover:text-slate-600">Contact Support</Link>
+      {/* ================= J. FOOTER ================= */}
+      <footer className="border-t border-slate-200 bg-white py-10 text-xs text-slate-500">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6">
+          <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
+            <Link
+              to="/"
+              className="flex items-center gap-2 group cursor-pointer"
+              title="SuperWash Exprez Home"
+            >
+              <div className="w-7 h-7 rounded-xl bg-gradient-to-tr from-brand-600 to-cyan-500 flex items-center justify-center text-white shadow-xs">
+                <Sparkles className="w-3.5 h-3.5" />
+              </div>
+              <span className="font-black text-base text-slate-900 tracking-tight">
+                Super<span className="text-brand-600">Wash</span> Exprez
+              </span>
+            </Link>
+
+            <div className="flex flex-wrap justify-center gap-6 text-xs text-slate-600 font-semibold">
+              <a href="#services" className="hover:text-brand-600">Services</a>
+              <a href="#how-it-works" className="hover:text-brand-600">How It Works</a>
+              <a href="#pricing" className="hover:text-brand-600">Pricing</a>
+              <a href="#coverage" className="hover:text-brand-600">Coverage</a>
+              <a href="#contact" className="hover:text-brand-600">Contact</a>
+              <Link to="/privacy" className="hover:text-brand-600">Privacy Policy</Link>
+              <Link to="/terms" className="hover:text-brand-600">Terms of Service</Link>
+            </div>
+          </div>
+
+          <div className="border-t border-slate-100 pt-6 flex flex-col sm:flex-row justify-between items-center text-[11px] text-slate-400 gap-2">
+            <p>© 2026 SuperWash Exprez. All rights reserved. • Bengaluru, Karnataka</p>
+            <p>Pay at your doorstep after your laundry is weighed (Cash on Delivery).</p>
           </div>
         </div>
       </footer>
-
-      {/* Mobile Bottom Navigation */}
-      <CustomerBottomNav
-        activeTab="home"
-        hasActiveOrder={Boolean(activeOrder)}
-      />
     </div>
   );
 };
