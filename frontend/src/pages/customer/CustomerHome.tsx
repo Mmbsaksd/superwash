@@ -11,6 +11,7 @@ import { FeedbackModal } from '../../components/FeedbackModal';
 import { InvoiceModal } from '../../components/InvoiceModal';
 import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
 import { MapLocationPicker } from '../../components/MapLocationPicker';
+import { LocationService } from '../../services/locationService';
 import { CustomerBottomNav } from '../../components/CustomerBottomNav';
 import { formatCustomerError } from '../../utils/errorHandling';
 import {
@@ -63,10 +64,10 @@ const isCustomerOrderOwner = (
 };
 
 /**
- * Standard device geolocation helper wrapping navigator.geolocation with fallback error categorization.
+ * Standard high-accuracy device geolocation helper wrapping LocationService with fallback error categorization.
  */
 const requestDeviceLocation = (
-  onSuccess: (lat: number, lng: number) => void,
+  onSuccess: (lat: number, lng: number, details?: { accuracy?: number | null; message?: string }) => void,
   onError: (type: 'unsupported' | 'invalid' | 'permission_denied' | 'timeout' | 'error') => void,
   onComplete: () => void
 ) => {
@@ -75,26 +76,20 @@ const requestDeviceLocation = (
     onComplete();
     return;
   }
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      const lat = pos.coords.latitude;
-      const lng = pos.coords.longitude;
-      if (typeof lat === 'number' && typeof lng === 'number' && !isNaN(lat) && !isNaN(lng)) {
-        onSuccess(lat, lng);
-      } else {
-        onError('invalid');
-      }
+
+  LocationService.getCurrentPosition({ enableHighAccuracy: true, timeout: 10000, maximumAge: 0 })
+    .then((pos) => {
+      onSuccess(pos.latitude, pos.longitude, { accuracy: pos.accuracy, message: pos.accuracyMessage });
       onComplete();
-    },
-    (err) => {
+    })
+    .catch((err: any) => {
       console.warn('Geolocation error:', err);
       onComplete();
-      if (err.code === 1) onError('permission_denied');
-      else if (err.code === 3) onError('timeout');
+      if (err.code === 1 || err.code === 'PERMISSION_DENIED') onError('permission_denied');
+      else if (err.code === 3 || err.code === 'TIMEOUT') onError('timeout');
+      else if (err.code === 'UNSUPPORTED') onError('unsupported');
       else onError('error');
-    },
-    { timeout: 8000, enableHighAccuracy: true }
-  );
+    });
 };
 
 interface AddressFields {
@@ -274,14 +269,14 @@ export const CustomerHome: React.FC = () => {
     const isServiceableInSettings = Boolean(settings?.serviceable_pincodes?.includes(cleanPin));
     if (isServiceableInSettings) {
       return {
-        areaName: 'Bengaluru Active Zone',
+        areaName: 'Active Service Zone',
         city: 'Bengaluru',
         isActive: true
       };
     }
     return {
       areaName: undefined,
-      city: 'Bengaluru',
+      city: undefined,
       isActive: false
     };
   };
@@ -743,14 +738,27 @@ export const CustomerHome: React.FC = () => {
       }, [currentUser]);
 
       const handleGetOnboardLocation = () => {
-        updateOnboardingModal({ isLocating: true, locationFeedback: 'Acquiring device GPS...' });
+        updateOnboardingModal({ isLocating: true, locationFeedback: 'Acquiring high-accuracy GPS...' });
         requestDeviceLocation(
-          (lat, lng) => {
-            updateOnboardingModal({
+          async (lat, lng, details) => {
+            let addrSug = '';
+            let pinSug = '';
+            try {
+              const geo = await LocationService.reverseGeocode(lat, lng);
+              if (geo) {
+                addrSug = geo.addressLine || geo.area;
+                pinSug = geo.pincode;
+              }
+            } catch {}
+
+            setOnboardingModal((prev) => ({
+              ...prev,
               latitude: lat,
               longitude: lng,
-              locationFeedback: 'GPS location attached!'
-            });
+              address: prev.address.trim() ? prev.address : (addrSug || prev.address),
+              pincode: prev.pincode.trim() && prev.pincode !== '560103' ? prev.pincode : (pinSug || prev.pincode),
+              locationFeedback: details?.message || 'High-accuracy GPS location attached!'
+            }));
           },
           (errType) => {
             const msgs = {
@@ -817,23 +825,40 @@ export const CustomerHome: React.FC = () => {
         setIsLocating(true);
         setLocationFeedback({
           type: 'loading',
-          message: 'Requesting device GPS position...'
+          message: 'Acquiring high-accuracy GPS fix from device...'
         });
         requestDeviceLocation(
-          (lat, lng) => {
-            updateNewAddress({ latitude: lat, longitude: lng });
+          async (lat, lng, details) => {
+            let addrSug = '';
+            let pinSug = '';
+            try {
+              const geo = await LocationService.reverseGeocode(lat, lng);
+              if (geo) {
+                addrSug = geo.addressLine || geo.area;
+                pinSug = geo.pincode;
+              }
+            } catch {}
+
+            setNewAddress((prev) => ({
+              ...prev,
+              latitude: lat,
+              longitude: lng,
+              line: prev.line.trim() ? prev.line : (addrSug || prev.line),
+              pincode: prev.pincode.trim() && prev.pincode !== '560103' ? prev.pincode : (pinSug || prev.pincode)
+            }));
+
             setLocationFeedback({
               type: 'success',
-              message: 'GPS location attached! Delivery associates will navigate directly to your coordinates.'
+              message: `${details?.message || 'High-accuracy GPS attached!'} (${lat.toFixed(4)}, ${lng.toFixed(4)})${addrSug ? ` near ${addrSug}` : ''}`
             });
           },
           (errType) => {
             const msgs = {
               unsupported: 'Geolocation is not supported by your browser. Please enter address manually.',
               invalid: 'Invalid coordinates received from device. Please enter address manually.',
-              permission_denied: 'Location permission was denied. You can continue by entering your address manually.',
-              timeout: 'GPS location request timed out. Please enter your address manually.',
-              error: 'Could not determine GPS position. Please enter your address manually.'
+              permission_denied: 'Location permission was denied. You can continue by entering your address manually or picking on the map.',
+              timeout: 'GPS location request timed out. Please enter your address manually or pick on the map.',
+              error: 'Could not determine GPS position. Please enter your address manually or pick on the map.'
             };
             setLocationFeedback({
               type: errType === 'unsupported' || errType === 'invalid' ? 'error' : errType,
@@ -850,24 +875,62 @@ export const CustomerHome: React.FC = () => {
       };
 
       // Map Pin Confirmation Handler
-      const handleMapPinConfirmed = (coords: { latitude: number; longitude: number }) => {
-        const { latitude, longitude } = coords;
+      const handleMapPinConfirmed = (coords: {
+        latitude: number;
+        longitude: number;
+        addressSuggestion?: string;
+        pincodeSuggestion?: string;
+        areaSuggestion?: string;
+        formattedAddress?: string;
+        flatBuilding?: string;
+        street?: string;
+        pincode?: string;
+        isVerified?: boolean;
+      }) => {
+        const { latitude, longitude, formattedAddress, addressSuggestion, pincodeSuggestion } = coords;
+        const confirmedAddress = formattedAddress || addressSuggestion;
+        const confirmedPin = coords.pincode || pincodeSuggestion;
+
         switch (mapPickerState.target) {
           case 'booking_new':
-            updateNewAddress({ latitude, longitude });
+            setNewAddress((prev) => ({
+              ...prev,
+              latitude,
+              longitude,
+              line: confirmedAddress ? confirmedAddress : prev.line,
+              pincode: confirmedPin ? confirmedPin : prev.pincode
+            }));
             setLocationFeedback({
               type: 'success',
-              message: `Doorstep pin confirmed on map (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`
+              message: `Doorstep pin confirmed on map (${latitude.toFixed(4)}, ${longitude.toFixed(4)})${confirmedAddress ? ` - ${confirmedAddress}` : ''}`
             });
             break;
           case 'booking_refine':
-            updateRefinedAddress({ latitude, longitude });
+            setRefinedAddress((prev) => ({
+              ...prev,
+              latitude,
+              longitude,
+              line: confirmedAddress ? confirmedAddress : prev.line,
+              pincode: confirmedPin ? confirmedPin : prev.pincode
+            }));
             break;
           case 'address_modal':
-            updateAddressModal({ latitude, longitude });
+            setAddressModal((prev) => ({
+              ...prev,
+              latitude,
+              longitude,
+              address_line: confirmedAddress ? confirmedAddress : prev.address_line,
+              pincode: confirmedPin ? confirmedPin : prev.pincode
+            }));
             break;
           case 'order_edit':
-            updateOrderLocationModal({ latitude, longitude });
+            setOrderLocationModal((prev) => ({
+              ...prev,
+              latitude,
+              longitude,
+              address: confirmedAddress ? confirmedAddress : prev.address,
+              pincode: confirmedPin ? confirmedPin : prev.pincode
+            }));
             break;
         }
         setMapPickerState((prev) => ({ ...prev, isOpen: false, target: null }));

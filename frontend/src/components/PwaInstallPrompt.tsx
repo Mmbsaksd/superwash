@@ -55,7 +55,9 @@ export const PwaInstallPrompt: React.FC<PwaInstallPromptProps> = ({
     }
 
     // 3. Detect iOS Safari
-    const ua = window.navigator.userAgent.toLowerCase();
+    const ua = (typeof window !== 'undefined' && window.navigator?.userAgent)
+      ? window.navigator.userAgent.toLowerCase()
+      : '';
     const isIosDevice = /iphone|ipad|ipod/.test(ua) && !(window as any).MSStream;
     setIsIOS(isIosDevice);
 

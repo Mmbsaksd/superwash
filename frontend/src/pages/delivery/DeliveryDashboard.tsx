@@ -8,9 +8,10 @@ import { supabase } from '../../services/supabase';
 import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
 import { PaymentModal } from '../../components/PaymentModal';
 import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
+import { DeliveryMapModal } from '../../components/DeliveryMapModal';
 import {
   Phone, MapPin, CheckCircle, Package, Truck,
-  AlertCircle, IndianRupee, RefreshCw, X, Search, Calendar, LogOut, Scale, Clock, CheckCircle2
+  AlertCircle, IndianRupee, RefreshCw, X, Search, Calendar, LogOut, Scale, Clock, CheckCircle2, Eye
 } from 'lucide-react';
 
 type DeliveryTab = 'pickups' | 'deliveries' | 'completed_deliveries' | 'pickup_history';
@@ -34,6 +35,9 @@ export const DeliveryDashboard: React.FC = () => {
 
   // Payment Recording Modal
   const [paymentOrder, setPaymentOrder] = useState<Order | null>(null);
+
+  // In-app Map Preview Modal
+  const [mapPreviewOrder, setMapPreviewOrder] = useState<Order | null>(null);
 
   useEffect(() => {
     loadData();
@@ -214,56 +218,98 @@ export const DeliveryDashboard: React.FC = () => {
     }
   };
 
-  const renderAddressBox = (order: Order, title: string, showSlot: boolean = false) => (
-    <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 text-slate-700 space-y-1">
-      <div className="flex items-center justify-between">
-        <span className="font-bold text-slate-800 block text-[11px]">{title.endsWith(':') ? title : `${title}:`}</span>
-        {LaundryService.hasValidCoordinates(order) ? (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-            <MapPin className="w-2.5 h-2.5 text-emerald-600" /> GPS Pinned
-          </span>
+  const renderAddressBox = (order: Order, title: string, showSlot: boolean = false) => {
+    const hasGps = LaundryService.hasValidCoordinates(order);
+
+    return (
+      <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 text-slate-700 space-y-1">
+        <div className="flex items-center justify-between">
+          <span className="font-bold text-slate-800 block text-[11px]">{title.endsWith(':') ? title : `${title}:`}</span>
+          {hasGps ? (
+            <button
+              type="button"
+              onClick={() => setMapPreviewOrder(order)}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 hover:bg-emerald-200 transition cursor-pointer"
+              title="Click to preview confirmed doorstep pin on map"
+            >
+              <MapPin className="w-2.5 h-2.5 text-emerald-600" /> GPS Pinned
+            </button>
+          ) : (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-200 text-slate-700">
+              📝 Text Address
+            </span>
+          )}
+        </div>
+        <p className="leading-relaxed">{order.pickup_address}</p>
+        {order.pickup_landmark && (
+          <p className="text-slate-500 text-[11px]">Landmark: {order.pickup_landmark}</p>
+        )}
+        {hasGps ? (
+          <div className="text-[10px] font-mono text-emerald-700 flex items-center justify-between pt-0.5">
+            <span>📍 {Number(order.pickup_latitude).toFixed(6)}, {Number(order.pickup_longitude).toFixed(6)}</span>
+            <button
+              type="button"
+              onClick={() => setMapPreviewOrder(order)}
+              className="text-[10px] underline hover:text-emerald-900 cursor-pointer"
+            >
+              Preview Map
+            </button>
+          </div>
         ) : (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-200 text-slate-700">
-            📝 Text Address
-          </span>
+          <div className="text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 mt-1">
+            ⚠️ No GPS Pin Attached. Call customer to verify doorstep.
+          </div>
+        )}
+        {showSlot && (
+          <div className="pt-1 flex items-center gap-1.5 text-slate-500 text-[11px] font-mono">
+            <span>PIN: {order.pickup_pincode}</span>
+            <span>•</span>
+            <span>{order.pickup_slot}</span>
+          </div>
         )}
       </div>
-      <p className="leading-relaxed">{order.pickup_address}</p>
-      {order.pickup_landmark && (
-        <p className="text-slate-500 text-[11px]">Landmark: {order.pickup_landmark}</p>
-      )}
-      {showSlot && (
-        <div className="pt-1 flex items-center gap-1.5 text-slate-500 text-[11px] font-mono">
-          <span>PIN: {order.pickup_pincode}</span>
-          <span>•</span>
-          <span>{order.pickup_slot}</span>
+    );
+  };
+
+  const renderCallAndDirections = (order: Order) => {
+    const hasGps = LaundryService.hasValidCoordinates(order);
+
+    return (
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-2 gap-2">
+          <a
+            href={`tel:${order.customer_phone}`}
+            className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 rounded-xl font-bold text-slate-700 flex items-center justify-center gap-1.5 transition text-center"
+          >
+            <Phone className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+            <span>Call</span>
+          </a>
+
+          <a
+            href={LaundryService.getGoogleMapsDirectionsUrl(order)}
+            target="_blank"
+            rel="noreferrer"
+            className="py-2.5 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl font-bold flex items-center justify-center gap-1.5 transition text-center"
+            title={hasGps ? "Open exact GPS driving directions in Google Maps" : "Search address in Google Maps"}
+          >
+            <MapPin className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+            <span>{hasGps ? 'Directions (GPS)' : 'Search Maps'}</span>
+          </a>
         </div>
-      )}
-    </div>
-  );
 
-  const renderCallAndDirections = (order: Order) => (
-    <div className="grid grid-cols-2 gap-2">
-      <a
-        href={`tel:${order.customer_phone}`}
-        className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 rounded-xl font-bold text-slate-700 flex items-center justify-center gap-1.5 transition text-center"
-      >
-        <Phone className="w-3.5 h-3.5 text-slate-600 shrink-0" />
-        <span>Call</span>
-      </a>
-
-      <a
-        href={LaundryService.getGoogleMapsDirectionsUrl(order)}
-        target="_blank"
-        rel="noreferrer"
-        className="py-2.5 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl font-bold flex items-center justify-center gap-1.5 transition text-center"
-        title={LaundryService.hasValidCoordinates(order) ? "Open exact GPS driving directions in Google Maps" : "Search address in Google Maps"}
-      >
-        <MapPin className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-        <span>{LaundryService.hasValidCoordinates(order) ? 'Directions (GPS)' : 'Search Maps'}</span>
-      </a>
-    </div>
-  );
+        {hasGps && (
+          <button
+            type="button"
+            onClick={() => setMapPreviewOrder(order)}
+            className="w-full py-1.5 px-2 bg-emerald-50/80 hover:bg-emerald-100 text-emerald-800 text-[11px] font-bold rounded-lg border border-emerald-200/60 flex items-center justify-center gap-1.5 transition cursor-pointer"
+          >
+            <Eye className="w-3 h-3 text-emerald-600" />
+            <span>Preview Doorstep Pin on In-App Map</span>
+          </button>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-24">
@@ -740,6 +786,15 @@ export const DeliveryDashboard: React.FC = () => {
           recordedBy={currentUser?.id}
           recordedByName={currentUser?.full_name || 'Delivery Associate'}
           isStaff={true}
+        />
+      )}
+
+      {/* In-app Map Preview Modal */}
+      {mapPreviewOrder && (
+        <DeliveryMapModal
+          isOpen={true}
+          order={mapPreviewOrder}
+          onClose={() => setMapPreviewOrder(null)}
         />
       )}
     </div>

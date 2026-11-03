@@ -3702,8 +3702,8 @@ export class LaundryService {
         return {
           id: `pin-${cleanPin}`,
           pincode: cleanPin,
-          area_name: 'Bengaluru Active Zone',
-          name: 'Bengaluru Active Zone',
+          area_name: 'Active Service Zone',
+          name: 'Active Service Zone',
           city: 'Bengaluru',
           state: 'Karnataka',
           is_active: true
