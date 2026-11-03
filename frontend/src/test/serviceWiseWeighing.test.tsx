@@ -771,4 +771,114 @@ describe('Service-Wise Weighing, Order Calculation & Invoice Workflow (Section 6
     expect(cappedExprez.discountPaise).toBe(10000); // Capped at ₹100
     expect(cappedExprez.totalAmountPaise).toBe(108500);
   });
+
+  // 21. Live Mode Safeupdate & Multi-Service Delivery Pickup Flow
+  it('21. successfully processes multi-service doorstep collection with WELCOME50 coupon without WHERE clause exceptions', async () => {
+    setLiveModeForTesting(true);
+    const sw1047Order: Order = {
+      ...baseMultiOrder,
+      id: '9d65a6f4-b4a5-40c2-8303-003d3a89eb34',
+      order_number: 'SW-1047',
+      order_status: 'pickup_assigned',
+      coupon_code: 'WELCOME50',
+      items: [
+        {
+          id: 'f3368e0d-970a-4f87-ac57-436ffc192fcc',
+          order_id: '9d65a6f4-b4a5-40c2-8303-003d3a89eb34',
+          service_id: serviceAId,
+          service_name: 'Wash & Fold (Normal)',
+          pricing_unit: 'per_kg',
+          unit_price_paise: 7900,
+          min_weight_kg: 1.0,
+          created_at: '2026-11-03T05:00:00Z',
+          updated_at: '2026-11-03T05:00:00Z'
+        },
+        {
+          id: '4c0c3bfe-9500-4294-9763-fd61802b8aef',
+          order_id: '9d65a6f4-b4a5-40c2-8303-003d3a89eb34',
+          service_id: serviceBId,
+          service_name: 'Wash and Iron',
+          pricing_unit: 'per_kg',
+          unit_price_paise: 7900,
+          min_weight_kg: 1.0,
+          created_at: '2026-11-03T05:00:00Z',
+          updated_at: '2026-11-03T05:00:00Z'
+        }
+      ]
+    };
+    localStorage.setItem('superwash_orders', JSON.stringify([sw1047Order]));
+    vi.spyOn(LaundryService, 'getOrders').mockResolvedValue([sw1047Order]);
+
+    const rpcSpy = vi.spyOn(supabase, 'rpc').mockResolvedValueOnce({
+      data: {
+        success: true,
+        order_id: sw1047Order.id,
+        order_number: 'SW-1047',
+        measured_weight: 5.0,
+        billable_weight: 5.0,
+        subtotal_paise: 39500,
+        discount_paise: 5000,
+        total_amount_paise: 34500,
+        order_status: 'collected',
+        items: [
+          {
+            id: 'f3368e0d-970a-4f87-ac57-436ffc192fcc',
+            service_id: serviceAId,
+            service_name: 'Wash & Fold (Normal)',
+            pricing_unit: 'per_kg',
+            unit_price_paise: 7900,
+            min_weight_kg: 1.0,
+            measured_weight: 2.0,
+            billable_weight: 2.0,
+            line_total_paise: 15800
+          },
+          {
+            id: '4c0c3bfe-9500-4294-9763-fd61802b8aef',
+            service_id: serviceBId,
+            service_name: 'Wash and Iron',
+            pricing_unit: 'per_kg',
+            unit_price_paise: 7900,
+            min_weight_kg: 1.0,
+            measured_weight: 3.0,
+            billable_weight: 3.0,
+            line_total_paise: 23700
+          }
+        ]
+      },
+      error: null
+    } as any);
+
+    const measurements: ServiceMeasurementInput[] = [
+      { order_item_id: 'f3368e0d-970a-4f87-ac57-436ffc192fcc', measured_weight: 2.0 },
+      { order_item_id: '4c0c3bfe-9500-4294-9763-fd61802b8aef', measured_weight: 3.0 }
+    ];
+
+    const result = await LaundryService.recordPickupCollectionAndWeight(
+      sw1047Order.id,
+      measurements,
+      '2038a6d7-d5b0-4be8-811f-0843a74840ba',
+      'Delivery Staff',
+      'Doorstep collection: 5.00 kg recorded'
+    );
+
+    expect(rpcSpy).toHaveBeenCalledWith(
+      'record_courier_pickup_collection',
+      expect.objectContaining({
+        p_order_id: sw1047Order.id,
+        p_service_measurements: measurements,
+        p_delivery_notes: 'Doorstep collection: 5.00 kg recorded'
+      })
+    );
+
+    expect(result.order_status).toBe('collected');
+    expect(result.measured_weight).toBe(5.0);
+    expect(result.billable_weight).toBe(5.0);
+    expect(result.discount_paise).toBe(5000);
+    expect(result.total_amount_paise).toBe(34500);
+    expect(result.items?.length).toBe(2);
+    expect(result.items?.[0].line_total_paise).toBe(15800);
+    expect(result.items?.[1].line_total_paise).toBe(23700);
+
+    setLiveModeForTesting(false);
+  });
 });
