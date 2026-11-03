@@ -10,7 +10,10 @@ import { supabase, isSupabaseConfigured } from './supabase';
 import { WhatsAppService } from './whatsappService';
 import { PricingEngine } from './pricingEngine';
 
-export let isLiveMode = isSupabaseConfigured && import.meta.env.VITE_DEMO_MODE !== 'true';
+// Production builds MUST ALWAYS use live Supabase PostgreSQL.
+// Demo mode is strictly restricted to local development (DEV).
+export const isDemoModeActive = (): boolean => Boolean(import.meta.env.DEV && import.meta.env.VITE_DEMO_MODE === 'true');
+export let isLiveMode = isSupabaseConfigured && !isDemoModeActive();
 
 export const setLiveModeForTesting = (val: boolean): void => {
   isLiveMode = val;
@@ -694,7 +697,7 @@ export class LaundryService {
         throw new Error(`Failed to load saved addresses: ${error.message}`);
       }
       addresses = data || [];
-    } else {
+    } else if (isDemoModeActive()) {
       const saved = localStorage.getItem(`${STORAGE_KEYS.ADDRESSES}_${userId}`);
       if (saved) {
         try { addresses = JSON.parse(saved); } catch { }
@@ -949,12 +952,15 @@ export class LaundryService {
       }
     }
 
-    const saved = localStorage.getItem(STORAGE_KEYS.ORDERS);
-    if (saved) {
-      try { return JSON.parse(saved); } catch { }
+    if (isDemoModeActive()) {
+      const saved = localStorage.getItem(STORAGE_KEYS.ORDERS);
+      if (saved) {
+        try { return JSON.parse(saved); } catch { }
+      }
+      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(INITIAL_SAMPLE_ORDERS));
+      return INITIAL_SAMPLE_ORDERS;
     }
-    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(INITIAL_SAMPLE_ORDERS));
-    return INITIAL_SAMPLE_ORDERS;
+    return [];
   }
 
   static async getOrderById(id: string): Promise<Order | null> {
@@ -2547,12 +2553,15 @@ export class LaundryService {
       }
     }
 
-    const all = await this.getOrders();
-    const cleanPhone = phone ? phone.replace(/[^0-9]/g, '').slice(-10) : '';
-    return all.filter(o =>
-      (userId && o.customer_id === userId) ||
-      (cleanPhone && o.customer_phone.replace(/[^0-9]/g, '').slice(-10) === cleanPhone)
-    );
+    if (isDemoModeActive()) {
+      const all = await this.getOrders();
+      const cleanPhone = phone ? phone.replace(/[^0-9]/g, '').slice(-10) : '';
+      return all.filter(o =>
+        (userId && o.customer_id === userId) ||
+        (cleanPhone && o.customer_phone.replace(/[^0-9]/g, '').slice(-10) === cleanPhone)
+      );
+    }
+    return [];
   }
 
   static async updateDeliveryNotes(orderId: string, deliveryNotes: string): Promise<Order> {
@@ -2667,23 +2676,26 @@ export class LaundryService {
       }
     }
 
-    const saved = localStorage.getItem(STORAGE_KEYS.PROFILES);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const filtered = operationalOnly
-            ? parsed.filter((p: Profile) => (p.role === 'manager' || p.role === 'delivery') && (!p.deleted_at || includeInactive))
-            : parsed.filter((p: Profile) => p.role !== 'customer' && (!p.deleted_at || includeInactive));
-          return includeInactive ? filtered : filtered.filter((p: Profile) => p.is_active);
-        }
-      } catch { }
+    if (isDemoModeActive()) {
+      const saved = localStorage.getItem(STORAGE_KEYS.PROFILES);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const filtered = operationalOnly
+              ? parsed.filter((p: Profile) => (p.role === 'manager' || p.role === 'delivery') && (!p.deleted_at || includeInactive))
+              : parsed.filter((p: Profile) => p.role !== 'customer' && (!p.deleted_at || includeInactive));
+            return includeInactive ? filtered : filtered.filter((p: Profile) => p.is_active);
+          }
+        } catch { }
+      }
+      const initial = operationalOnly
+        ? DEMO_PROFILES.filter(p => (p.role === 'manager' || p.role === 'delivery') && (!p.deleted_at || includeInactive))
+        : DEMO_PROFILES.filter(p => p.role !== 'customer' && (!p.deleted_at || includeInactive));
+      localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(initial));
+      return includeInactive ? initial : initial.filter(p => p.is_active);
     }
-    const initial = operationalOnly
-      ? DEMO_PROFILES.filter(p => (p.role === 'manager' || p.role === 'delivery') && (!p.deleted_at || includeInactive))
-      : DEMO_PROFILES.filter(p => p.role !== 'customer' && (!p.deleted_at || includeInactive));
-    localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(initial));
-    return includeInactive ? initial : initial.filter(p => p.is_active);
+    return [];
   }
 
   static async addStaffProfile(data: {
@@ -3290,69 +3302,81 @@ export class LaundryService {
       }
     }
 
-    const fallback = this.getLocalFallback(STORAGE_KEYS.SERVICE_AREAS, DEFAULT_SERVICE_AREAS);
-    return fallback.map((d: any) => ({ ...d, name: d.area_name || d.name }));
+    if (isDemoModeActive()) {
+      const fallback = this.getLocalFallback(STORAGE_KEYS.SERVICE_AREAS, DEFAULT_SERVICE_AREAS);
+      return fallback.map((d: any) => ({ ...d, name: d.area_name || d.name }));
+    }
+    const cached = localStorage.getItem(STORAGE_KEYS.SERVICE_AREAS);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((d: any) => ({ ...d, name: d.area_name || d.name }));
+        }
+      } catch { }
+    }
+    return [];
   }
 
   static async addServiceArea(data: Omit<ServiceArea, 'id' | 'created_at' | 'updated_at'>): Promise<ServiceArea> {
     const cleanPin = (data.pincode || '').trim().replace(/[^0-9]/g, '');
-      if (cleanPin.length !== 6 || !/^[1-9][0-9]{5}$/.test(cleanPin)) {
-        throw new Error('Please enter a valid 6-digit Indian PIN code.');
-      }
-
-      const areaName = (data.area_name || (data as any).name || '').trim();
-      if (!areaName) {
-        throw new Error('Please provide an area or locality name.');
-      }
-
-      const areas = await this.getServiceAreas();
-      if (areas.some(a => a.pincode === cleanPin)) {
-        throw new Error(`PIN code ${cleanPin} is already registered (${areas.find(a => a.pincode === cleanPin)?.area_name || 'Service Area'}).`);
-      }
-
-      // Precise database payload matching public.service_areas table schema:
-      // (id, pincode, area_name, city, state, is_active, created_at, updated_at)
-      // Note: 'name' is NOT a database column, so it is strictly excluded from dbPayload.
-      const nowIso = new Date().toISOString();
-      const dbPayload = {
-        id: generateUUID(),
-        pincode: cleanPin,
-        area_name: areaName,
-        city: (data.city || 'Bengaluru').trim(),
-        state: (data.state || 'Karnataka').trim(),
-        is_active: data.is_active !== undefined ? data.is_active : true,
-        created_at: nowIso,
-        updated_at: nowIso
-      };
-
-      if (isLiveMode) {
-        const { data: inserted, error } = await supabase
-          .from('service_areas')
-          .insert(dbPayload)
-          .select()
-          .single();
-
-        if (error) {
-          throw new Error(`Failed to save service area in database: ${error.message}`);
-        }
-
-        const result: ServiceArea = {
-          ...(inserted || dbPayload),
-          name: (inserted || dbPayload).area_name
-        };
-        const updatedList = [...areas.filter(a => a.id !== result.id), result];
-        localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(updatedList));
-        return result;
-      }
-
-      const newArea: ServiceArea = {
-        ...dbPayload,
-        name: areaName
-      };
-      const updated = [...areas, newArea];
-      localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(updated));
-      return newArea;
+    if (cleanPin.length !== 6 || !/^[1-9][0-9]{5}$/.test(cleanPin)) {
+      throw new Error('Please enter a valid 6-digit Indian PIN code.');
     }
+
+    const areaName = (data.area_name || (data as any).name || '').trim();
+    if (!areaName) {
+      throw new Error('Please provide an area or locality name.');
+    }
+
+    const areas = await this.getServiceAreas();
+    if (areas.some(a => a.pincode === cleanPin)) {
+      throw new Error(`PIN code ${cleanPin} is already registered (${areas.find(a => a.pincode === cleanPin)?.area_name || 'Service Area'}).`);
+    }
+
+    // Precise database payload matching public.service_areas table schema:
+    // (id, pincode, area_name, city, state, is_active, created_at, updated_at)
+    // Note: 'name' is NOT a database column, so it is strictly excluded from dbPayload.
+    const nowIso = new Date().toISOString();
+    const dbPayload = {
+      id: generateUUID(),
+      pincode: cleanPin,
+      area_name: areaName,
+      city: (data.city || 'Bengaluru').trim(),
+      state: (data.state || 'Karnataka').trim(),
+      is_active: data.is_active !== undefined ? data.is_active : true,
+      created_at: nowIso,
+      updated_at: nowIso
+    };
+
+    if (isLiveMode) {
+      const { data: inserted, error } = await supabase
+        .from('service_areas')
+        .insert(dbPayload)
+        .select()
+        .single();
+
+      if (error) {
+        throw new Error(`Failed to save service area in database: ${error.message}`);
+      }
+
+      const result: ServiceArea = {
+        ...(inserted || dbPayload),
+        name: (inserted || dbPayload).area_name
+      };
+      const updatedList = [...areas.filter(a => a.id !== result.id), result];
+      localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(updatedList));
+      return result;
+    }
+
+    const newArea: ServiceArea = {
+      ...dbPayload,
+      name: areaName
+    };
+    const updated = [...areas, newArea];
+    localStorage.setItem(STORAGE_KEYS.SERVICE_AREAS, JSON.stringify(updated));
+    return newArea;
+  }
 
   static async updateServiceArea(id: string, updates: Partial<ServiceArea>): Promise<ServiceArea> {
     const areas = await this.getServiceAreas();
@@ -3499,7 +3523,17 @@ export class LaundryService {
     }
 
     if (!list || list.length === 0) {
-      list = this.getLocalFallback(STORAGE_KEYS.SERVICES, DEFAULT_SERVICES);
+      if (isDemoModeActive()) {
+        list = this.getLocalFallback(STORAGE_KEYS.SERVICES, DEFAULT_SERVICES);
+      } else {
+        const cached = localStorage.getItem(STORAGE_KEYS.SERVICES);
+        if (cached) {
+          try { list = JSON.parse(cached); } catch { }
+        }
+        if (!list || list.length === 0) {
+          list = [];
+        }
+      }
     }
 
     if (!includeInactive) {

@@ -146,7 +146,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({ isStaffPortal }) => {
     setTimeout(() => redirectByRole(role), 300);
   };
 
-  const isDemoOrDev = import.meta.env.VITE_DEMO_MODE === 'true' || import.meta.env.DEV;
+  // Demo Persona Selector is strictly restricted to local development (DEV).
+  // In production builds (import.meta.env.PROD), it is NEVER rendered under any circumstances.
+  const isDemoOrDev = import.meta.env.DEV && import.meta.env.VITE_DEMO_MODE === 'true';
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col justify-center px-4 py-12">

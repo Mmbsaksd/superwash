@@ -10,8 +10,8 @@ export const RoleSwitcherBar: React.FC = () => {
 
   const [isSwitching, setIsSwitching] = React.useState(false);
 
-  // Role switching controls are enabled strictly in development/demo mode
-  const isDemoOrDev = import.meta.env.DEV || import.meta.env.VITE_DEMO_MODE === 'true';
+  // Role switching controls are enabled strictly in local development demo mode (DEV)
+  const isDemoOrDev = Boolean(import.meta.env.DEV && import.meta.env.VITE_DEMO_MODE === 'true');
   if (!isDemoOrDev) {
     return null;
   }
@@ -60,11 +60,10 @@ export const RoleSwitcherBar: React.FC = () => {
             <button
               key={r.role}
               onClick={() => handleRoleChange(r.role, r.route)}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium transition ${
-                isActive
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium transition ${isActive
                   ? `${r.color} font-bold shadow-sm`
                   : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-              }`}
+                }`}
             >
               <Icon className="w-3 h-3" />
               <span>{r.label}</span>

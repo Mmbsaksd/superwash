@@ -59,8 +59,8 @@ export const App: React.FC = () => {
     );
   }
 
-  // Development/demo mode check
-  const isDemoOrDev = import.meta.env.DEV || import.meta.env.VITE_DEMO_MODE === 'true';
+  // Development/demo mode check (strictly restricted to local DEV)
+  const isDemoOrDev = Boolean(import.meta.env.DEV && import.meta.env.VITE_DEMO_MODE === 'true');
 
   // Role Switcher Bar is strictly restricted to development/demo mode within the Owner Admin portal.
   // It is NEVER rendered on the public website, customer portal, or for unauthenticated guests.

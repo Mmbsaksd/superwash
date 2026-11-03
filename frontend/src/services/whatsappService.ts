@@ -62,7 +62,8 @@ export class SupabaseEdgeNotificationProvider implements NotificationProvider {
   name = 'supabase_edge';
 
   isAvailable(): boolean {
-    return isSupabaseConfigured && import.meta.env.VITE_DEMO_MODE !== 'true';
+    const isDemo = Boolean(import.meta.env.DEV && import.meta.env.VITE_DEMO_MODE === 'true');
+    return isSupabaseConfigured && !isDemo;
   }
 
   async send(payload: {
@@ -163,7 +164,8 @@ export class WhatsAppService {
 
     // 2. Determine eligibility for external messaging
     const isPaidCustomerEvent = eventType === 'pickup_assigned' || eventType === 'out_for_delivery';
-    const isLive = isSupabaseConfigured && import.meta.env.VITE_DEMO_MODE !== 'true';
+    const isDemo = Boolean(import.meta.env.DEV && import.meta.env.VITE_DEMO_MODE === 'true');
+    const isLive = isSupabaseConfigured && !isDemo;
 
     // Retrieve settings if not passed
     let effectiveSettings: BusinessSettings | null = settings || null;

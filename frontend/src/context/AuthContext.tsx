@@ -27,7 +27,14 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const AUTH_STORAGE_KEY = 'superwash_auth_profile';
-const isLiveAuth = isSupabaseConfigured && import.meta.env.VITE_DEMO_MODE !== 'true';
+
+// Production builds MUST ALWAYS use live Supabase authentication.
+// Demo authentication is strictly forbidden in production mode (import.meta.env.PROD),
+// even if VITE_DEMO_MODE is accidentally set in environment variables.
+export const isDemoModeActive = (): boolean =>
+  Boolean(import.meta.env.DEV && import.meta.env.VITE_DEMO_MODE === 'true');
+
+const getIsLiveAuth = (): boolean => isSupabaseConfigured && !isDemoModeActive();
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<Profile | null>(null);
@@ -70,12 +77,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }
 
-      // Fallback match against known staff profile when profile row not found (e.g. tests or offline)
-      const staffMatch = DEMO_PROFILES.find(
-        (p) => p.id === authUser.id || (p.email && authUser.email && p.email.toLowerCase() === authUser.email.toLowerCase())
-      );
-      if (staffMatch) {
-        return staffMatch;
+      // In local DEV demo mode only, fallback match against known staff profile when profile row not found (e.g. tests or offline)
+      if (isDemoModeActive()) {
+        const staffMatch = DEMO_PROFILES.find(
+          (p) => p.id === authUser.id || (p.email && authUser.email && p.email.toLowerCase() === authUser.email.toLowerCase())
+        );
+        if (staffMatch) {
+          return staffMatch;
+        }
       }
 
       // Provision new customer profile with default 'customer' role
@@ -88,7 +97,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           authUser.user_metadata?.name ||
           (authUser.email ? authUser.email.split('@')[0] : 'Customer'),
         avatar_url: authUser.user_metadata?.avatar_url || null,
-        role: (authUser.email && ['superwashexprez@gmail.com', 'genaidream@gmail.com', 'bs.munavar@gmail.com', 'owner@superwash.in'].includes(authUser.email.toLowerCase())) ? 'owner' : 'customer',
+        role: 'customer',
         is_active: true,
         created_at: new Date().toISOString()
       };
@@ -163,7 +172,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               setIsLoading(false);
               return;
             }
-          } else if (isLiveAuth && !import.meta.env.DEV) {
+          } else if (!isDemoModeActive()) {
             // In live production mode, if session restoration returns null/error, clear stale session profile
             localStorage.removeItem(AUTH_STORAGE_KEY);
             if (isMounted) setCurrentUser(null);
@@ -175,19 +184,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }
 
-      // Check local storage session (demo or offline cached)
-      const saved = localStorage.getItem(AUTH_STORAGE_KEY);
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved);
-          if (isMounted) {
-            setCurrentUser(parsed);
+      // Check local storage session (strictly permitted ONLY in local DEV demo mode)
+      if (isDemoModeActive()) {
+        const saved = localStorage.getItem(AUTH_STORAGE_KEY);
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            if (isMounted) {
+              setCurrentUser(parsed);
+            }
+          } catch {
+            localStorage.removeItem(AUTH_STORAGE_KEY);
+            if (isMounted) setCurrentUser(null);
           }
-        } catch {
-          localStorage.removeItem(AUTH_STORAGE_KEY);
+        } else {
           if (isMounted) setCurrentUser(null);
         }
       } else {
+        localStorage.removeItem(AUTH_STORAGE_KEY);
         if (isMounted) setCurrentUser(null);
       }
 
@@ -254,7 +268,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const signInWithGoogle = async (redirectPath?: string, roleHint?: UserRole): Promise<{ success: boolean; message?: string }> => {
-    if (isLiveAuth) {
+    // In production builds (or whenever not explicitly in local DEV demo mode),
+    // authentication is strictly performed via live Supabase Google OAuth.
+    // No simulated identities, demo fallbacks, or mock personas are permitted.
+    if (!import.meta.env.DEV || !isDemoModeActive()) {
+      if (!isSupabaseConfigured) {
+        return { success: false, message: 'Production configuration error: Supabase client is not configured.' };
+      }
       try {
         const redirectUrl = redirectPath
           ? `${window.location.origin}/login?redirect=${encodeURIComponent(redirectPath)}`
@@ -279,43 +299,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    // Explicit Demo / Testing Mode: Instant Google Sign-In with Role-Specific Persona
-    let targetProfile: Profile | undefined;
-    const effectiveRole = roleHint || (redirectPath?.includes('/admin') || redirectPath?.includes('/owner')
-      ? 'owner'
-      : redirectPath?.includes('/manager')
-      ? 'manager'
-      : redirectPath?.includes('/delivery')
-      ? 'delivery'
-      : 'customer');
+    // Explicit Demo / Testing Mode (Local DEV ONLY): Instant Google Sign-In with Role-Specific Persona
+    if (import.meta.env.DEV && isDemoModeActive()) {
+      let targetProfile: Profile | undefined;
+      const effectiveRole = roleHint || (redirectPath?.includes('/admin') || redirectPath?.includes('/owner')
+        ? 'owner'
+        : redirectPath?.includes('/manager')
+        ? 'manager'
+        : redirectPath?.includes('/delivery')
+        ? 'delivery'
+        : 'customer');
 
-    if (effectiveRole !== 'customer') {
-      targetProfile = DEMO_PROFILES.find(p => p.role === effectiveRole);
+      if (effectiveRole !== 'customer') {
+        targetProfile = DEMO_PROFILES.find(p => p.role === effectiveRole);
+      }
+
+      if (!targetProfile) {
+        targetProfile = {
+          id: 'demo-google-customer-1',
+          email: 'priya.patel@gmail.com',
+          phone: null,
+          full_name: 'Priya Patel (Google)',
+          avatar_url: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150',
+          role: 'customer',
+          is_active: true,
+          created_at: new Date().toISOString()
+        };
+      }
+
+      if (targetProfile.is_active === false) {
+        return {
+          success: false,
+          message: 'Your staff account has been deactivated. Please contact the business owner.'
+        };
+      }
+
+      setCurrentUser(targetProfile);
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(targetProfile));
+      return { success: true, message: `Signed in with Google (${targetProfile.role.toUpperCase()} Demo Mode)` };
     }
 
-    if (!targetProfile) {
-      targetProfile = {
-        id: 'demo-google-customer-1',
-        email: 'priya.patel@gmail.com',
-        phone: null,
-        full_name: 'Priya Patel (Google)',
-        avatar_url: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150',
-        role: 'customer',
-        is_active: true,
-        created_at: new Date().toISOString()
-      };
-    }
-
-    if (targetProfile.is_active === false) {
-      return {
-        success: false,
-        message: 'Your staff account has been deactivated. Please contact the business owner.'
-      };
-    }
-
-    setCurrentUser(targetProfile);
-    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(targetProfile));
-    return { success: true, message: `Signed in with Google (${targetProfile.role.toUpperCase()} Demo Mode)` };
+    return { success: false, message: 'Authentication failed: Production OAuth required.' };
   };
 
   const signInWithPassword = async (
@@ -350,18 +374,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    const matchedProfile = DEMO_PROFILES.find(p => p.email === email);
-    if (matchedProfile) {
-      if (matchedProfile.is_active === false || matchedProfile.deleted_at) {
-        return {
-          success: false,
-          message: 'Your staff account has been deactivated. Please contact the business owner.'
-        };
+    if (isDemoModeActive()) {
+      const matchedProfile = DEMO_PROFILES.find(p => p.email === email);
+      if (matchedProfile) {
+        if (matchedProfile.is_active === false || matchedProfile.deleted_at) {
+          return {
+            success: false,
+            message: 'Your staff account has been deactivated. Please contact the business owner.'
+          };
+        }
+        LaundryService.clearUserOperationalCache();
+        setCurrentUser(matchedProfile);
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(matchedProfile));
+        return { success: true, role: matchedProfile.role };
       }
-      LaundryService.clearUserOperationalCache();
-      setCurrentUser(matchedProfile);
-      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(matchedProfile));
-      return { success: true, role: matchedProfile.role };
     }
     return { success: false, message: 'Invalid credentials' };
   };
@@ -439,7 +465,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       full_name: updates.full_name?.trim() || currentUser.full_name
     };
 
-    if (isLiveAuth) {
+    if (getIsLiveAuth()) {
       try {
         const { error } = await supabase
           .from('profiles')
@@ -470,7 +496,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, message: 'Please enter a valid 10-digit Indian mobile number' };
     }
 
-    if (isLiveAuth) {
+    if (getIsLiveAuth()) {
       try {
         const { error } = await supabase.auth.signInWithOtp({
           phone: `+91${cleanPhone.slice(-10)}`
@@ -497,7 +523,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   ): Promise<{ success: boolean; message: string }> => {
     const cleanPhone = phone.replace(/[^0-9]/g, '').slice(-10);
 
-    if (isLiveAuth) {
+    if (getIsLiveAuth()) {
       try {
         const { data, error } = await supabase.auth.verifyOtp({
           phone: `+91${cleanPhone}`,
@@ -537,9 +563,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const switchDemoRole = async (role: UserRole): Promise<void> => {
-    if (isLiveAuth && !import.meta.env.DEV) {
+    if (!isDemoModeActive()) {
       if (role === 'customer') {
-        await supabase.auth.signOut();
+        if (isSupabaseConfigured) await supabase.auth.signOut();
         LaundryService.clearUserOperationalCache();
         window.location.href = '/customer';
         return;
