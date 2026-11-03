@@ -3109,49 +3109,6 @@ export class LaundryService {
         throw new Error(rpcData?.message || 'Failed to delete staff account.');
       }
 
-      if (rpcData.deactivated_instead) {
-        // Synchronize local cache to show deactivated status
-        const cached = profiles.find(p => p.id === staffId);
-        if (cached) {
-          cached.is_active = false;
-          cached.deleted_at = new Date().toISOString();
-        }
-        localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(profiles));
-        const demoProfile = DEMO_PROFILES.find(p => p.id === staffId);
-        if (demoProfile) {
-          demoProfile.is_active = false;
-          demoProfile.deleted_at = new Date().toISOString();
-        }
-
-        return {
-          success: true,
-          deactivatedInstead: true,
-          message: rpcData.message || `Staff member ${staff.full_name} has historical records and was safely deactivated instead of deleted.`
-        };
-      }
-    } else {
-      // Offline / Demo Mode: Inspect foreign keys and order assignments locally
-      const orders = await this.getOrders();
-      const hasOrderAssignments = orders.some(
-        o => o.assigned_pickup_id === staffId || o.assigned_delivery_id === staffId
-      );
-
-      if (hasOrderAssignments) {
-        await this.toggleStaffStatus(staffId, false, callerId, callerRole);
-        staff.is_active = false;
-        staff.deleted_at = new Date().toISOString();
-        localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(profiles));
-        const demoProfile = DEMO_PROFILES.find(p => p.id === staffId);
-        if (demoProfile) {
-          demoProfile.is_active = false;
-          demoProfile.deleted_at = new Date().toISOString();
-        }
-        return {
-          success: true,
-          deactivatedInstead: true,
-          message: `Staff member ${staff.full_name} is assigned to existing orders. To preserve audit history and referential integrity, their account has been safely deactivated instead of deleted.`
-        };
-      }
     }
 
     // Update local cache and demo directory for permanent deletion

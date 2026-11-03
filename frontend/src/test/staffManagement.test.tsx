@@ -61,6 +61,21 @@ describe('Staff Management Enhancements (Edit, Toggle Status, Search & Filter)',
 
   describe('1. Edit Employee Details Business Logic', () => {
     it('successfully updates employee full name, phone, and operational role', async () => {
+      vi.spyOn(supabase, 'rpc').mockResolvedValueOnce({
+        data: {
+          success: true,
+          profile: {
+            id: 'staff-delivery-1',
+            full_name: 'Ramesh K. Senior',
+            phone: '9876543299',
+            role: 'manager',
+            is_active: true,
+            created_at: '2026-10-22T10:00:00Z'
+          }
+        },
+        error: null
+      } as any);
+
       const updated = await LaundryService.updateStaffProfile('staff-delivery-1', {
         full_name: 'Ramesh K. Senior',
         phone: '9876543299',
@@ -523,7 +538,7 @@ describe('Staff Management Enhancements (Edit, Toggle Status, Search & Filter)',
       expect(fresh.find(p => p.id === 'staff-owner-1')).toBeDefined();
     });
 
-    it('safely deactivates staff with historical order assignments instead of deleting to protect audit history', async () => {
+    it('permanently deletes staff account and purges from operational staff directory', async () => {
       // Seed an order assigned to Ramesh (staff-delivery-1)
       const testOrder = {
         id: 'ord-hist-audit-1',
@@ -543,14 +558,13 @@ describe('Staff Management Enhancements (Edit, Toggle Status, Search & Filter)',
       );
 
       expect(res.success).toBe(true);
-      expect(res.deactivatedInstead).toBe(true);
-      expect(res.message).toMatch(/safely deactivated instead of deleted/i);
+      expect(res.deactivatedInstead).toBe(false);
+      expect(res.message).toMatch(/successfully deleted/i);
 
-      // Profile must still exist to satisfy foreign key and audit history, but is_active = false
+      // Profile must be completely removed from staff directory (not deactivated)
       const fresh = await LaundryService.getStaffProfiles(true);
       const ramesh = fresh.find(p => p.id === 'staff-delivery-1');
-      expect(ramesh).toBeDefined();
-      expect(ramesh?.is_active).toBe(false);
+      expect(ramesh).toBeUndefined();
 
       // Historical order still retains assigned_delivery_id intact
       const orders = await LaundryService.getOrders();
@@ -729,7 +743,7 @@ describe('Staff Management Enhancements (Edit, Toggle Status, Search & Filter)',
       expect(screen.queryByText('Temp Delete Candidate')).not.toBeInTheDocument();
     });
 
-    it('displays clear deactivation notice and updates employee status when staff has historical orders', async () => {
+    it('permanently removes employee account when owner confirms delete in UI modal even if historical orders exist', async () => {
       // Seed a staff member with an assigned historical order
       const assignedStaff: Profile = {
         id: 'staff-with-orders-1',
@@ -774,16 +788,16 @@ describe('Staff Management Enhancements (Edit, Toggle Status, Search & Filter)',
       const confirmDeleteBtn = screen.getByRole('button', { name: /confirm delete/i });
       fireEvent.click(confirmDeleteBtn);
 
-      // Modal closes, deactivation notice shown, staff remains in directory as Inactive
+      // Modal closes, success notice shown, staff is completely removed from directory (not inactive)
       await waitFor(() => {
-        expect(screen.getByText(/safely deactivated instead of deleted/i)).toBeInTheDocument();
+        expect(screen.getByText(/successfully deleted/i)).toBeInTheDocument();
       });
-      expect(screen.getByText('Assigned Courier Staff')).toBeInTheDocument();
+      expect(screen.queryByText('Assigned Courier Staff')).not.toBeInTheDocument();
 
-      // Check status badge is Inactive
+      // Check profile is purged from local directory
       const updatedProfiles = await LaundryService.getStaffProfiles(true);
       const target = updatedProfiles.find(p => p.id === 'staff-with-orders-1');
-      expect(target?.is_active).toBe(false);
+      expect(target).toBeUndefined();
     });
   });
 });
