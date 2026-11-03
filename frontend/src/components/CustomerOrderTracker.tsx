@@ -330,7 +330,27 @@ export const CustomerOrderTracker: React.FC<CustomerOrderTrackerProps> = ({
 
         <div>
           <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Billing & Weight</span>
-          {order.measured_weight || order.doorstep_scale_weight_kg ? (
+          {order.items && order.items.length > 1 ? (
+            <div className="mt-1 space-y-1">
+              {order.items.map((item, idx) => (
+                <div key={item.id || idx} className="text-[11px] text-slate-700 flex justify-between">
+                  <span className="truncate pr-1">{item.service_name}:</span>
+                  <span className="font-semibold shrink-0">
+                    {item.measured_weight !== null && item.measured_weight !== undefined
+                      ? `${Number(item.measured_weight).toFixed(2)} kg`
+                      : 'Pending scale'}
+                  </span>
+                </div>
+              ))}
+              <div className="border-t border-slate-200 pt-1 flex justify-between font-bold text-slate-900">
+                <span>Total:</span>
+                <span>
+                  {order.measured_weight ? `${order.measured_weight.toFixed(2)} kg` : ''}
+                  {order.total_amount_paise ? ` • ₹${(order.total_amount_paise / 100).toFixed(0)}` : ''}
+                </span>
+              </div>
+            </div>
+          ) : order.measured_weight || order.doorstep_scale_weight_kg ? (
             <p className="font-bold text-slate-900 mt-0.5">
               Weight: {(order.measured_weight || order.doorstep_scale_weight_kg)?.toFixed(2)} kg
               {order.total_amount_paise ? ` • Bill: ₹${(order.total_amount_paise / 100).toFixed(0)}` : ''}
@@ -340,7 +360,7 @@ export const CustomerOrderTracker: React.FC<CustomerOrderTrackerProps> = ({
               Pending digital scale weighing
             </p>
           )}
-          <span className="text-[11px] text-slate-500 capitalize">
+          <span className="text-[11px] text-slate-500 capitalize block mt-1">
             Payment: {order.payment_method?.replace('_', ' ') || 'Cash on Delivery'} ({order.payment_status?.replace('_', ' ') || 'Pending'})
           </span>
         </div>

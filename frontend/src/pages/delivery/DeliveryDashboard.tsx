@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { Order, BusinessSettings } from '../../types';
+import { Order, BusinessSettings, ServiceMeasurementInput } from '../../types';
+import { DoorstepWeighingModal } from '../../components/DoorstepWeighingModal';
 import { LaundryService } from '../../services/laundryService';
 import { supabase } from '../../services/supabase';
 import { StatusBadge, PaymentBadge } from '../../components/StatusBadge';
@@ -118,43 +119,36 @@ export const DeliveryDashboard: React.FC = () => {
     ['collected', 'washing', 'ready_for_delivery', 'delivery_assigned', 'out_for_delivery', 'delivered'].includes(o.order_status)
   );
 
-  const handleMarkCollected = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!collectedOrder) return;
-
-    const parsedWeight = parseFloat(measuredWeightInput);
-    if (isNaN(parsedWeight) || parsedWeight <= 0) {
-      setWeightError('Please enter a valid scale weight in kilograms (e.g. 4.50).');
-      return;
-    }
-    if (parsedWeight > 100) {
-      setWeightError('Weight exceeds 100 kg limit. Please verify portable scale reading.');
-      return;
-    }
-
+  const handleRecordCollection = async (
+    orderId: string,
+    measurements: ServiceMeasurementInput[],
+    notes?: string
+  ) => {
     setIsSubmitting(true);
-    setWeightError(null);
+    setDeliveryActionError(null);
+    setDeliveryActionSuccess(null);
 
     try {
       const updated = await LaundryService.recordPickupCollectionAndWeight(
-        collectedOrder.id,
-        parsedWeight,
+        orderId,
+        measurements,
         currentUser?.id,
         currentUser?.full_name || 'Delivery Associate',
-        collectedNote.trim() || undefined
+        notes
       );
 
       if (updated) {
         setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
-        setDeliveryActionSuccess(`Order #${collectedOrder.order_number} collected & weighed (${parsedWeight.toFixed(2)} kg)! Stored in database.`);
+        const serviceCount = measurements.length;
+        setDeliveryActionSuccess(
+          `Order #${updated.order_number} collected & weighed (${(updated.measured_weight || 0).toFixed(2)} kg across ${serviceCount} service${serviceCount > 1 ? 's' : ''})! Recorded in database.`
+        );
         setCollectedOrder(null);
-        setMeasuredWeightInput('');
-        setCollectedNote('');
         await loadData();
       }
     } catch (err: any) {
       console.error('Error recording pickup collection & weight:', err);
-      setWeightError(err?.message || 'Failed to record pickup collection in database.');
+      throw err;
     } finally {
       setIsSubmitting(false);
     }
@@ -718,140 +712,18 @@ export const DeliveryDashboard: React.FC = () => {
         )}
       </div>
 
-      {/* Doorstep Intake & Scale Weighing Modal */}
-      {collectedOrder && (() => {
-        const parsedWeight = parseFloat(measuredWeightInput);
-        const hasValidWeight = !isNaN(parsedWeight) && parsedWeight > 0;
-        const ratePerKg = (collectedOrder.price_per_kg_paise || 8000) / 100;
-        const minWeight = collectedOrder.min_weight_kg || 3.0;
-        const billableKg = hasValidWeight ? Math.max(parsedWeight, minWeight) : minWeight;
-        const previewTotalPaise = hasValidWeight
-          ? Math.round(billableKg * (collectedOrder.price_per_kg_paise || 8000)) + (collectedOrder.delivery_charge_paise || 0)
-          : null;
-
-        return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
-            <div className="bg-white rounded-3xl w-full max-w-sm shadow-2xl border border-slate-200 overflow-hidden">
-              <div className="bg-emerald-700 p-4 text-white flex justify-between items-center">
-                <div className="flex items-center gap-2">
-                  <Scale className="w-5 h-5 text-emerald-200" />
-                  <div>
-                    <h3 className="font-black text-sm">Doorstep Laundry Weighing</h3>
-                    <p className="text-[11px] text-emerald-100">Order #{collectedOrder.order_number}</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setCollectedOrder(null)}
-                  className="p-1 hover:bg-emerald-800 rounded-xl transition cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              <form onSubmit={handleMarkCollected} className="p-5 space-y-4 text-xs">
-                {/* Customer summary */}
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl space-y-1">
-                  <div className="flex justify-between">
-                    <span className="text-slate-500 font-medium">Customer:</span>
-                    <span className="font-bold text-slate-800">{collectedOrder.customer_name}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500 font-medium">Phone:</span>
-                    <span className="font-bold text-slate-800">{collectedOrder.customer_phone}</span>
-                  </div>
-                  <div className="text-[11px] text-slate-600 truncate mt-1">
-                    📍 {collectedOrder.pickup_address}
-                  </div>
-                </div>
-
-                {/* Weight Input Field */}
-                <div>
-                  <label className="block text-xs font-bold text-slate-800 mb-1">
-                    Measured Scale Reading (kg) <span className="text-red-500">*</span>
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      step="0.05"
-                      min="0.1"
-                      max="100"
-                      autoFocus
-                      required
-                      placeholder="e.g. 4.25"
-                      value={measuredWeightInput}
-                      onChange={(e) => {
-                        setMeasuredWeightInput(e.target.value);
-                        setWeightError(null);
-                      }}
-                      className="w-full px-3.5 py-2.5 text-base font-black rounded-xl border border-slate-300 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
-                    />
-                    <span className="absolute right-3.5 top-2.5 text-slate-400 font-bold text-sm">kg</span>
-                  </div>
-                  <p className="text-[10px] text-slate-500 mt-1">
-                    Read exact weight from portable digital scale (0.10 kg to 100 kg).
-                  </p>
-                </div>
-
-                {/* Live Bill Preview */}
-                {hasValidWeight && (
-                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-1 animate-fade-in text-emerald-950">
-                    <div className="flex justify-between text-[11px]">
-                      <span>Rate:</span>
-                      <span>₹{ratePerKg.toFixed(0)}/kg (Min {minWeight.toFixed(0)} kg)</span>
-                    </div>
-                    <div className="flex justify-between text-[11px]">
-                      <span>Billable Weight:</span>
-                      <span className="font-bold">{billableKg.toFixed(2)} kg {parsedWeight < minWeight && '(Min Applied)'}</span>
-                    </div>
-                    <div className="flex justify-between pt-1 border-t border-emerald-200 text-xs font-black">
-                      <span>Calculated Bill:</span>
-                      <span className="text-emerald-700 text-sm">₹{((previewTotalPaise || 0) / 100).toFixed(2)}</span>
-                    </div>
-                  </div>
-                )}
-
-                {/* Optional collection note */}
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Pickup Notes (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. 2 bags collected from security desk"
-                    value={collectedNote}
-                    onChange={(e) => setCollectedNote(e.target.value)}
-                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:ring-2 focus:ring-emerald-500"
-                  />
-                </div>
-
-                {weightError && (
-                  <div className="p-2.5 bg-red-50 border border-red-200 text-red-700 rounded-xl text-xs flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4 shrink-0" />
-                    <span>{weightError}</span>
-                  </div>
-                )}
-
-                <div className="flex gap-2 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setCollectedOrder(null)}
-                    className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition cursor-pointer"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isSubmitting || !hasValidWeight}
-                    className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md transition disabled:opacity-50 cursor-pointer"
-                  >
-                    {isSubmitting ? 'Saving...' : 'Confirm Pickup'}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        );
-      })()}
+      {/* Service-Wise Doorstep Intake & Scale Weighing Modal */}
+      {collectedOrder && (
+        <DoorstepWeighingModal
+          order={collectedOrder}
+          isOpen={true}
+          isSubmitting={isSubmitting}
+          onClose={() => setCollectedOrder(null)}
+          onConfirm={async (measurements, notes) => {
+            await handleRecordCollection(collectedOrder.id, measurements, notes);
+          }}
+        />
+      )}
 
       {/* Payment Recording Modal */}
       {paymentOrder && (

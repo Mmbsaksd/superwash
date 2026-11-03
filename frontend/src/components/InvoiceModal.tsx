@@ -30,7 +30,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
   const isDeliveryStaff = currentUser?.role === 'delivery' && (order.assigned_pickup_id === currentUser.id || order.assigned_delivery_id === currentUser.id);
   const isAuthorizedCustomer = currentUser?.role === 'customer'
     ? (currentUser.id === order.customer_id ||
-       Boolean(currentUser.phone && order.customer_phone && currentUser.phone.slice(-10) === order.customer_phone.slice(-10)))
+      Boolean(currentUser.phone && order.customer_phone && currentUser.phone.slice(-10) === order.customer_phone.slice(-10)))
     : false;
 
   if (!isOwnerOrManager && !isDeliveryStaff && !isAuthorizedCustomer) {
@@ -58,58 +58,132 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
   // Determine if this is a multi-service linked batch
   const batchMatch = order.notes?.match(/\[Linked Batch ([^:\]]+)/);
   const batchId = batchMatch ? batchMatch[1] : null;
-  const isMultiService = Boolean(batchId && linkedOrders.length > 1);
+  const hasOrderItems = Boolean(order.items && order.items.length > 0);
+  const isMultiService = hasOrderItems ? order.items!.length > 1 : Boolean(batchId && linkedOrders.length > 1);
 
   // Group items for display
-  const displayItems = isMultiService && linkedOrders.length > 0
-    ? linkedOrders
-    : [order];
+  type InvoiceLineItem = {
+    id: string;
+    service_name: string;
+    order_number: string;
+    pricing_unit: string;
+    rate: number;
+    min_weight: number;
+    measured_weight: number | null | undefined;
+    billable_weight: number | null | undefined;
+    line_total_paise: number;
+    is_cancelled: boolean;
+    cancellation_reason?: string;
+  };
 
-  // Bill maturity status: An invoice is final once scale weight is established; otherwise it is a pre-weighing estimate
-  const isFullyWeighed = displayItems.every(
-    (item) => item.order_status === 'cancelled' || (item.measured_weight !== null && item.measured_weight !== undefined)
+  let fallbackPricing: any = null;
+  if (hasOrderItems) {
+    const pricingInputs = order.items!.map((it) => ({
+      id: it.id,
+      service_id: it.service_id,
+      service_name: it.service_name,
+      pricing_unit: it.pricing_unit || 'per_kg',
+      unit_price_paise: it.unit_price_paise || order.price_per_kg_paise || 7900,
+      measured_weight: it.measured_weight ?? 0,
+      min_weight_kg: it.min_weight_kg ?? 1.0
+    }));
+    fallbackPricing = PricingEngine.calculateMultiServicePricing(
+      pricingInputs,
+      order.min_weight_kg ?? 1.00,
+      order.delivery_charge_paise || 0,
+      order.discount_paise || 0
+    );
+  }
+
+  const lines: InvoiceLineItem[] = hasOrderItems
+    ? order.items!.map((item, idx) => {
+        const calc = fallbackPricing?.items[idx];
+        const rate = item.unit_price_paise || order.price_per_kg_paise || 7900;
+        const minWeight = item.min_weight_kg ?? 1.0;
+        const measured = item.measured_weight;
+        const isCancelled = order.order_status === 'cancelled';
+        let lineTotal = 0;
+        if (!isCancelled) {
+          if (item.line_total_paise !== null && item.line_total_paise !== undefined) {
+            lineTotal = item.line_total_paise;
+          } else if (calc && measured !== null && measured !== undefined) {
+            lineTotal = calc.line_total_paise;
+          } else {
+            lineTotal = Math.round(rate * (calc?.billable_weight ?? minWeight));
+          }
+        }
+        return {
+          id: item.id,
+          service_name: item.service_name,
+          order_number: order.order_number,
+          pricing_unit: item.pricing_unit || 'per_kg',
+          rate,
+          min_weight: minWeight,
+          measured_weight: measured,
+          billable_weight: item.billable_weight ?? (calc ? calc.billable_weight : (measured !== null && measured !== undefined ? measured : null)),
+          line_total_paise: lineTotal,
+          is_cancelled: isCancelled,
+          cancellation_reason: order.cancellation_reason
+        };
+      })
+    : (isMultiService && linkedOrders.length > 0 ? linkedOrders : [order]).map((item) => {
+      const rate = item.price_per_kg_paise || 7900;
+      const minWeight = item.min_weight_kg ?? 1.0;
+      const measured = item.measured_weight;
+      const isCancelled = item.order_status === 'cancelled';
+      let lineTotal = 0;
+      if (!isCancelled) {
+        if (item.total_amount_paise !== null && item.total_amount_paise !== undefined) {
+          lineTotal = item.total_amount_paise + (item.discount_paise || 0) - (item.delivery_charge_paise || 0);
+        } else if (measured !== null && measured !== undefined) {
+          lineTotal = Math.round(rate * Math.max(measured, minWeight));
+        } else {
+          lineTotal = Math.round(rate * minWeight);
+        }
+      }
+      return {
+        id: item.id,
+        service_name: item.service_name || 'Laundry Service',
+        order_number: item.order_number,
+        pricing_unit: item.pricing_unit || 'per_kg',
+        rate,
+        min_weight: minWeight,
+        measured_weight: measured,
+        billable_weight: item.billable_weight ?? (measured !== null && measured !== undefined ? Math.max(measured, minWeight) : null),
+        line_total_paise: lineTotal,
+        is_cancelled: isCancelled,
+        cancellation_reason: item.cancellation_reason
+      };
+    });
+
+  const isFullyWeighed = lines.every(
+    (l) => l.is_cancelled || (l.measured_weight !== null && l.measured_weight !== undefined)
   );
 
-  // Calculate batch financials
-  let totalSubtotalPaise = 0;
-  let totalDiscountPaise = 0;
-  let totalDeliveryChargePaise = 0;
-  let totalPayablePaise = 0;
-  let totalPaidPaise = 0;
-
-  displayItems.forEach((item) => {
-    if (item.order_status === 'cancelled') return;
-
-    const rate = item.price_per_kg_paise || 7900;
-    const minWeight = item.min_weight_kg || 1.0;
-    const measuredWeight = item.measured_weight;
-
-    let itemCharge = 0;
-    if (item.total_amount_paise !== null && item.total_amount_paise !== undefined) {
-      itemCharge = item.total_amount_paise + (item.discount_paise || 0) - (item.delivery_charge_paise || 0);
-    } else {
-      const pricingResult = PricingEngine.calculateOrderPricing({
-        measuredWeightKg: measuredWeight !== null && measuredWeight !== undefined ? measuredWeight : minWeight,
-        unitPricePaise: rate,
-        minWeightKg: minWeight,
-        pricingUnit: item.pricing_unit || 'per_kg',
-        deliveryChargePaise: item.delivery_charge_paise || 0,
-        discountPaise: item.discount_paise || 0
-      });
-      itemCharge = pricingResult.subtotalPaise;
-    }
-
-    totalSubtotalPaise += Math.max(0, itemCharge);
-    totalDiscountPaise += item.discount_paise || 0;
-    totalDeliveryChargePaise += item.delivery_charge_paise || 0;
-    totalPayablePaise += item.total_amount_paise !== null && item.total_amount_paise !== undefined
-      ? item.total_amount_paise
-      : Math.max(0, itemCharge - (item.discount_paise || 0) + (item.delivery_charge_paise || 0));
-    totalPaidPaise += item.paid_amount_paise || 0;
-  });
+  let totalSubtotalPaise = lines.reduce((sum, l) => sum + (l.is_cancelled ? 0 : l.line_total_paise), 0);
+  let totalDiscountPaise = hasOrderItems
+    ? (order.discount_paise || 0)
+    : (isMultiService && linkedOrders.length > 0 ? linkedOrders.reduce((s, o) => s + (o.discount_paise || 0), 0) : (order.discount_paise || 0));
+  let totalDeliveryChargePaise = hasOrderItems
+    ? (order.delivery_charge_paise || 0)
+    : (isMultiService && linkedOrders.length > 0 ? linkedOrders.reduce((s, o) => s + (o.delivery_charge_paise || 0), 0) : (order.delivery_charge_paise || 0));
+  let totalPayablePaise = hasOrderItems
+    ? (order.total_amount_paise !== null && order.total_amount_paise !== undefined
+        ? order.total_amount_paise
+        : Math.max(0, totalSubtotalPaise - totalDiscountPaise + totalDeliveryChargePaise))
+    : (isMultiService && linkedOrders.length > 0
+        ? linkedOrders.filter(o => o.order_status !== 'cancelled').reduce((sum, o) => sum + (o.total_amount_paise !== null && o.total_amount_paise !== undefined
+            ? o.total_amount_paise
+            : Math.max(0, ((o.price_per_kg_paise || 7900) * (o.min_weight_kg || 1)) - (o.discount_paise || 0) + (o.delivery_charge_paise || 0))), 0)
+        : (order.total_amount_paise !== null && order.total_amount_paise !== undefined
+            ? order.total_amount_paise
+            : Math.max(0, totalSubtotalPaise - totalDiscountPaise + totalDeliveryChargePaise)));
+  let totalPaidPaise = hasOrderItems
+    ? (order.paid_amount_paise || 0)
+    : (isMultiService && linkedOrders.length > 0 ? linkedOrders.reduce((s, o) => s + (o.paid_amount_paise || 0), 0) : (order.paid_amount_paise || 0));
 
   const remainingBalancePaise = Math.max(0, totalPayablePaise - totalPaidPaise);
-  const couponAppliedCode = displayItems.find((i) => i.coupon_code)?.coupon_code;
+  const couponAppliedCode = order.coupon_code || linkedOrders.find((i) => i.coupon_code)?.coupon_code;
 
   // Handle native browser print
   const handlePrint = () => {
@@ -127,7 +201,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-900/60 backdrop-blur-xs overflow-y-auto print:p-0 print:bg-white print:static print:z-auto">
       <div className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden my-auto flex flex-col max-h-[95vh] print:max-h-none print:shadow-none print:border-none print:rounded-none">
-        
+
         {/* Modal Toolbar (Hidden during print) */}
         <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-3 shrink-0 print:hidden">
           <div className="flex items-center gap-2">
@@ -159,7 +233,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
 
         {/* Printable Invoice Sheet */}
         <div ref={invoiceRef} className="p-6 sm:p-8 space-y-6 overflow-y-auto print:p-0 print:overflow-visible">
-          
+
           {/* Header Banner */}
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center pb-6 border-b border-slate-200 gap-4">
             <div>
@@ -189,11 +263,10 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
             </div>
 
             <div className="text-left sm:text-right space-y-1">
-              <span className={`inline-block px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                isFullyWeighed
+              <span className={`inline-block px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${isFullyWeighed
                   ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
                   : 'bg-amber-100 text-amber-900 border border-amber-300'
-              }`}>
+                }`}>
                 {isFullyWeighed ? '✓ Official Tax & Retail Bill' : '⏳ Pre-Weighing Estimate'}
               </span>
               <p className="font-mono text-sm font-black text-slate-900">{invoiceNumber}</p>
@@ -225,7 +298,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
               </p>
               {isMultiService && batchId && (
                 <p className="text-slate-700">
-                  <span className="font-bold">Linked Appointment:</span> Batch {batchId} ({displayItems.length} Services)
+                  <span className="font-bold">Linked Appointment:</span> Batch {batchId} ({lines.length} Services)
                 </p>
               )}
               <div className="mt-2 flex items-center gap-2">
@@ -248,50 +321,39 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {displayItems.map((item, idx) => {
-                  const isCancelled = item.order_status === 'cancelled';
-                  const rate = item.price_per_kg_paise || 7900;
-                  const unitLabel = item.pricing_unit === 'per_piece' ? 'piece' : 'kg';
-                  const minWeight = item.min_weight_kg || 1.0;
-                  const measured = item.measured_weight;
-
+                {lines.map((line, idx) => {
+                  const unitLabel = line.pricing_unit === 'per_piece' ? 'piece' : 'kg';
                   let qtyStr = '';
-                  let lineTotalPaise = 0;
 
-                  if (isCancelled) {
+                  if (line.is_cancelled) {
                     qtyStr = 'Cancelled';
-                    lineTotalPaise = 0;
-                  } else if (measured !== null && measured !== undefined) {
-                    const billable = Math.max(measured, minWeight);
-                    qtyStr = `${measured.toFixed(2)} ${unitLabel} (Billable: ${billable.toFixed(2)} ${unitLabel})`;
-                    lineTotalPaise = item.total_amount_paise !== null && item.total_amount_paise !== undefined
-                      ? (item.total_amount_paise + (item.discount_paise || 0) - (item.delivery_charge_paise || 0))
-                      : Math.round(rate * billable);
+                  } else if (line.measured_weight !== null && line.measured_weight !== undefined) {
+                    const billable = Math.max(line.measured_weight, line.min_weight);
+                    qtyStr = `${line.measured_weight.toFixed(2)} ${unitLabel} (Billable: ${billable.toFixed(2)} ${unitLabel})`;
                   } else {
-                    qtyStr = `Est. ${minWeight.toFixed(2)} ${unitLabel} (Min.)`;
-                    lineTotalPaise = Math.round(rate * minWeight);
+                    qtyStr = `Est. ${line.min_weight.toFixed(2)} ${unitLabel} (Min.)`;
                   }
 
                   return (
-                    <tr key={item.id} className={isCancelled ? 'opacity-50 bg-rose-50/30' : ''}>
+                    <tr key={line.id} className={line.is_cancelled ? 'opacity-50 bg-rose-50/30' : ''}>
                       <td className="py-3 px-3 font-mono text-slate-400">{idx + 1}</td>
                       <td className="py-3 px-3">
                         <span className="font-bold text-slate-900 block">
-                          {item.service_name || 'Laundry Service'}
+                          {line.service_name}
                         </span>
-                        <span className="text-[10px] font-mono text-slate-500">#{item.order_number}</span>
-                        {isCancelled && (
+                        <span className="text-[10px] font-mono text-slate-500">#{line.order_number}</span>
+                        {line.is_cancelled && (
                           <span className="ml-2 text-[10px] font-bold text-rose-600 bg-rose-100 px-1.5 py-0.2 rounded">
-                            Cancelled: {item.cancellation_reason || 'Service cancelled'}
+                            Cancelled: {line.cancellation_reason || 'Service cancelled'}
                           </span>
                         )}
                       </td>
                       <td className="py-3 px-3 text-right font-medium text-slate-700">{qtyStr}</td>
                       <td className="py-3 px-3 text-right font-mono text-slate-600">
-                        ₹{(rate / 100).toFixed(0)}/{unitLabel === 'kg' ? 'kg' : 'pc'}
+                        ₹${(line.rate / 100).toFixed(0)}/${unitLabel === 'kg' ? 'kg' : 'pc'}
                       </td>
                       <td className="py-3 px-3 text-right font-mono font-bold text-slate-900">
-                        {isCancelled ? '₹0.00' : `₹${(lineTotalPaise / 100).toFixed(2)}`}
+                        {line.is_cancelled ? '₹0.00' : `₹${(line.line_total_paise / 100).toFixed(2)}`}
                       </td>
                     </tr>
                   );

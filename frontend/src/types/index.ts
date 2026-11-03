@@ -248,8 +248,35 @@ export interface Order {
   discount_paise?: number; // Coupon discount in paise
   coupon_snapshot?: CouponSnapshot | null; // Promotional terms snapshot locked at booking
   client_submission_id?: string;
+  items?: OrderItem[];
   created_at: string;
   updated_at: string;
+}
+
+export interface OrderItem {
+  id: string;
+  order_id: string;
+  service_id?: string;
+  service_name: string;
+  pricing_unit: string;
+  unit_price_paise: number;
+  min_weight_kg: number;
+  measured_weight?: number | null;
+  billable_weight?: number | null;
+  line_total_paise?: number | null;
+  weighed_at?: string | null;
+  weighed_by?: string | null;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ServiceMeasurementInput {
+  service_id?: string;
+  service_name?: string;
+  order_item_id?: string;
+  measured_weight: number;
+  notes?: string;
 }
 
 export type CouponDiscountType = 'percentage' | 'fixed';

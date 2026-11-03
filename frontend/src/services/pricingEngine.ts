@@ -53,6 +53,39 @@ export interface AdvanceRequirementResult {
   ruleDescription: string;
 }
 
+export interface MultiServiceItemInput {
+  id?: string;
+  service_id?: string;
+  service_name?: string;
+  pricing_unit: string;
+  unit_price_paise: number;
+  measured_weight: number;
+  min_weight_kg?: number;
+}
+
+export interface MultiServiceCalculatedItem {
+  id?: string;
+  service_id?: string;
+  service_name?: string;
+  pricing_unit: string;
+  unit_price_paise: number;
+  measured_weight: number;
+  billable_weight: number;
+  line_total_paise: number;
+  is_min_applied: boolean;
+}
+
+export interface MultiServicePricingResult {
+  totalMeasuredWeightKg: number;
+  totalBillableWeightKg: number;
+  minWeightApplied: boolean;
+  subtotalPaise: number;
+  discountPaise: number;
+  deliveryChargePaise: number;
+  totalAmountPaise: number;
+  items: MultiServiceCalculatedItem[];
+}
+
 export interface PaymentLedgerSummary {
   totalPayablePaise: number;
   advancePaidPaise: number;
@@ -196,6 +229,210 @@ export class PricingEngine {
     return {
       isEligible: true,
       discountPaise: finalDiscount
+    };
+  }
+
+  /**
+   * Calculates service-wise multi-service pricing using the confirmed business rule:
+   * 1. 1.00 kg minimum billable weight applies per complete customer order (not per service).
+   * 2. For multiple weight-based services totaling < orderMinWeightKg, the minimum is allocated
+   *    proportionally to each service's actual measured scale weight.
+   * 3. Non-weight-based services (per_piece, per_load, per_order) are excluded from the weight calculation
+   *    and 1 kg minimum order uplift.
+   * 4. Actual scale readings remain unchanged in measured_weight.
+   * 5. Uses largest-remainder distribution to guarantee exact 2-decimal sum equals orderMinWeightKg.
+   */
+  static calculateMultiServicePricing(
+    items: MultiServiceItemInput[],
+    orderMinWeightKg: number = 1.00,
+    deliveryChargePaise: number = 0,
+    discountPaise: number = 0,
+    couponRules?: CouponDiscountRules
+  ): MultiServicePricingResult {
+    const safeMinWeight = Math.max(0, orderMinWeightKg);
+
+    // 1. Separate weight-based items from non-weight-based items
+    const weightItems = items.filter(
+      (it) => (it.pricing_unit || 'per_kg') === 'per_kg'
+    );
+    const nonWeightItems = items.filter(
+      (it) => (it.pricing_unit || 'per_kg') !== 'per_kg'
+    );
+
+    // 2. Sum actual measured scale readings for weight-based services
+    const totalMeasuredWeightKg = weightItems.reduce(
+      (sum, it) => sum + Math.max(0, it.measured_weight || 0),
+      0
+    );
+
+    const minWeightApplied =
+      weightItems.length > 0 &&
+      totalMeasuredWeightKg < safeMinWeight &&
+      safeMinWeight > 0;
+    const totalBillableWeightKg = minWeightApplied
+      ? safeMinWeight
+      : totalMeasuredWeightKg;
+
+    // 3. Proportional allocation for weight-based services
+    type InternalWeightAlloc = {
+      item: MultiServiceItemInput;
+      measured_weight: number;
+      raw_billable: number;
+      base_cents: number;
+      fractional: number;
+      final_billable: number;
+      is_min_applied: boolean;
+    };
+
+    let weightAllocations: InternalWeightAlloc[] = [];
+
+    if (minWeightApplied) {
+      if (totalMeasuredWeightKg > 0) {
+        // Raw proportional allocation
+        const ratio = totalBillableWeightKg / totalMeasuredWeightKg;
+        const rawList = weightItems.map((item) => {
+          const m = Math.max(0, item.measured_weight || 0);
+          const raw = m * ratio;
+          const baseCents = Math.floor(raw * 100);
+          const fractional = (raw * 100) - baseCents;
+          return {
+            item,
+            measured_weight: m,
+            raw_billable: raw,
+            base_cents: baseCents,
+            fractional,
+            final_billable: 0,
+            is_min_applied: true
+          };
+        });
+
+        // Remainder distribution
+        const totalBaseCents = rawList.reduce((acc, it) => acc + it.base_cents, 0);
+        let remainderCents = Math.round(totalBillableWeightKg * 100) - totalBaseCents;
+
+        const sortedIndices = rawList
+          .map((it, idx) => ({ idx, fractional: it.fractional }))
+          .sort((a, b) => b.fractional - a.fractional);
+
+        for (let i = 0; i < sortedIndices.length && remainderCents > 0; i++) {
+          rawList[sortedIndices[i].idx].base_cents += 1;
+          remainderCents -= 1;
+        }
+
+        weightAllocations = rawList.map((it) => ({
+          ...it,
+          final_billable: it.base_cents / 100
+        }));
+      } else {
+        const perItem = Math.floor((totalBillableWeightKg * 100) / weightItems.length);
+        let rem = Math.round(totalBillableWeightKg * 100) - perItem * weightItems.length;
+        weightAllocations = weightItems.map((item) => {
+          const cents = perItem + (rem > 0 ? 1 : 0);
+          if (rem > 0) rem--;
+          return {
+            item,
+            measured_weight: 0,
+            raw_billable: cents / 100,
+            base_cents: cents,
+            fractional: 0,
+            final_billable: cents / 100,
+            is_min_applied: true
+          };
+        });
+      }
+    } else {
+      weightAllocations = weightItems.map((item) => {
+        const m = Math.max(0, item.measured_weight || 0);
+        return {
+          item,
+          measured_weight: m,
+          raw_billable: m,
+          base_cents: Math.round(m * 100),
+          fractional: 0,
+          final_billable: m,
+          is_min_applied: false
+        };
+      });
+    }
+
+    // 4. Build calculated items
+    const calculatedItems: MultiServiceCalculatedItem[] = [];
+    let subtotalPaise = 0;
+
+    for (const alloc of weightAllocations) {
+      const linePaise = PricingEngine.calculateSubtotal(
+        alloc.final_billable,
+        alloc.item.unit_price_paise,
+        alloc.item.pricing_unit
+      );
+      subtotalPaise += linePaise;
+
+      calculatedItems.push({
+        id: alloc.item.id,
+        service_id: alloc.item.service_id,
+        service_name: alloc.item.service_name,
+        pricing_unit: alloc.item.pricing_unit || 'per_kg',
+        unit_price_paise: alloc.item.unit_price_paise,
+        measured_weight: Number(alloc.measured_weight.toFixed(2)),
+        billable_weight: Number(alloc.final_billable.toFixed(2)),
+        line_total_paise: linePaise,
+        is_min_applied: alloc.is_min_applied
+      });
+    }
+
+    for (const item of nonWeightItems) {
+      const measured = Math.max(0, item.measured_weight || 0);
+      const linePaise = PricingEngine.calculateSubtotal(
+        measured,
+        item.unit_price_paise,
+        item.pricing_unit
+      );
+      subtotalPaise += linePaise;
+
+      calculatedItems.push({
+        id: item.id,
+        service_id: item.service_id,
+        service_name: item.service_name,
+        pricing_unit: item.pricing_unit,
+        unit_price_paise: item.unit_price_paise,
+        measured_weight: Number(measured.toFixed(2)),
+        billable_weight: Number(measured.toFixed(2)),
+        line_total_paise: linePaise,
+        is_min_applied: false
+      });
+    }
+
+    const orderedItems = items.map((orig) => {
+      return (
+        calculatedItems.find(
+          (c) => (orig.id && c.id === orig.id) || (orig.service_id && c.service_id === orig.service_id)
+        ) || calculatedItems[0]
+      );
+    });
+
+    // 5. Option A Coupon evaluation against cumulative subtotal
+    let finalDiscountPaise = Math.max(0, discountPaise);
+    if (couponRules) {
+      const evalRes = PricingEngine.evaluateCouponDiscount(couponRules, subtotalPaise);
+      finalDiscountPaise = evalRes.isEligible ? evalRes.discountPaise : 0;
+    }
+    finalDiscountPaise = Math.min(finalDiscountPaise, subtotalPaise);
+
+    const effectiveDelivery = Math.max(0, deliveryChargePaise);
+    const totalAmountPaise = Math.max(
+      0,
+      subtotalPaise - finalDiscountPaise + effectiveDelivery
+    );
+
+    return {
+      totalMeasuredWeightKg: Number(totalMeasuredWeightKg.toFixed(2)),
+      totalBillableWeightKg: Number(totalBillableWeightKg.toFixed(2)),
+      minWeightApplied,
+      subtotalPaise,
+      discountPaise: finalDiscountPaise,
+      deliveryChargePaise: effectiveDelivery,
+      totalAmountPaise,
+      items: orderedItems
     };
   }
 

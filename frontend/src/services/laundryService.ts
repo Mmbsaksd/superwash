@@ -1,5 +1,5 @@
 import {
-  Order, OrderStatus, PaymentStatus, PaymentMethod, PaymentType, PaymentLedgerStatus, BusinessSettings,
+  Order, OrderItem, ServiceMeasurementInput, OrderStatus, PaymentStatus, PaymentMethod, PaymentType, PaymentLedgerStatus, BusinessSettings,
   PickupSlot, Profile, CustomerAddress, Payment, WeightChangeHistory, OrderStatusHistory,
   OrderFeedback, FeedbackStatus, FeedbackSummaryMetrics,
   ServiceArea, LaundryServiceItem, PeriodFilter, DashboardPeriodAnalytics, UserRole,
@@ -395,6 +395,113 @@ export class LaundryService {
       pricingUnit,
       discountPaise
     });
+  }
+
+  static normalizeOrderItems(order: Order): Order {
+    if (!order.items || order.items.length === 0) {
+      order.items = [{
+        id: `${order.id}-item-1`,
+        order_id: order.id,
+        service_id: order.service_id,
+        service_name: order.service_name || 'Wash & Fold Laundry',
+        pricing_unit: order.pricing_unit || 'per_kg',
+        unit_price_paise: order.price_per_kg_paise || 7900,
+        min_weight_kg: order.min_weight_kg || 1.0,
+        measured_weight: order.measured_weight,
+        billable_weight: order.billable_weight,
+        line_total_paise: order.total_amount_paise !== null && order.total_amount_paise !== undefined
+          ? Math.max(0, order.total_amount_paise + (order.discount_paise || 0) - (order.delivery_charge_paise || 0))
+          : null,
+        weighed_at: order.weighed_at || order.pickup_weighed_at,
+        weighed_by: order.pickup_weighed_by,
+        created_at: order.created_at,
+        updated_at: order.updated_at
+      }];
+    }
+    return order;
+  }
+
+  static calculateMultiServiceBill(
+    order: Order,
+    measurements: ServiceMeasurementInput[]
+  ): {
+    totalMeasuredWeightKg: number;
+    totalBillableWeightKg: number;
+    subtotalPaise: number;
+    discountPaise: number;
+    totalAmountPaise: number;
+    updatedItems: OrderItem[];
+  } {
+    const rawItems = order.items && order.items.length > 0
+      ? [...order.items]
+      : [{
+        id: `${order.id}-item-1`,
+        order_id: order.id,
+        service_id: order.service_id,
+        service_name: order.service_name || 'Wash & Fold Laundry',
+        pricing_unit: order.pricing_unit || 'per_kg',
+        unit_price_paise: order.price_per_kg_paise || 7900,
+        min_weight_kg: order.min_weight_kg || 1.0,
+        created_at: order.created_at,
+        updated_at: order.updated_at
+      }];
+
+    const pricingInputs = rawItems.map((item, idx) => {
+      const match = measurements.find(
+        m => (m.order_item_id && m.order_item_id === item.id) ||
+          (m.service_id && item.service_id && m.service_id === item.service_id)
+      ) || measurements[idx] || measurements[0];
+
+      return {
+        id: item.id,
+        service_id: item.service_id,
+        service_name: item.service_name,
+        pricing_unit: item.pricing_unit || 'per_kg',
+        unit_price_paise: (rawItems.length === 1 && order.price_per_kg_paise)
+          ? order.price_per_kg_paise
+          : (item.unit_price_paise || order.price_per_kg_paise || 7900),
+        measured_weight: match ? match.measured_weight : 0,
+        min_weight_kg: item.min_weight_kg || 1.0
+      };
+    });
+
+    const couponRules = order.coupon_snapshot ? {
+      code: order.coupon_snapshot.code,
+      discount_type: order.coupon_snapshot.discount_type,
+      discount_value: order.coupon_snapshot.discount_value,
+      min_order_paise: order.coupon_snapshot.min_order_paise,
+      max_discount_paise: order.coupon_snapshot.max_discount_paise,
+      applicable_service_ids: order.coupon_snapshot.applicable_service_ids
+    } : undefined;
+
+    const pricingResult = PricingEngine.calculateMultiServicePricing(
+      pricingInputs,
+      1.00, // Enforce confirmed 1.00 kg order-level minimum billable weight
+      order.delivery_charge_paise || 0,
+      order.discount_paise || 0,
+      couponRules
+    );
+
+    const now = new Date().toISOString();
+    const updatedItems: OrderItem[] = rawItems.map((item, idx) => {
+      const calc = pricingResult.items[idx];
+      return {
+        ...item,
+        measured_weight: calc ? calc.measured_weight : item.measured_weight,
+        billable_weight: calc ? calc.billable_weight : item.billable_weight,
+        line_total_paise: calc ? calc.line_total_paise : item.line_total_paise,
+        weighed_at: now
+      };
+    });
+
+    return {
+      totalMeasuredWeightKg: pricingResult.totalMeasuredWeightKg,
+      totalBillableWeightKg: pricingResult.totalBillableWeightKg,
+      subtotalPaise: pricingResult.subtotalPaise,
+      discountPaise: pricingResult.discountPaise,
+      totalAmountPaise: pricingResult.totalAmountPaise,
+      updatedItems
+    };
   }
 
   static async resolveFinalOrderDiscount(
@@ -937,14 +1044,31 @@ export class LaundryService {
   static async getOrders(): Promise<Order[]> {
     if (isLiveMode) {
       try {
-        const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
+        const { data, error } = await supabase
+          .from('orders')
+          .select('*, items:order_items(*)')
+          .order('created_at', { ascending: false });
+
         if (error) {
-          console.error('Error querying Supabase orders:', error.message);
-          throw new Error(`Failed to load orders from database: ${error.message}`);
+          // Graceful fallback for environments where relation embedding is not yet cached
+          const { data: fallbackData, error: fallbackError } = await supabase
+            .from('orders')
+            .select('*')
+            .order('created_at', { ascending: false });
+          if (fallbackError) {
+            console.error('Error querying Supabase orders:', fallbackError.message);
+            throw new Error(`Failed to load orders from database: ${fallbackError.message}`);
+          }
+          if (fallbackData) {
+            const normalized = fallbackData.map(o => this.normalizeOrderItems(o as Order));
+            localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(normalized));
+            return normalized;
+          }
         }
         if (data) {
-          localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(data));
-          return data;
+          const normalized = data.map(o => this.normalizeOrderItems(o as Order));
+          localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(normalized));
+          return normalized;
         }
       } catch (e: any) {
         console.error('Error connecting to Supabase orders:', e?.message || e);
@@ -955,10 +1079,14 @@ export class LaundryService {
     if (isDemoModeActive()) {
       const saved = localStorage.getItem(STORAGE_KEYS.ORDERS);
       if (saved) {
-        try { return JSON.parse(saved); } catch { }
+        try {
+          const parsed = JSON.parse(saved);
+          return Array.isArray(parsed) ? parsed.map(o => this.normalizeOrderItems(o)) : [];
+        } catch { }
       }
-      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(INITIAL_SAMPLE_ORDERS));
-      return INITIAL_SAMPLE_ORDERS;
+      const seeded = INITIAL_SAMPLE_ORDERS.map(o => this.normalizeOrderItems(o));
+      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(seeded));
+      return seeded;
     }
     return [];
   }
@@ -966,9 +1094,17 @@ export class LaundryService {
   static async getOrderById(id: string): Promise<Order | null> {
     if (isLiveMode) {
       try {
-        const { data, error } = await supabase.from('orders').select('*').eq('id', id).single();
-        if (error || !data) return null;
-        return data;
+        const { data, error } = await supabase
+          .from('orders')
+          .select('*, items:order_items(*)')
+          .eq('id', id)
+          .single();
+        if (error || !data) {
+          const { data: fallbackData } = await supabase.from('orders').select('*').eq('id', id).single();
+          if (!fallbackData) return null;
+          return this.normalizeOrderItems(fallbackData as Order);
+        }
+        return this.normalizeOrderItems(data as Order);
       } catch {
         return null;
       }
@@ -1139,6 +1275,7 @@ export class LaundryService {
     pickup_latitude?: number | null;
     pickup_longitude?: number | null;
     service_id?: string;
+    service_ids?: string[];
     notes?: string;
     client_submission_id?: string;
     coupon_code?: string;
@@ -1197,6 +1334,7 @@ export class LaundryService {
       pickup_latitude?: number | null;
       pickup_longitude?: number | null;
       service_id?: string;
+      service_ids?: string[];
       notes?: string;
       client_submission_id?: string;
       coupon_code?: string;
@@ -1220,32 +1358,43 @@ export class LaundryService {
       throw new Error(`The pickup slot '${data.pickup_slot}' on ${data.pickup_date} is fully booked (${slotCheck.bookedCount}/${slotCheck.maxCapacity}). Please choose another slot.`);
     }
 
-    // 3. Authoritatively resolve service from catalogue
+    // 3. Authoritatively resolve service(s) from catalogue
     const activeServices = await this.getServices(false);
-    let chosenService: LaundryServiceItem | undefined;
+    const allServices = await this.getServices(true);
 
-    if (data.service_id) {
-      chosenService = activeServices.find(s => s.id === data.service_id);
-      if (!chosenService) {
-        // If not found in active, check if it was deactivated
-        const allServices = await this.getServices(true);
-        const inactive = allServices.find(s => s.id === data.service_id);
-        if (inactive && !inactive.is_active) {
-          throw new Error(`The service '${inactive.name}' is currently deactivated and not accepting new bookings. Please select another active service.`);
+    const requestedServiceIds: string[] = (data.service_ids && data.service_ids.length > 0)
+      ? data.service_ids
+      : (data.service_id ? [data.service_id] : []);
+
+    const resolvedServices: LaundryServiceItem[] = [];
+    if (requestedServiceIds.length > 0) {
+      for (const sid of requestedServiceIds) {
+        const found = activeServices.find(s => s.id === sid);
+        if (found) {
+          resolvedServices.push(found);
+        } else {
+          const inactive = allServices.find(s => s.id === sid);
+          if (inactive && !inactive.is_active) {
+            throw new Error(`The service '${inactive.name}' is currently deactivated and not accepting new bookings. Please select another active service.`);
+          }
+          throw new Error(`Selected service (${sid}) not found in catalogue.`);
         }
-        throw new Error('Selected service not found in catalogue.');
       }
     } else {
-      chosenService = activeServices[0];
+      resolvedServices.push(activeServices[0]);
     }
 
+    const chosenService = resolvedServices[0];
     const serviceId = chosenService?.id;
-    const serviceName = chosenService ? chosenService.name : 'Wash & Fold (Normal)';
+    const serviceName = resolvedServices.length > 1
+      ? resolvedServices.map(s => s.name).join(' + ')
+      : (chosenService ? chosenService.name : 'Wash & Fold (Normal)');
     const pricingUnit = chosenService ? chosenService.pricing_unit : 'per_kg';
-    const unitPricePaise = data.service_id && chosenService
+    const hasSpecifiedService = Boolean((data.service_ids && data.service_ids.length > 0) || data.service_id);
+    const unitPricePaise = hasSpecifiedService && chosenService
       ? (chosenService.unit_price_paise || chosenService.price_paise || settings.price_per_kg_paise)
       : settings.price_per_kg_paise;
-    const minWeightKg = data.service_id && chosenService
+    const minWeightKg = hasSpecifiedService && chosenService
       ? (chosenService.pricing_unit === 'per_kg' ? (chosenService.min_weight_kg ?? settings.min_weight_kg ?? 1.0) : 0)
       : (settings.min_weight_kg ?? 1.0);
 
@@ -1320,6 +1469,26 @@ export class LaundryService {
       updated_at: new Date().toISOString()
     };
 
+    // Populate order items for multi-service or single-service
+    newOrder.items = resolvedServices.map(srv => ({
+      id: generateUUID(),
+      order_id: newOrder.id,
+      service_id: srv.id,
+      service_name: srv.name,
+      pricing_unit: srv.pricing_unit || 'per_kg',
+      unit_price_paise: hasSpecifiedService
+        ? (srv.unit_price_paise || srv.price_paise || settings.price_per_kg_paise)
+        : settings.price_per_kg_paise,
+      min_weight_kg: hasSpecifiedService
+        ? (srv.pricing_unit === 'per_kg' ? (srv.min_weight_kg ?? settings.min_weight_kg ?? 1.0) : 0)
+        : (settings.min_weight_kg ?? 1.0),
+      measured_weight: null,
+      billable_weight: null,
+      line_total_paise: null,
+      created_at: newOrder.created_at,
+      updated_at: newOrder.updated_at
+    }));
+
     if (isLiveMode) {
       // In live mode, all bookings must go through the atomic, idempotent RPC.
       // Under no circumstances do we fall back to a direct insert if the RPC is unavailable.
@@ -1342,7 +1511,8 @@ export class LaundryService {
         p_pickup_longitude: typeof data.pickup_longitude === 'number' ? data.pickup_longitude : null,
         p_notes: data.notes ? data.notes.trim() : null,
         p_coupon_code: data.coupon_code ? data.coupon_code.trim().toUpperCase() : null,
-        p_discount_paise: typeof data.discount_paise === 'number' ? data.discount_paise : 0
+        p_discount_paise: typeof data.discount_paise === 'number' ? data.discount_paise : 0,
+        p_service_ids: requestedServiceIds.length > 0 ? requestedServiceIds : null
       };
 
       try {
@@ -1351,15 +1521,23 @@ export class LaundryService {
           rpcPayload
         );
 
-        // Graceful fallback for legacy database schemas that only have the 12-parameter overload
+        // Graceful fallback for legacy database schemas that only have the 14-parameter or 12-parameter overload
         if (err && (err.code === 'PGRST202' || err.message?.includes('could not find the function'))) {
-          const basePayload = { ...rpcPayload };
-          delete basePayload.p_coupon_code;
-          delete basePayload.p_discount_paise;
-          const retryRes = await supabase.rpc('create_booking_idempotent', basePayload);
-          if (!retryRes.error && retryRes.data) {
-            resOrder = retryRes.data;
+          const payload14 = { ...rpcPayload };
+          delete payload14.p_service_ids;
+          const retryRes14 = await supabase.rpc('create_booking_idempotent', payload14);
+          if (!retryRes14.error && retryRes14.data) {
+            resOrder = retryRes14.data;
             err = null;
+          } else if (retryRes14.error && (retryRes14.error.code === 'PGRST202' || retryRes14.error.message?.includes('could not find the function'))) {
+            const basePayload = { ...payload14 };
+            delete basePayload.p_coupon_code;
+            delete basePayload.p_discount_paise;
+            const retryRes12 = await supabase.rpc('create_booking_idempotent', basePayload);
+            if (!retryRes12.error && retryRes12.data) {
+              resOrder = retryRes12.data;
+              err = null;
+            }
           }
         }
 
@@ -1389,6 +1567,22 @@ export class LaundryService {
 
       if (!rpcOrder) {
         throw new Error('No order was returned from the booking service.');
+      }
+
+      // Query order items for this order so returned object has items
+      try {
+        const { data: itemRows } = await supabase
+          .from('order_items')
+          .select('*')
+          .eq('order_id', rpcOrder.id)
+          .order('created_at', { ascending: true });
+        if (itemRows && itemRows.length > 0) {
+          rpcOrder.items = itemRows;
+        } else {
+          this.normalizeOrderItems(rpcOrder);
+        }
+      } catch {
+        this.normalizeOrderItems(rpcOrder);
       }
 
       const orderToReturn = rpcOrder;
@@ -1615,75 +1809,112 @@ export class LaundryService {
 
   static async recordPickupCollectionAndWeight(
     orderId: string,
-    weightKg: number,
+    measurements: ServiceMeasurementInput[] | number,
     staffId?: string,
     staffName: string = 'Delivery Associate',
     notes?: string
   ): Promise<Order> {
-    if (typeof weightKg !== 'number' || isNaN(weightKg) || weightKg <= 0 || weightKg > 100) {
-      throw new Error('Please enter a valid measured scale weight between 0.1 kg and 100 kg.');
-    }
-
     const orders = await this.getOrders();
     const order = orders.find(o => o.id === orderId);
     if (!order) throw new Error('Order not found');
 
-    const previousStatus = order.order_status;
+    this.normalizeOrderItems(order);
 
-    // Preliminary bill calculation to determine base laundry charge before discount
-    const initialBill = this.calculateBill(
-      weightKg,
-      order.price_per_kg_paise,
-      order.min_weight_kg,
-      order.delivery_charge_paise,
-      order.pricing_unit || 'per_kg',
-      0
-    );
+    // Normalize measurements to array
+    const measurementList: ServiceMeasurementInput[] = typeof measurements === 'number'
+      ? (order.items && order.items.length > 0
+        ? order.items.map(i => ({ order_item_id: i.id, service_id: i.service_id, service_name: i.service_name, measured_weight: measurements }))
+        : [{ measured_weight: measurements }])
+      : measurements;
 
-    // Resolve accurate discount against actual weighed laundry subtotal
+    if (!measurementList || measurementList.length === 0) {
+      throw new Error('Please enter valid scale measurements for all services.');
+    }
+
+    // Validate each measurement
+    for (const m of measurementList) {
+      if (typeof m.measured_weight !== 'number' || isNaN(m.measured_weight) || m.measured_weight < 0.10 || m.measured_weight > 100.00) {
+        throw new Error(`Please enter a valid measured scale weight between 0.10 kg and 100.00 kg (between 0.1 kg and 100 kg)${m.service_name ? ` for ${m.service_name}` : ''}.`);
+      }
+    }
+
+    // Calculate multi-service bill
+    const calculated = this.calculateMultiServiceBill(order, measurementList);
     const authoritativeDiscountPaise = await this.resolveFinalOrderDiscount(
       order,
-      initialBill.subtotalPaise
+      calculated.subtotalPaise
     );
-
-    const { billableWeightKg, totalAmountPaise, discountPaise: finalDiscountPaise } = this.calculateBill(
-      weightKg,
-      order.price_per_kg_paise,
-      order.min_weight_kg,
-      order.delivery_charge_paise,
-      order.pricing_unit || 'per_kg',
-      authoritativeDiscountPaise
-    );
-
+    if (authoritativeDiscountPaise !== calculated.discountPaise) {
+      calculated.discountPaise = authoritativeDiscountPaise;
+      calculated.totalAmountPaise = Math.max(0, calculated.subtotalPaise - authoritativeDiscountPaise + (order.delivery_charge_paise || 0));
+    }
     const now = new Date().toISOString();
     const effectiveStaffUuid = (staffId && isUUID(staffId)) ? staffId : null;
-    const deliveryNotes = notes || `Doorstep collection: ${weightKg.toFixed(2)} kg recorded on portable scale by ${staffName}`;
+    const deliveryNotes = notes || `Doorstep collection: ${calculated.totalMeasuredWeightKg.toFixed(2)} kg recorded on portable scale by ${staffName}`;
 
     if (isLiveMode) {
-      const { data: rpcData, error: rpcError } = await supabase.rpc('record_courier_pickup_collection', {
-        p_order_id: orderId,
-        p_measured_weight: weightKg,
-        p_delivery_notes: deliveryNotes
-      });
+      let rpcData: any = null;
+      let rpcError: any = null;
+
+      try {
+        const isSingleNumber = typeof measurements === 'number';
+        const res = isSingleNumber
+          ? await supabase.rpc('record_courier_pickup_collection', {
+              p_order_id: orderId,
+              p_measured_weight: measurements,
+              p_delivery_notes: deliveryNotes
+            })
+          : await supabase.rpc('record_courier_pickup_collection', {
+              p_order_id: orderId,
+              p_service_measurements: measurementList,
+              p_delivery_notes: deliveryNotes
+            });
+        rpcData = res.data;
+        rpcError = res.error;
+      } catch (err: any) {
+        rpcError = err;
+      }
 
       if (rpcError || !rpcData?.success) {
         if (this.isRpcMissing(rpcError, 'record_courier_pickup_collection')) {
-          throw new Error('The doorstep collection service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
+          if (Array.isArray(measurements)) {
+            try {
+              const fallback = await supabase.rpc('record_courier_pickup_collection', {
+                p_order_id: orderId,
+                p_measured_weight: calculated.totalMeasuredWeightKg,
+                p_delivery_notes: deliveryNotes
+              });
+              if (!fallback.error && fallback.data?.success) {
+                rpcData = fallback.data;
+                rpcError = null;
+              }
+            } catch { }
+          }
+          if (rpcError || !rpcData?.success) {
+            throw new Error('The doorstep collection service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
+          }
+        } else {
+          throw new Error(rpcError?.message || 'Failed to record courier pickup collection');
         }
-        throw new Error(rpcError?.message || 'Failed to record courier pickup collection');
       }
 
-      order.order_status = rpcData.order_status || 'collected';
-      order.measured_weight = Number(rpcData.measured_weight ?? weightKg);
-      order.billable_weight = Number(rpcData.billable_weight ?? billableWeightKg);
-      order.discount_paise = Number(rpcData.discount_paise ?? finalDiscountPaise);
-      order.total_amount_paise = Number(rpcData.total_amount_paise ?? totalAmountPaise);
+      const activeRpcData = rpcData || {};
+      order.order_status = activeRpcData.order_status || 'collected';
+      order.measured_weight = Number(activeRpcData.measured_weight ?? calculated.totalMeasuredWeightKg);
+      order.billable_weight = Number(activeRpcData.billable_weight ?? calculated.totalBillableWeightKg);
+      order.discount_paise = Number(activeRpcData.discount_paise ?? calculated.discountPaise);
+      order.total_amount_paise = Number(activeRpcData.total_amount_paise ?? calculated.totalAmountPaise);
       order.collected_at = now;
       order.delivery_notes = deliveryNotes;
-      order.pickup_measured_weight = weightKg;
+      order.pickup_measured_weight = order.measured_weight;
       order.pickup_weighed_at = now;
       order.pickup_weighed_by = effectiveStaffUuid || undefined;
       order.updated_at = now;
+      if (activeRpcData.items && Array.isArray(activeRpcData.items)) {
+        order.items = activeRpcData.items;
+      } else if (order.items) {
+        order.items = calculated.updatedItems;
+      }
 
       // Synchronize linked batch siblings in local state if batch coupon recalculated in DB
       const batchMatch = order.notes?.match(/\[Linked Batch ([^:\]]+)/);
@@ -1698,7 +1929,7 @@ export class LaundryService {
             for (const refreshed of refreshedSiblings) {
               const idx = orders.findIndex(o => o.id === refreshed.id);
               if (idx !== -1) {
-                orders[idx] = refreshed as Order;
+                orders[idx] = this.normalizeOrderItems(refreshed as Order);
               }
             }
           }
@@ -1709,25 +1940,27 @@ export class LaundryService {
     } else {
       // Local/demo/offline mode
       order.order_status = 'collected';
-      order.pickup_measured_weight = weightKg;
+      order.pickup_measured_weight = calculated.totalMeasuredWeightKg;
       order.pickup_weighed_at = now;
       order.pickup_weighed_by = staffId;
-      order.measured_weight = weightKg;
-      order.billable_weight = billableWeightKg;
-      order.discount_paise = finalDiscountPaise;
-      order.total_amount_paise = totalAmountPaise;
+      order.measured_weight = calculated.totalMeasuredWeightKg;
+      order.billable_weight = calculated.totalBillableWeightKg;
+      order.discount_paise = calculated.discountPaise;
+      order.total_amount_paise = calculated.totalAmountPaise;
       order.collected_at = now;
       order.delivery_notes = deliveryNotes;
       order.updated_at = now;
+      order.items = calculated.updatedItems;
     }
 
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
 
+    const finalDiscountPaise = order.discount_paise || calculated.discountPaise;
     const discountNote = finalDiscountPaise > 0 ? ` (₹${(finalDiscountPaise / 100).toFixed(0)} discount applied)` : '';
     await WhatsAppService.sendNotification(
       order.customer_phone,
       'clothes_collected',
-      `Hello ${order.customer_name}, our pickup executive ${staffName} has collected your clothes (Order #${order.order_number}). Doorstep measured weight: ${weightKg.toFixed(2)} kg. Total Bill: ₹${((order.total_amount_paise || 0) / 100).toFixed(2)}${discountNote}. They are now on their way to the store for washing!`,
+      `Hello ${order.customer_name}, our pickup executive ${staffName} has collected your clothes (Order #${order.order_number}). Doorstep measured weight: ${calculated.totalMeasuredWeightKg.toFixed(2)} kg. Total Bill: ₹${((order.total_amount_paise || 0) / 100).toFixed(2)}${discountNote}. They are now on their way to the store for washing!`,
       order.id
     );
 
@@ -1755,7 +1988,7 @@ export class LaundryService {
   // ----------------------------------------------------
   static async enterMeasuredWeight(
     orderId: string,
-    measuredWeightKg: number,
+    measurements: ServiceMeasurementInput[] | number,
     changedByUserName: string = 'Store Manager',
     correctionReason?: string
   ): Promise<Order> {
@@ -1763,56 +1996,96 @@ export class LaundryService {
     const order = orders.find(o => o.id === orderId);
     if (!order) throw new Error('Order not found');
 
+    this.normalizeOrderItems(order);
+
+    const measurementList: ServiceMeasurementInput[] = typeof measurements === 'number'
+      ? (order.items && order.items.length > 0
+        ? order.items.map(i => ({ order_item_id: i.id, service_id: i.service_id, service_name: i.service_name, measured_weight: measurements }))
+        : [{ measured_weight: measurements }])
+      : measurements;
+
+    if (!measurementList || measurementList.length === 0) {
+      throw new Error('Please enter valid scale measurements for all services.');
+    }
+
+    for (const m of measurementList) {
+      if (typeof m.measured_weight !== 'number' || isNaN(m.measured_weight) || m.measured_weight < 0.10 || m.measured_weight > 100.00) {
+        throw new Error(`Please enter a valid measured scale weight between 0.10 kg and 100.00 kg (between 0.1 kg and 100 kg)${m.service_name ? ` for ${m.service_name}` : ''}.`);
+      }
+    }
+
     const oldWeight = order.measured_weight;
     const oldAmount = order.total_amount_paise;
-
-    // Preliminary bill calculation to determine base laundry charge before discount
-    const initialBill = this.calculateBill(
-      measuredWeightKg,
-      order.price_per_kg_paise,
-      order.min_weight_kg,
-      order.delivery_charge_paise,
-      order.pricing_unit || 'per_kg',
-      0
-    );
-
-    // Resolve accurate discount against actual weighed laundry subtotal
+    const calculated = this.calculateMultiServiceBill(order, measurementList);
     const authoritativeDiscountPaise = await this.resolveFinalOrderDiscount(
       order,
-      initialBill.subtotalPaise
+      calculated.subtotalPaise
     );
-
-    // Apply strict business rule: MAX(measured, min_weight_kg)
-    const { billableWeightKg, totalAmountPaise, discountPaise: finalDiscountPaise } = this.calculateBill(
-      measuredWeightKg,
-      order.price_per_kg_paise,
-      order.min_weight_kg,
-      order.delivery_charge_paise,
-      order.pricing_unit || 'per_kg',
-      authoritativeDiscountPaise
-    );
+    if (authoritativeDiscountPaise !== calculated.discountPaise) {
+      calculated.discountPaise = authoritativeDiscountPaise;
+      calculated.totalAmountPaise = Math.max(0, calculated.subtotalPaise - authoritativeDiscountPaise + (order.delivery_charge_paise || 0));
+    }
+    const now = new Date().toISOString();
 
     if (isLiveMode) {
-      const { data: rpcData, error: rpcError } = await supabase.rpc('record_store_intake_weight', {
-        p_order_id: order.id,
-        p_measured_weight: measuredWeightKg,
-        p_correction_reason: correctionReason || null
-      });
+      let rpcData: any = null;
+      let rpcError: any = null;
+
+      try {
+        const isSingleNumber = typeof measurements === 'number';
+        const res = isSingleNumber
+          ? await supabase.rpc('record_store_intake_weight', {
+              p_order_id: order.id,
+              p_measured_weight: measurements,
+              p_correction_reason: correctionReason || null
+            })
+          : await supabase.rpc('record_store_intake_weight', {
+              p_order_id: order.id,
+              p_service_measurements: measurementList,
+              p_correction_reason: correctionReason || null
+            });
+        rpcData = res.data;
+        rpcError = res.error;
+      } catch (err: any) {
+        rpcError = err;
+      }
 
       if (rpcError || !rpcData?.success) {
         if (this.isRpcMissing(rpcError, 'record_store_intake_weight')) {
-          throw new Error('The store intake scale service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
+          if (Array.isArray(measurements)) {
+            try {
+              const fallback = await supabase.rpc('record_store_intake_weight', {
+                p_order_id: order.id,
+                p_measured_weight: calculated.totalMeasuredWeightKg,
+                p_correction_reason: correctionReason || null
+              });
+              if (!fallback.error && fallback.data?.success) {
+                rpcData = fallback.data;
+                rpcError = null;
+              }
+            } catch { }
+          }
+          if (rpcError || !rpcData?.success) {
+            throw new Error('The store intake scale service is temporarily unavailable while database upgrades are pending. Please try again in a few moments.');
+          }
+        } else {
+          throw new Error(rpcError?.message || 'Failed to record store intake weight');
         }
-        throw new Error(rpcError?.message || 'Failed to record store intake weight');
       }
 
-      order.measured_weight = Number(rpcData.measured_weight ?? measuredWeightKg);
-      order.billable_weight = Number(rpcData.billable_weight ?? billableWeightKg);
-      order.discount_paise = Number(rpcData.discount_paise ?? finalDiscountPaise);
-      order.total_amount_paise = Number(rpcData.total_amount_paise ?? totalAmountPaise);
-      order.order_status = rpcData.order_status || order.order_status;
-      order.weighed_at = order.weighed_at || new Date().toISOString();
-      order.updated_at = new Date().toISOString();
+      const activeRpcData = rpcData || {};
+      order.measured_weight = Number(activeRpcData.measured_weight ?? calculated.totalMeasuredWeightKg);
+      order.billable_weight = Number(activeRpcData.billable_weight ?? calculated.totalBillableWeightKg);
+      order.discount_paise = Number(activeRpcData.discount_paise ?? calculated.discountPaise);
+      order.total_amount_paise = Number(activeRpcData.total_amount_paise ?? calculated.totalAmountPaise);
+      order.order_status = activeRpcData.order_status || order.order_status;
+      order.weighed_at = order.weighed_at || now;
+      order.updated_at = now;
+      if (activeRpcData.items && Array.isArray(activeRpcData.items)) {
+        order.items = activeRpcData.items;
+      } else if (order.items) {
+        order.items = calculated.updatedItems;
+      }
 
       // Synchronize linked batch siblings after intake weighing & batch coupon recalculation
       const batchMatch = order.notes?.match(/\[Linked Batch ([^:\]]+)/);
@@ -1836,26 +2109,27 @@ export class LaundryService {
         }
       }
     } else {
-      order.measured_weight = measuredWeightKg;
-      order.billable_weight = billableWeightKg;
-      order.discount_paise = finalDiscountPaise;
-      order.total_amount_paise = totalAmountPaise;
-      order.weighed_at = new Date().toISOString();
+      order.measured_weight = calculated.totalMeasuredWeightKg;
+      order.billable_weight = calculated.totalBillableWeightKg;
+      order.discount_paise = calculated.discountPaise;
+      order.total_amount_paise = calculated.totalAmountPaise;
+      order.weighed_at = now;
       if (order.order_status === 'collected') {
         order.order_status = 'washing';
       }
-      order.updated_at = new Date().toISOString();
+      order.updated_at = now;
+      order.items = calculated.updatedItems;
 
       const weightHistory: WeightChangeHistory = {
         id: generateUUID(),
         order_id: order.id,
         old_weight: oldWeight,
-        new_weight: measuredWeightKg,
+        new_weight: calculated.totalMeasuredWeightKg,
         old_amount_paise: oldAmount,
-        new_amount_paise: totalAmountPaise,
+        new_amount_paise: calculated.totalAmountPaise,
         reason: correctionReason || (oldWeight ? 'Weight correction by manager' : 'Initial intake weight'),
         changed_by: changedByUserName,
-        created_at: new Date().toISOString()
+        created_at: now
       };
       const prevHistory = JSON.parse(localStorage.getItem(STORAGE_KEYS.WEIGHT_HISTORY) || '[]');
       localStorage.setItem(STORAGE_KEYS.WEIGHT_HISTORY, JSON.stringify([weightHistory, ...prevHistory]));
@@ -1864,11 +2138,11 @@ export class LaundryService {
     localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
 
     // Send WhatsApp notification
-    const discountNote = finalDiscountPaise > 0 ? ` (₹${(finalDiscountPaise / 100).toFixed(0)} discount applied)` : '';
+    const discountNote = order.discount_paise > 0 ? ` (₹${(order.discount_paise / 100).toFixed(0)} discount applied)` : '';
     await WhatsAppService.sendNotification(
       order.customer_phone,
       'weight_and_bill_ready',
-      `Order #${order.order_number} Update: Your clothes weighed ${measuredWeightKg.toFixed(2)} kg (Billable: ${billableWeightKg.toFixed(2)} kg @ ₹${order.price_per_kg_paise / 100}/kg). Total Bill: ₹${totalAmountPaise / 100}${discountNote}. Washing is now underway!`,
+      `Order #${order.order_number} Update: Your clothes weighed ${order.measured_weight.toFixed(2)} kg (Billable: ${order.billable_weight.toFixed(2)} kg). Total Bill: ₹${(order.total_amount_paise / 100).toFixed(0)}${discountNote}. Washing is now underway!`,
       order.id
     );
 

@@ -17,6 +17,7 @@ export interface PendingBookingPayload {
   pickup_latitude?: number | null;
   pickup_longitude?: number | null;
   service_id?: string;
+  service_ids?: string[];
   notes?: string;
   coupon_code?: string;
   discount_paise?: number;
@@ -134,7 +135,7 @@ export function getPendingBooking(userId?: string | null): PendingBookingRecord 
   } catch (err) {
     try {
       sessionStorage.removeItem(PENDING_BOOKING_KEY);
-    } catch {}
+    } catch { }
     return null;
   }
 }

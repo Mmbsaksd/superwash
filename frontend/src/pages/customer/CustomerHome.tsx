@@ -1249,7 +1249,7 @@ export const CustomerHome: React.FC = () => {
               savePendingBooking(currentUser.id, submissionId, {
                 ...basePayloadData,
                 service_id: finalSelectedServices[0]?.id,
-                notes: isMultiService ? `[Linked Batch ${batchId}: Multi-Service Booking (${finalSelectedServices.length} items)]` : undefined,
+                service_ids: finalSelectedServices.map((s) => s.id),
                 coupon_code: appliedCoupon ? appliedCoupon.code : undefined,
                 discount_paise: appliedCoupon ? appliedCoupon.discount_paise : 0
               }, 'in_flight');
@@ -1258,36 +1258,22 @@ export const CustomerHome: React.FC = () => {
             setIsBookingSubmitting(true);
 
             try {
-              const createdOrders: Order[] = [];
-              for (let i = 0; i < finalSelectedServices.length; i++) {
-                const srv = finalSelectedServices[i];
-                const isFirst = i === 0;
-                const currentSubId = isFirst ? submissionId : `${submissionId}_${i}`;
-                const batchNote = isMultiService
-                  ? `[Linked Batch ${batchId}: ${srv.name} (${i + 1}/${finalSelectedServices.length})]`
-                  : undefined;
-
-                // Apply coupon to first service order in linked batch
-                const couponToApply = isFirst && appliedCoupon;
-
-                const order = await LaundryService.createBooking({
-                  customer_id: currentUser?.id,
-                  ...basePayloadData,
-                  service_id: srv.id,
-                  notes: batchNote,
-                  coupon_code: couponToApply ? appliedCoupon?.code : undefined,
-                  discount_paise: couponToApply ? appliedCoupon?.discount_paise : 0,
-                  coupon_snapshot: couponToApply && appliedCoupon ? {
-                    code: appliedCoupon.code,
-                    discount_type: appliedCoupon.discount_type,
-                    discount_value: appliedCoupon.discount_value,
-                    min_order_paise: appliedCoupon.min_order_paise,
-                    max_discount_paise: appliedCoupon.max_discount_paise
-                  } : null,
-                  client_submission_id: currentSubId
-                });
-                createdOrders.push(order);
-              }
+              const order = await LaundryService.createBooking({
+                customer_id: currentUser?.id,
+                ...basePayloadData,
+                service_id: finalSelectedServices[0]?.id,
+                service_ids: finalSelectedServices.map((s) => s.id),
+                coupon_code: appliedCoupon ? appliedCoupon.code : undefined,
+                discount_paise: appliedCoupon ? appliedCoupon.discount_paise : 0,
+                coupon_snapshot: appliedCoupon ? {
+                  code: appliedCoupon.code,
+                  discount_type: appliedCoupon.discount_type,
+                  discount_value: appliedCoupon.discount_value,
+                  min_order_paise: appliedCoupon.min_order_paise,
+                  max_discount_paise: appliedCoupon.max_discount_paise
+                } : null,
+                client_submission_id: submissionId
+              });
 
               // Request succeeded: clear pending record immediately
               if (currentUser?.id) {
@@ -1298,8 +1284,7 @@ export const CustomerHome: React.FC = () => {
               // Renew submission ID for any subsequent separate booking
               setSubmissionId(generateClientSubmissionId());
 
-              const primaryOrder = createdOrders[0];
-              commitConfirmedBookingState(primaryOrder, createdOrders);
+              commitConfirmedBookingState(order);
             } catch (err: any) {
               if (err?.code === 'BOOKING_SERVICE_UNAVAILABLE' || err?.code === 'SCHEMA_OR_SERVICE_UNAVAILABLE') {
                 // Database migration missing or service undergoing upgrades: PRESERVE pending record!

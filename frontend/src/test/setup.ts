@@ -5,6 +5,7 @@ import { setLiveModeForTesting } from '../services/laundryService';
 // Ensure unit tests run in local isolated mode and do not attempt network queries
 // to unmigrated remote Supabase databases
 import.meta.env.VITE_DEMO_MODE = 'true';
+setLiveModeForTesting(false);
 
 afterEach(() => {
   setLiveModeForTesting(false);
