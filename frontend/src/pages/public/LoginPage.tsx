@@ -69,11 +69,16 @@ export const LoginPage: React.FC<LoginPageProps> = ({ isStaffPortal }) => {
     }
   }, [currentUser, location, isStaffMode]);
 
+  const isSafeRelativeUrl = (url?: string | null): boolean => {
+    if (!url) return false;
+    return url.startsWith('/') && !url.startsWith('//') && !url.includes('://');
+  };
+
   const redirectByRole = (role: UserRole) => {
     const params = new URLSearchParams(location.search);
     const redirectParam = params.get('redirect');
 
-    if (redirectParam && redirectParam.startsWith('/')) {
+    if (redirectParam && isSafeRelativeUrl(redirectParam)) {
       // Check if user's verified role is authorized to access the requested redirect target
       const isAuthorized =
         ((redirectParam.startsWith('/admin') || redirectParam.startsWith('/owner')) && role === 'owner') ||
@@ -113,7 +118,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({ isStaffPortal }) => {
     setIsLoading(true);
 
     const explicitRedirect = new URLSearchParams(location.search).get('redirect');
-    const targetRedirect = explicitRedirect || (isStaffMode ? '/admin' : '/customer');
+    const safeExplicit = explicitRedirect && isSafeRelativeUrl(explicitRedirect) ? explicitRedirect : null;
+    const targetRedirect = safeExplicit || (isStaffMode ? '/admin' : '/customer');
     const roleHint = isStaffMode ? 'owner' : 'customer';
 
     try {

@@ -13,6 +13,11 @@ import { PwaInstallPrompt } from '../../components/PwaInstallPrompt';
 import { MapLocationPicker } from '../../components/MapLocationPicker';
 import { LocationService } from '../../services/locationService';
 import { CustomerBottomNav } from '../../components/CustomerBottomNav';
+import { CustomerHeader } from '../../components/customer/CustomerHeader';
+import { CustomerHomeDashboard } from '../../components/customer/CustomerHomeDashboard';
+import { BookingStep1WhatAndWhen } from '../../components/customer/BookingStep1WhatAndWhen';
+import { BookingStep2WhereAndWho } from '../../components/customer/BookingStep2WhereAndWho';
+import { BookingStep3ReviewAndConfirm } from '../../components/customer/BookingStep3ReviewAndConfirm';
 import { formatCustomerError } from '../../utils/errorHandling';
 import {
   getPendingBooking,
@@ -22,8 +27,16 @@ import {
   calculateBookingFingerprint,
   isAmbiguousNetworkError,
   isAuthExpiredError,
-  PendingBookingRecord
+  PendingBookingRecord,
+  getGuestBookingDraft,
+  saveGuestBookingDraft,
+  clearGuestBookingDraft,
+  isDraftAccountMismatch,
+  hasMeaningfulDraftContent,
+  GuestBookingDraftRecord,
+  GuestBookingDraftPayload
 } from '../../utils/pendingBooking';
+import { getTodayDateIST } from '../../utils/dateUtils';
 import {
   Calendar, Clock, MapPin, Plus, Phone,
   CheckCircle2, AlertCircle, Sparkles,
@@ -189,17 +202,23 @@ export const CustomerHome: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get('tab');
-  const validTabs: Array<'book' | 'current' | 'history' | 'addresses' | 'profile' | 'settings' | 'contact'> = [
-    'book', 'current', 'history', 'addresses', 'profile', 'settings', 'contact'
+  const validTabs: Array<'home' | 'book' | 'current' | 'history' | 'addresses' | 'profile' | 'settings' | 'contact'> = [
+    'home', 'book', 'current', 'history', 'addresses', 'profile', 'settings', 'contact'
   ];
-  const [activeTab, setActiveTab] = useState<'book' | 'current' | 'history' | 'addresses' | 'profile' | 'settings' | 'contact'>(
-    tabParam && validTabs.includes(tabParam as any) ? (tabParam as any) : 'book'
+  const [activeTab, setActiveTab] = useState<'home' | 'book' | 'current' | 'history' | 'addresses' | 'profile' | 'settings' | 'contact'>(
+    tabParam && (validTabs.includes(tabParam as any) || tabParam === 'orders')
+      ? (tabParam === 'orders' ? 'current' : (tabParam as any))
+      : 'book'
   );
 
   // Synchronize activeTab with URL tab query parameter on direct navigation
   useEffect(() => {
-    if (tabParam && validTabs.includes(tabParam as any)) {
-      setActiveTab(tabParam as any);
+    if (tabParam) {
+      if (tabParam === 'orders') {
+        setActiveTab('current');
+      } else if (validTabs.includes(tabParam as any)) {
+        setActiveTab(tabParam as any);
+      }
     }
   }, [tabParam]);
 
@@ -343,7 +362,7 @@ export const CustomerHome: React.FC = () => {
     message: string;
   } | null>(null);
 
-  const [pickupDate, setPickupDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [pickupDate, setPickupDate] = useState<string>(getTodayDateIST());
   const [selectedSlotName, setSelectedSlotName] = useState<string>('Morning (08:00 AM - 11:00 AM)');
   const [customerPhone, setCustomerPhone] = useState<string>(currentUser?.phone || '');
   const [customerName, setCustomerName] = useState<string>(currentUser?.full_name || 'Customer');
@@ -375,6 +394,120 @@ export const CustomerHome: React.FC = () => {
 
   // Client submission request ID for safe idempotency & timeout retries
   const [submissionId, setSubmissionId] = useState<string>(generateClientSubmissionId);
+
+  // Guest Booking Draft State (Preserves booking across OAuth login, refresh, & remounts)
+  const [restoredDraftNotice, setRestoredDraftNotice] = useState<string | null>(null);
+  const [draftAccountMismatch, setDraftAccountMismatch] = useState<{
+    draft: GuestBookingDraftRecord;
+    currentUserId: string;
+  } | null>(null);
+  const [isDraftHydrated, setIsDraftHydrated] = useState<boolean>(false);
+  const hasRestoredDraftRef = React.useRef<boolean>(false);
+
+  // Safely serializes and persists current booking parameters as a guest draft
+  const autoSaveGuestDraft = (stepOverride?: number) => {
+    const currentAddressLine = isEnteringNewAddress || addresses.length === 0
+      ? newAddress.line
+      : (isRefiningAddress ? refinedAddress.line : (addresses.find((a) => a.id === selectedAddressId)?.address_line || ''));
+    const currentLandmark = isEnteringNewAddress || addresses.length === 0
+      ? newAddress.landmark
+      : (isRefiningAddress ? refinedAddress.landmark : (addresses.find((a) => a.id === selectedAddressId)?.landmark || ''));
+    const currentPincode = isEnteringNewAddress || addresses.length === 0
+      ? newAddress.pincode
+      : (isRefiningAddress ? refinedAddress.pincode : (addresses.find((a) => a.id === selectedAddressId)?.pincode || ''));
+    const currentLat = isEnteringNewAddress || addresses.length === 0
+      ? newAddress.latitude
+      : (isRefiningAddress ? refinedAddress.latitude : (addresses.find((a) => a.id === selectedAddressId)?.latitude ?? null));
+    const currentLng = isEnteringNewAddress || addresses.length === 0
+      ? newAddress.longitude
+      : (isRefiningAddress ? refinedAddress.longitude : (addresses.find((a) => a.id === selectedAddressId)?.longitude ?? null));
+
+    const payload: GuestBookingDraftPayload = {
+      service_ids: selectedServiceIds,
+      service_id: selectedServiceId,
+      pickup_date: pickupDate,
+      pickup_slot: selectedSlotName,
+      customer_name: customerName,
+      customer_phone: customerPhone,
+      pickup_address: currentAddressLine,
+      pickup_landmark: currentLandmark,
+      pickup_pincode: currentPincode,
+      pickup_latitude: currentLat,
+      pickup_longitude: currentLng,
+      coupon_code: appliedCoupon?.code,
+      coupon_snapshot: appliedCoupon ? {
+        code: appliedCoupon.code,
+        discount_type: appliedCoupon.discount_type,
+        discount_value: appliedCoupon.discount_value,
+        discount_paise: appliedCoupon.discount_paise,
+        min_order_paise: appliedCoupon.min_order_paise,
+        max_discount_paise: appliedCoupon.max_discount_paise,
+        description: appliedCoupon.description
+      } : null,
+      booking_step: stepOverride ?? bookingStep,
+      client_submission_id: submissionId
+    };
+
+    if (hasMeaningfulDraftContent(payload)) {
+      saveGuestBookingDraft(payload, {
+        boundUserId: currentUser?.id || null,
+        boundUserEmail: currentUser?.email || null
+      });
+    }
+  };
+
+  const handleDiscardDraft = () => {
+    clearGuestBookingDraft();
+    setRestoredDraftNotice(null);
+    setDraftAccountMismatch(null);
+    setBookingStep(1);
+    setCustomerPhone(currentUser?.phone || '');
+    setCustomerName(currentUser?.full_name || 'Customer');
+    setNewAddress({
+      line: '',
+      landmark: '',
+      pincode: '560103',
+      latitude: null,
+      longitude: null
+    });
+    setIsEnteringNewAddress(false);
+    setAppliedCoupon(null);
+    setSubmissionId(generateClientSubmissionId());
+  };
+
+  // Automatically save draft whenever booking inputs change while in the Book tab
+  useEffect(() => {
+    if (activeTab !== 'book') return;
+    if (!isDraftHydrated) return; // Prevent initial blank state from overwriting stored draft
+    autoSaveGuestDraft();
+  }, [
+    isDraftHydrated,
+    activeTab,
+    selectedServiceIds,
+    selectedServiceId,
+    pickupDate,
+    selectedSlotName,
+    customerName,
+    customerPhone,
+    newAddress.line,
+    newAddress.landmark,
+    newAddress.pincode,
+    newAddress.latitude,
+    newAddress.longitude,
+    selectedAddressId,
+    isEnteringNewAddress,
+    refinedAddress.line,
+    refinedAddress.landmark,
+    refinedAddress.pincode,
+    refinedAddress.latitude,
+    refinedAddress.longitude,
+    isRefiningAddress,
+    appliedCoupon,
+    bookingStep,
+    submissionId,
+    currentUser?.id,
+    currentUser?.email
+  ]);
 
   // Restore pending uncertain booking from sessionStorage across refreshes on mount
   useEffect(() => {
@@ -435,12 +568,17 @@ export const CustomerHome: React.FC = () => {
   const [selectedFeedbackOrder, setSelectedFeedbackOrder] = useState<Order | null>(null);
   const [selectedInvoiceOrder, setSelectedInvoiceOrder] = useState<Order | null>(null);
 
-  const handleTabChange = (tab: 'book' | 'current' | 'history' | 'addresses' | 'profile' | 'settings' | 'contact') => {
+  const handleTabChange = (tab: 'home' | 'book' | 'current' | 'history' | 'addresses' | 'profile' | 'settings' | 'contact') => {
     if (tab === 'book') {
-      setSubmissionId(generateClientSubmissionId());
-      setBookingStep(1);
+      const existingDraft = getGuestBookingDraft();
+      if (!existingDraft) {
+        setSubmissionId(generateClientSubmissionId());
+        setBookingStep(1);
+      }
     }
     setActiveTab(tab);
+    setBookingError(null);
+    setBookingStepError(null);
     setSearchParams(
       (prev) => {
         const p = new URLSearchParams(prev);
@@ -451,110 +589,119 @@ export const CustomerHome: React.FC = () => {
     );
   };
 
-  // Step advancement logic for 5-step guided booking flow:
-  // Step 1: Schedule (Services & Pickup Schedule)
-  // Step 2: Contact (Contact & Mobile Number)
-  // Step 3: Address (Pickup Address & Map Pin)
-  // Step 4: Review (Order Summary & Promotional Coupon)
-  // Step 5: Payment (Payment Method & Final Submission)
-  const handleNextStep = async (current: number) => {
-      setBookingStepError(null);
-      setBookingError(null);
+  const handleSelectServiceAndBook = (serviceId: string) => {
+    setSelectedServiceIds([serviceId]);
+    handleTabChange('book');
+    setBookingStep(1);
+  };
 
-      if (current === 1) {
-        if (!pickupDate) {
-          setBookingStepError('Please select a pickup date.');
+  // Step advancement logic for 3-step simplified booking flow:
+  // Step 1: What & When (Laundry Services & Pickup Schedule)
+  // Step 2: Where & Who (Customer Contact & Doorstep Map Pin / Address)
+  // Step 3: Review & Confirm (Order Summary, Promotional Coupon, COD Payment & Confirm)
+  const handleNextStep = async (current: number) => {
+    setBookingStepError(null);
+    setBookingError(null);
+
+    if (current === 1) {
+      if (!pickupDate) {
+        setBookingStepError('Please select a pickup date.');
+        return;
+      }
+      if (selectedServiceIds.length === 0 && services.length > 0) {
+        setSelectedServiceIds([services[0].id]);
+      }
+      if (!selectedSlotName) {
+        setSelectedSlotName('Morning (08:00 AM - 11:00 AM)');
+      }
+      setBookingStep(2);
+    } else if (current === 2) {
+      // Validate Contact
+      const cleanPhone = (customerPhone || currentUser?.phone || '').replace(/[^0-9]/g, '');
+      if (!cleanPhone || cleanPhone.length < 10) {
+        setBookingStepError('Please enter a valid 10-digit Indian mobile number.');
+        return;
+      }
+      if (!customerName.trim()) {
+        setBookingStepError('Please enter your full name.');
+        return;
+      }
+
+      // Validate Address
+      if (isEnteringNewAddress || addresses.length === 0) {
+        if (!newAddress.line.trim()) {
+          setBookingStepError('Please enter your complete pickup address.');
           return;
         }
-        if (selectedServiceIds.length === 0 && services.length > 0) {
-          setSelectedServiceIds([services[0].id]);
-        }
-        if (!selectedSlotName) {
-          setSelectedSlotName('Morning (08:00 AM - 11:00 AM)');
-        }
-        setBookingStep(2);
-      } else if (current === 2) {
-        const cleanPhone = (customerPhone || currentUser?.phone || '').replace(/[^0-9]/g, '');
-        if (!cleanPhone || cleanPhone.length < 10) {
-          setBookingStepError('Please enter a valid 10-digit Indian mobile number.');
+        const pin = newAddress.pincode.trim().replace(/\D/g, '');
+        if (pin.length !== 6 || !/^[1-9][0-9]{5}$/.test(pin)) {
+          setBookingStepError('Please enter a valid 6-digit Indian PIN code.');
           return;
         }
-        if (!customerName.trim()) {
-          setBookingStepError('Please enter your full name.');
+        const isServiceable = await LaundryService.isPincodeServiceable(pin);
+        if (!isServiceable) {
+          const area = await LaundryService.getServiceAreaForPincode(pin);
+          const areaSuffix = area ? ` (${area.area_name || area.name})` : '';
+          setBookingStepError(`PIN code ${pin}${areaSuffix} is currently outside our service coverage. Please select or enter a serviceable address.`);
           return;
         }
-        setBookingStep(3);
-      } else if (current === 3) {
-        if (isEnteringNewAddress || addresses.length === 0) {
-          if (!newAddress.line.trim()) {
-            setBookingStepError('Please enter your complete pickup address.');
-            return;
-          }
-          const pin = newAddress.pincode.trim().replace(/\D/g, '');
-          if (pin.length !== 6 || !/^[1-9][0-9]{5}$/.test(pin)) {
-            setBookingStepError('Please enter a valid 6-digit Indian PIN code.');
-            return;
-          }
+      } else {
+        const chosen = addresses.find((a) => a.id === selectedAddressId);
+        if (!chosen) {
+          setBookingStepError('Please select a saved pickup address or enter a new one.');
+          return;
+        }
+        const pin = (chosen.pincode || '').trim().replace(/\D/g, '');
+        if (pin.length === 6) {
           const isServiceable = await LaundryService.isPincodeServiceable(pin);
           if (!isServiceable) {
-            const area = await LaundryService.getServiceAreaForPincode(pin);
-            const areaSuffix = area ? ` (${area.area_name || area.name})` : '';
-            setBookingStepError(`PIN code ${pin}${areaSuffix} is currently outside our service coverage. Please select or enter a serviceable address.`);
+            setBookingStepError(`Your saved address PIN code ${pin} is currently outside our service coverage. Please select or enter another address.`);
             return;
           }
-        } else {
-            const chosen = addresses.find((a) => a.id === selectedAddressId);
-            if (!chosen) {
-              setBookingStepError('Please select a saved pickup address or enter a new one.');
-              return;
-            }
-            const pin = (chosen.pincode || '').trim().replace(/\D/g, '');
-            if (pin.length === 6) {
-              const isServiceable = await LaundryService.isPincodeServiceable(pin);
-              if (!isServiceable) {
-                setBookingStepError(`Your saved address PIN code ${pin} is currently outside our service coverage. Please select or enter another address.`);
-                return;
-              }
-            }
-          }
-          setBookingStep(4);
-        } else if (current === 4) {
-          if (!isCodAvailable && isOnlineAvailable) {
-            setSelectedPaymentMethod('razorpay');
-          } else if (isCodAvailable) {
-            setSelectedPaymentMethod('cash');
-          }
-          setBookingStep(5);
         }
-      };
+      }
 
-      const handlePrevStep = () => {
-        setBookingStepError(null);
-        setBookingError(null);
-        setBookingStep((prev) => Math.max(1, prev - 1));
-      };
+      // Default COD payment method
+      setSelectedPaymentMethod('cash');
+      setBookingStep(3);
+    } else if (current === 3) {
+      // Step 3 triggers final booking creation
+      handleCreateBooking();
+    }
+  };
 
-      const handleStepIndicatorClick = (targetStep: number) => {
-        setBookingStepError(null);
-        if (targetStep > bookingStep) {
-          if (bookingStep === 1 && (selectedServiceIds.length === 0 || !pickupDate || !selectedSlotName)) {
-            setBookingStepError('Please select a service, date, and pickup slot before proceeding.');
-            return;
-          }
-          if (targetStep >= 3) {
-            const cleanPhone = (customerPhone || currentUser?.phone || '').replace(/[^0-9]/g, '');
-            if (!cleanPhone || cleanPhone.length < 10 || !customerName.trim()) {
-              setBookingStepError('Please enter your full name and 10-digit mobile number first.');
-              return;
-            }
-          }
-          if (targetStep >= 4 && !selectedAddressId && (!newAddress.line.trim() || newAddress.pincode.trim().length !== 6)) {
+  const handlePrevStep = () => {
+    setBookingStepError(null);
+    setBookingError(null);
+    setBookingStep((prev) => Math.max(1, prev - 1));
+  };
+
+  const handleStepIndicatorClick = (targetStep: number) => {
+    setBookingStepError(null);
+    if (targetStep > bookingStep) {
+      if (bookingStep === 1 && (selectedServiceIds.length === 0 || !pickupDate || !selectedSlotName)) {
+        setBookingStepError('Please select a service, date, and pickup slot before proceeding.');
+        return;
+      }
+      if (targetStep >= 3) {
+        const cleanPhone = (customerPhone || currentUser?.phone || '').replace(/[^0-9]/g, '');
+        if (!cleanPhone || cleanPhone.length < 10 || !customerName.trim()) {
+          setBookingStepError('Please enter your full name and 10-digit mobile number first.');
+          return;
+        }
+        if (isEnteringNewAddress || addresses.length === 0) {
+          if (!newAddress.line.trim() || newAddress.pincode.trim().length !== 6) {
             setBookingStepError('Please complete your pickup address first.');
             return;
           }
+        } else if (!selectedAddressId) {
+          setBookingStepError('Please select or complete your pickup address first.');
+          return;
         }
-        setBookingStep(targetStep);
-      };
+      }
+    }
+    setBookingStep(targetStep);
+  };
 
       const handleUpdateCustomerProfile = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -702,13 +849,21 @@ export const CustomerHome: React.FC = () => {
 
       useEffect(() => {
         if (currentUser) {
-          setCustomerPhone(currentUser.phone || '');
-          setCustomerName(currentUser.full_name || 'Customer');
+          const existingDraft = getGuestBookingDraft();
+          if (!existingDraft?.payload?.customer_phone) {
+            setCustomerPhone(currentUser.phone || '');
+          }
+          if (!existingDraft?.payload?.customer_name) {
+            setCustomerName(currentUser.full_name || 'Customer');
+          }
           if (currentUser.role === 'customer' && (!currentUser.phone || currentUser.phone.trim().length < 10)) {
-            updateOnboardingModal({
-              isOpen: true,
-              name: currentUser.full_name || 'Customer'
-            });
+            // Suppress onboarding popup if guest booking draft is present
+            if (!existingDraft) {
+              updateOnboardingModal({
+                isOpen: true,
+                name: currentUser.full_name || 'Customer'
+              });
+            }
           }
         }
         loadData();
@@ -934,6 +1089,21 @@ export const CustomerHome: React.FC = () => {
             break;
         }
         setMapPickerState((prev) => ({ ...prev, isOpen: false, target: null }));
+      };
+
+      const handleOpenMapPicker = (target: 'booking_new' | 'booking_refine') => {
+        const isRefine = target === 'booking_refine';
+        const lat = isRefine ? refinedAddress.latitude : newAddress.latitude;
+        const lng = isRefine ? refinedAddress.longitude : newAddress.longitude;
+        const addressContext = isRefine ? refinedAddress.line : newAddress.line;
+        setMapPickerState({
+          isOpen: true,
+          target,
+          initialLat: lat,
+          initialLng: lng,
+          addressContext,
+          title: isRefine ? 'Adjust Pin for Refined Address' : 'Pin Pickup Location on Map'
+        });
       };
 
       // Populate refined address fields from selected CustomerAddress
@@ -1181,15 +1351,17 @@ export const CustomerHome: React.FC = () => {
             }
           };
 
-          const handleCreateBooking = async (e: React.FormEvent) => {
-            e.preventDefault();
+          const handleCreateBooking = async (e?: React.FormEvent) => {
+            if (e && e.preventDefault) e.preventDefault();
             if (isBookingSubmitting || isResolvingPending) return;
             setBookingError(null);
 
-            // FIX 3: Unauthenticated booking guard - explain requirement and redirect preserving return destination
+            // FIX 3: Unauthenticated booking guard - save guest draft and redirect preserving return destination
             if (!currentUser) {
+              autoSaveGuestDraft(bookingStep >= 3 ? bookingStep : 3);
               setBookingError('Sign-in required: Please sign in with your account to confirm your pickup booking.');
-              navigate('/login?redirect=/customer');
+              const returnUrl = '/customer?tab=book&resume=draft';
+              navigate(`/login?redirect=${encodeURIComponent(returnUrl)}`);
               return;
             }
 
@@ -1338,10 +1510,12 @@ export const CustomerHome: React.FC = () => {
                 client_submission_id: submissionId
               });
 
-              // Request succeeded: clear pending record immediately
+              // Request succeeded: clear pending record and draft immediately
               if (currentUser?.id) {
                 clearPendingBooking(currentUser.id);
               }
+              clearGuestBookingDraft();
+              setRestoredDraftNotice(null);
               setPendingRecovery(null);
 
               // Renew submission ID for any subsequent separate booking
@@ -1435,7 +1609,7 @@ export const CustomerHome: React.FC = () => {
             setBookingError(null);
 
             // Normalize pickup date so it is never in the past (which PostgreSQL rejects with P0001)
-            const todayStr = new Date().toISOString().split('T')[0];
+            const todayStr = getTodayDateIST();
             const payloadDate = pendingRecovery.payload.pickup_date;
             const effectivePickupDate = (payloadDate && payloadDate >= todayStr) ? payloadDate : todayStr;
 
@@ -1580,6 +1754,97 @@ export const CustomerHome: React.FC = () => {
               handleApplyCoupon(couponQueryParam);
             }
           }, [couponQueryParam]);
+
+          // Restore guest booking draft on mount or after login redirect
+          useEffect(() => {
+            if (isAuthLoading) return;
+            if (hasRestoredDraftRef.current) return;
+
+            const draft = getGuestBookingDraft();
+            if (!draft) {
+              hasRestoredDraftRef.current = true;
+              setIsDraftHydrated(true);
+              return;
+            }
+
+            // Check account isolation: if draft was created by user-A and user-B logs in
+            if (currentUser && isDraftAccountMismatch(draft, currentUser.id)) {
+              setDraftAccountMismatch({ draft, currentUserId: currentUser.id });
+              hasRestoredDraftRef.current = true;
+              setIsDraftHydrated(true);
+              return;
+            }
+
+            hasRestoredDraftRef.current = true;
+
+            // 1. Services
+            if (draft.payload.service_ids && draft.payload.service_ids.length > 0) {
+              setSelectedServiceIds(draft.payload.service_ids);
+            } else if (draft.payload.service_id) {
+              setSelectedServiceIds([draft.payload.service_id]);
+            }
+
+            // 2. Pickup Date & Slot
+            const todayStr = getTodayDateIST();
+            let targetDate = draft.payload.pickup_date;
+            if (!targetDate || targetDate < todayStr) {
+              targetDate = todayStr;
+            }
+            setPickupDate(targetDate);
+
+            if (draft.payload.pickup_slot) {
+              setSelectedSlotName(draft.payload.pickup_slot);
+            }
+
+            // 3. Contact Details
+            // Per instructions: Restore into form, ask customer to confirm, DO NOT silently update profile.
+            if (draft.payload.customer_name) {
+              setCustomerName(draft.payload.customer_name);
+            } else if (currentUser?.full_name) {
+              setCustomerName(currentUser.full_name);
+            }
+
+            if (draft.payload.customer_phone) {
+              setCustomerPhone(draft.payload.customer_phone);
+            } else if (currentUser?.phone) {
+              setCustomerPhone(currentUser.phone);
+            }
+
+            // 4. Address & Doorstep GPS Pin
+            if (draft.payload.pickup_address) {
+              setNewAddress({
+                line: draft.payload.pickup_address,
+                landmark: draft.payload.pickup_landmark || '',
+                pincode: draft.payload.pickup_pincode || '560103',
+                latitude: draft.payload.pickup_latitude ?? null,
+                longitude: draft.payload.pickup_longitude ?? null
+              });
+              setIsEnteringNewAddress(true);
+            }
+
+            // 5. Client submission ID (idempotency preservation)
+            if (draft.payload.client_submission_id) {
+              setSubmissionId(draft.payload.client_submission_id);
+            }
+
+            // 6. Coupon Revalidation (uses authoritative handleApplyCoupon)
+            if (draft.payload.coupon_code) {
+              handleApplyCoupon(draft.payload.coupon_code);
+            }
+
+            // 7. Booking Step: Restore to step 3 (Review & Confirm) if user was on step 3 or beyond
+            const step = draft.payload.booking_step || 1;
+            setBookingStep(step >= 3 ? 3 : step);
+            setActiveTab('book');
+
+            // 8. Notice Banner
+            setRestoredDraftNotice(
+              'Welcome back! Your pickup details have been saved. Please review and confirm your booking.'
+            );
+
+            // Allow subsequent user edits to auto-save to storage
+            setIsDraftHydrated(true);
+          }, [currentUser, isAuthLoading, services]);
 
           // Internal JSX Helpers for Address Input & Map Pin Box Consolidation (Stage 3C)
           const renderAddressInputFields = (cfg: {
@@ -1826,89 +2091,49 @@ export const CustomerHome: React.FC = () => {
               <PwaInstallPrompt variant="customer-banner" />
 
               {/* Top Customer Brand Bar */}
-              <div className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
-                <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex items-center justify-between">
-                  <Link
-                    to="/"
-                    className="flex items-center gap-2.5 group hover:opacity-90 transition cursor-pointer"
-                    title="SuperWash Exprez Home"
-                  >
-                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-brand-600 to-cyan-500 flex items-center justify-center text-white shadow-sm group-hover:scale-105 transition-transform">
-                      <Sparkles className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h1 className="font-black text-slate-900 text-lg leading-tight">SuperWash Exprez</h1>
-                      <p className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider">
-                        Customer Laundry Hub • Bengaluru
-                      </p>
-                    </div>
-                  </Link>
+              <CustomerHeader
+                settings={settings}
+                activeTab={activeTab}
+                onTabChange={handleTabChange}
+                hasActiveOrder={!!currentActiveOrder && currentActiveOrder.order_status !== 'delivered'}
+              />
 
-                  <div className="flex items-center gap-3">
-                    {currentUser ? (
-                      <>
-                        <div className="text-right hidden sm:block">
-                          <span className="block text-xs font-bold text-slate-800 leading-tight">
-                            {currentUser.full_name || 'Customer'}
-                          </span>
-                          <span className="block text-[11px] text-slate-500 font-mono">
-                            {currentUser.phone ? `+91 ${currentUser.phone}` : (currentUser.email || 'Google User')}
-                          </span>
-                        </div>
-                        {currentUser.avatar_url ? (
-                          <img
-                            src={currentUser.avatar_url}
-                            alt={currentUser.full_name}
-                            className="w-9 h-9 rounded-full object-cover border border-slate-200 shadow-sm"
-                          />
-                        ) : (
-                          <div className="w-9 h-9 rounded-full bg-brand-50 text-brand-700 border border-brand-200 flex items-center justify-center font-bold text-xs shadow-sm">
-                            {currentUser.full_name?.charAt(0) || <User className="w-4 h-4" />}
-                          </div>
-                        )}
-                        <button
-                          type="button"
-                          onClick={logout}
-                          className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition cursor-pointer"
-                          title="Sign Out"
-                        >
-                          <LogOut className="w-4 h-4" />
-                        </button>
-                      </>
-                    ) : (
-                      <Link
-                        to="/login?redirect=/customer"
-                        className="py-2 px-3.5 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-sm transition flex items-center gap-1.5"
-                      >
-                        <User className="w-4 h-4" />
-                        <span>Sign In</span>
-                      </Link>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Responsive Navigation Tabs */}
-              <div className="bg-white border-b border-slate-200 sticky top-[65px] z-20">
+              {/* Secondary Navigation Pills (Desktop & Mobile) */}
+              <div className="bg-white border-b border-slate-200 sticky top-16 sm:top-20 z-20">
                 <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-2 overflow-x-auto flex gap-2 scrollbar-none">
                   <button
-                    onClick={() => handleTabChange('book')}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition flex items-center gap-2 ${activeTab === 'book'
+                    onClick={() => handleTabChange('home')}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition flex items-center gap-1.5 cursor-pointer ${
+                      activeTab === 'home'
                         ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25'
                         : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
+                    }`}
                   >
-                    <Plus className="w-4 h-4" /> Book Pickup
+                    <span>Home</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleTabChange('book')}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition flex items-center gap-1.5 cursor-pointer ${
+                      activeTab === 'book'
+                        ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Book Pickup</span>
                   </button>
 
                   <button
                     onClick={() => handleTabChange('current')}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition flex items-center gap-2 ${activeTab === 'current'
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition flex items-center gap-1.5 cursor-pointer ${
+                      activeTab === 'current'
                         ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25'
                         : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
+                    }`}
                   >
-                    <Clock className="w-4 h-4" /> Track Order
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Track Order</span>
                     {currentActiveOrder && currentActiveOrder.order_status !== 'delivered' && (
                       <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
                     )}
@@ -1916,42 +2141,48 @@ export const CustomerHome: React.FC = () => {
 
                   <button
                     onClick={() => handleTabChange('history')}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${activeTab === 'history'
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer ${
+                      activeTab === 'history'
                         ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25'
                         : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
+                    }`}
                   >
-                    Order History ({orders.length})
+                    <span>Order History ({orders.length})</span>
                   </button>
 
                   <button
                     onClick={() => handleTabChange('addresses')}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition flex items-center gap-1.5 ${activeTab === 'addresses' || activeTab === 'profile'
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition flex items-center gap-1.5 cursor-pointer ${
+                      activeTab === 'addresses' || activeTab === 'profile'
                         ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25'
                         : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
+                    }`}
                   >
-                    <User className="w-4 h-4" /> My Profile & Addresses
+                    <User className="w-3.5 h-3.5" />
+                    <span>My Profile & Addresses</span>
                   </button>
 
                   <button
                     onClick={() => handleTabChange('settings')}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition flex items-center gap-1.5 ${activeTab === 'settings'
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition flex items-center gap-1.5 cursor-pointer ${
+                      activeTab === 'settings'
                         ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25'
                         : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
+                    }`}
                   >
-                    <Settings className="w-4 h-4" /> Settings
+                    <Settings className="w-3.5 h-3.5" />
+                    <span>Settings</span>
                   </button>
 
                   <button
                     onClick={() => handleTabChange('contact')}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${activeTab === 'contact'
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer ${
+                      activeTab === 'contact'
                         ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25'
                         : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
+                    }`}
                   >
-                    Contact & Shop
+                    <span>Contact & Shop</span>
                   </button>
                 </div>
               </div>
@@ -2032,11 +2263,92 @@ export const CustomerHome: React.FC = () => {
                   </div>
                 )}
 
+                {/* ================= 0. CUSTOMER HOME DASHBOARD TAB ================= */}
+                {activeTab === 'home' && (
+                  <CustomerHomeDashboard
+                    currentUser={currentUser}
+                    services={services}
+                    settings={settings}
+                    currentActiveOrder={currentActiveOrder}
+                    onNavigateTab={handleTabChange}
+                    onSelectServiceAndBook={handleSelectServiceAndBook}
+                  />
+                )}
+
                 {/* ================= 1. BOOK A PICKUP TAB ================= */}
                 {activeTab === 'book' && (
                   <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
                     {/* Left Column: Form (7 cols on desktop) */}
                     <div className="lg:col-span-7 space-y-4">
+                      {/* Saved Booking Draft Account Mismatch Warning */}
+                      {draftAccountMismatch && (
+                        <div className="p-4 bg-amber-50 border-2 border-amber-300 rounded-2xl text-amber-950 space-y-2 text-xs animate-fade-in shadow-sm">
+                          <div className="flex items-center gap-2 font-bold">
+                            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                            <span>Saved Booking Draft from Another Account</span>
+                          </div>
+                          <p className="text-[11px] text-amber-900 leading-relaxed">
+                            A saved booking draft was found from a previous session ({draftAccountMismatch.draft.boundUserEmail || 'another user'}). Would you like to restore it to this account or discard it?
+                          </p>
+                          <div className="flex items-center gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const d = draftAccountMismatch.draft;
+                                saveGuestBookingDraft(d.payload, {
+                                  draftId: d.draftId,
+                                  boundUserId: currentUser?.id,
+                                  boundUserEmail: currentUser?.email
+                                });
+                                setDraftAccountMismatch(null);
+                                hasRestoredDraftRef.current = false;
+                              }}
+                              className="px-3.5 py-1.5 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-xl text-xs transition cursor-pointer"
+                            >
+                              Restore to this Account
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                clearGuestBookingDraft();
+                                setDraftAccountMismatch(null);
+                              }}
+                              className="px-3.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold rounded-xl text-xs transition cursor-pointer"
+                            >
+                              Discard Draft
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Restored Draft Confirmation Banner */}
+                      {restoredDraftNotice && (
+                        <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-900 text-xs flex items-center justify-between gap-3 shadow-sm animate-fade-in">
+                          <div className="flex items-center gap-2">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                            <span className="font-medium">{restoredDraftNotice}</span>
+                          </div>
+                          <div className="flex items-center gap-2.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={handleDiscardDraft}
+                              className="text-[11px] font-bold text-slate-500 hover:text-slate-800 underline cursor-pointer"
+                              title="Discard this saved draft"
+                            >
+                              Discard
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setRestoredDraftNotice(null)}
+                              className="p-1 text-emerald-700 hover:text-emerald-900 rounded-lg hover:bg-emerald-100 transition cursor-pointer"
+                              title="Dismiss notice"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
                       {!currentUser && (
                         <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl text-amber-800 text-xs flex items-center justify-between gap-3 shadow-sm">
                           <div className="flex items-center gap-2">
@@ -2044,7 +2356,8 @@ export const CustomerHome: React.FC = () => {
                             <span>Sign-in is required to confirm and live-track your laundry pickup booking.</span>
                           </div>
                           <Link
-                            to="/login?redirect=/customer"
+                            to={`/login?redirect=${encodeURIComponent('/customer?tab=book&resume=draft')}`}
+                            onClick={() => autoSaveGuestDraft()}
                             className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs whitespace-nowrap transition"
                           >
                             Sign In
@@ -2156,27 +2469,24 @@ export const CustomerHome: React.FC = () => {
                             <Calendar className="w-5 h-5 text-brand-600" /> Schedule Home Pickup
                           </h2>
                           <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                            Step {bookingStep} of 5
+                            Step {bookingStep} of 3
                           </span>
                         </div>
 
-                        {/* Visible Step Indicator (Steps 1 to 5) */}
+                        {/* Visible Step Indicator (Steps 1 to 3) */}
                         <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 sm:p-4 shadow-2xs select-none">
                           <div className="flex items-center justify-between">
                             {[
-                              { num: 1, label: 'Schedule', icon: Calendar },
-                              { num: 2, label: 'Contact', icon: Phone },
-                              { num: 3, label: 'Address', icon: MapPin },
-                              { num: 4, label: 'Review', icon: CheckCircle2 },
-                              { num: 5, label: 'Payment', icon: CreditCard }
+                              { num: 1, label: 'What & When', icon: Calendar },
+                              { num: 2, label: 'Where & Who', icon: MapPin },
+                              { num: 3, label: 'Review & Confirm', icon: CheckCircle2 }
                             ].map((s, idx) => {
                               const isCompleted = bookingStep > s.num;
                               const isCurrent = bookingStep === s.num;
                               return (
                                 <React.Fragment key={s.num}>
                                   {idx > 0 && (
-                                    <div className={`flex-1 h-0.5 mx-1 sm:mx-2 transition-colors ${isCompleted ? 'bg-emerald-500' : 'bg-slate-200'
-                                      }`} />
+                                    <div className={`flex-1 h-0.5 mx-2 sm:mx-4 transition-colors ${isCompleted ? 'bg-emerald-500' : 'bg-slate-200'}`} />
                                   )}
                                   <button
                                     type="button"
@@ -2185,7 +2495,7 @@ export const CustomerHome: React.FC = () => {
                                     title={`Step ${s.num}: ${s.label}`}
                                   >
                                     <div
-                                      className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center font-bold text-xs transition ${isCompleted
+                                      className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs transition ${isCompleted
                                           ? 'bg-emerald-600 text-white shadow-2xs'
                                           : isCurrent
                                             ? 'bg-brand-600 text-white ring-4 ring-brand-100 shadow-sm'
@@ -2195,8 +2505,7 @@ export const CustomerHome: React.FC = () => {
                                       {isCompleted ? <Check className="w-3.5 h-3.5" /> : s.num}
                                     </div>
                                     <span
-                                      className={`text-[10px] font-bold mt-1 hidden sm:block ${isCurrent ? 'text-brand-700' : isCompleted ? 'text-emerald-700' : 'text-slate-500'
-                                        }`}
+                                      className={`text-[10px] sm:text-[11px] font-bold mt-1.5 hidden sm:block ${isCurrent ? 'text-brand-700' : isCompleted ? 'text-emerald-700' : 'text-slate-500'}`}
                                     >
                                       {s.label}
                                     </span>
@@ -2214,847 +2523,112 @@ export const CustomerHome: React.FC = () => {
                           </div>
                         )}
 
-                        {/* ================= STEP 1: SERVICES & SCHEDULE ================= */}
-                        <div className={bookingStep === 1 ? 'space-y-5 animate-fade-in' : 'hidden'} data-step="1">
-                          {/* Service Selection */}
-                          {services.length > 0 && (
-                            <div className="space-y-2">
-                              <div className="flex items-center justify-between">
-                                <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                                  <Sparkles className="w-4 h-4 text-brand-600" /> Select Laundry Service(s)
-                                </label>
-                                {activeSelectedServices.length > 1 && (
-                                  <span className="text-[11px] font-bold text-brand-700 bg-brand-50 px-2.5 py-0.5 rounded-full border border-brand-200">
-                                    {activeSelectedServices.length} Services Selected (Linked Pickup)
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-[11px] text-slate-500">
-                                Select one or more services for this pickup. Distinct services are weighed and processed in separate batches.
-                              </p>
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                                {services.map((srv) => {
-                                  const isSelected = selectedServiceIds.includes(srv.id);
-                                  return (
-                                    <label
-                                      key={srv.id}
-                                      className={`flex items-start gap-2.5 p-3 rounded-2xl border cursor-pointer transition select-none ${isSelected
-                                          ? 'border-brand-600 bg-brand-50/70 text-slate-900 ring-2 ring-brand-500/20 shadow-sm'
-                                          : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
-                                        }`}
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        name="selectedService"
-                                        value={srv.id}
-                                        checked={isSelected}
-                                        onChange={() => handleToggleService(srv.id)}
-                                        className="mt-1 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer"
-                                      />
-                                      <div className="text-xs flex-1">
-                                        <div className="flex items-center justify-between">
-                                          <span className="font-bold text-slate-900">{srv.name}</span>
-                                          <span className="font-black text-brand-700">
-                                            ₹{(((srv.unit_price_paise || srv.price_paise || 7900) / 100)).toFixed(0)}
-                                            <span className="text-[10px] text-slate-400 font-normal">/{srv.pricing_unit === 'per_kg' ? 'kg' : srv.pricing_unit.replace('per_', '')}</span>
-                                          </span>
-                                        </div>
-                                        {srv.description && (
-                                          <span className="text-slate-500 text-[11px] block mt-0.5 line-clamp-1">{srv.description}</span>
-                                        )}
-                                        {srv.pricing_unit === 'per_kg' && srv.min_weight_kg > 0 && (
-                                          <span className="text-[10px] text-slate-400 font-mono mt-0.5 block">Min. {srv.min_weight_kg} kg</span>
-                                        )}
-                                      </div>
-                                    </label>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Pickup Date */}
-                          <div>
-                            <label className="block text-xs font-bold text-slate-700 mb-2 flex items-center gap-1.5">
-                              <Calendar className="w-4 h-4 text-brand-600" /> Step 1: Choose Pickup Date
-                            </label>
-                            <div className="grid grid-cols-3 gap-2">
-                              {[0, 1, 2].map((offset) => {
-                                const d = new Date();
-                                d.setDate(d.getDate() + offset);
-                                const isoDate = d.toISOString().split('T')[0];
-                                const label = offset === 0 ? 'Today' : offset === 1 ? 'Tomorrow' : d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
-                                const isSelected = pickupDate === isoDate;
-                                return (
-                                  <button
-                                    type="button"
-                                    key={isoDate}
-                                    onClick={() => setPickupDate(isoDate)}
-                                    className={`py-2.5 px-2 rounded-xl border text-center transition cursor-pointer ${isSelected
-                                        ? 'border-brand-600 bg-brand-50 text-brand-700 font-bold ring-2 ring-brand-500/20'
-                                        : 'border-slate-200 text-slate-700 hover:bg-slate-50 font-medium'
-                                      }`}
-                                  >
-                                    <span className="block text-xs">{label}</span>
-                                    <span className="block text-[10px] text-slate-500">{isoDate.split('-').reverse().slice(0, 2).join('/')}</span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-
-                          {/* Time Slot */}
-                          <div>
-                            <label className="block text-xs font-bold text-slate-700 mb-2 flex items-center gap-1.5">
-                              <Clock className="w-4 h-4 text-brand-600" /> Select 3-Hour Time Window
-                            </label>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                              {(slots.length > 0 ? slots : [
-                                { id: 'slot-1', name: 'Morning (08:00 AM - 11:00 AM)' },
-                                { id: 'slot-2', name: 'Noon (11:00 AM - 02:00 PM)' },
-                                { id: 'slot-3', name: 'Afternoon (02:00 PM - 05:00 PM)' },
-                                { id: 'slot-4', name: 'Evening (05:00 PM - 08:00 PM)' }
-                              ]).map((s) => (
-                                <label
-                                  key={s.id}
-                                  className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition text-xs ${selectedSlotName === s.name
-                                      ? 'border-brand-600 bg-brand-50 text-brand-900 font-bold ring-2 ring-brand-500/20'
-                                      : 'border-slate-200 hover:bg-slate-50 text-slate-700'
-                                    }`}
-                                >
-                                  <div className="flex items-center gap-2">
-                                    <input
-                                      type="radio"
-                                      name="timeSlot"
-                                      value={s.name}
-                                      checked={selectedSlotName === s.name}
-                                      onChange={() => setSelectedSlotName(s.name)}
-                                      className="text-brand-600 focus:ring-brand-500 cursor-pointer"
-                                    />
-                                    <span>{s.name}</span>
-                                  </div>
-                                </label>
-                              ))}
-                            </div>
-                          </div>
-
-                          <div className="pt-3 border-t border-slate-100 flex justify-end">
-                            <button
-                              type="button"
-                              onClick={() => handleNextStep(1)}
-                              className="py-3 px-6 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer"
-                            >
-                              <span>Continue to Contact Info</span>
-                              <ChevronRight className="w-4 h-4" />
-                            </button>
-                          </div>
+                        {/* ================= STEP 1: WHAT & WHEN ================= */}
+                        <div className={bookingStep === 1 ? 'block' : 'hidden'} data-step="1">
+                          <BookingStep1WhatAndWhen
+                            services={services}
+                            selectedServiceIds={selectedServiceIds}
+                            onToggleService={handleToggleService}
+                            pickupDate={pickupDate}
+                            onSelectPickupDate={setPickupDate}
+                            selectedSlotName={selectedSlotName}
+                            onSelectSlot={setSelectedSlotName}
+                            slots={slots}
+                            estimatedSubtotalPaise={combinedEstimatedSubtotalPaise}
+                            onNext={() => handleNextStep(1)}
+                            bookingStepError={bookingStep === 1 ? bookingStepError : null}
+                          />
                         </div>
 
-                        {/* ================= STEP 2: CONTACT DETAILS ================= */}
-                        <div className={bookingStep === 2 ? 'space-y-5 animate-fade-in' : 'hidden'} data-step="2">
-                          <div className="space-y-1">
-                            <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
-                              <Phone className="w-4 h-4 text-brand-600" /> Step 2: Contact & Mobile Number
-                            </h3>
-                            <p className="text-[11px] text-slate-500">
-                              Our pickup executive will call this phone number when arriving at your doorstep.
-                            </p>
-                          </div>
-
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                            <div>
-                              <label className="block text-slate-700 font-bold mb-1">Your Full Name</label>
-                              <input
-                                type="text"
-                                value={customerName}
-                                onChange={(e) => setCustomerName(e.target.value)}
-                                placeholder="e.g. Priya Patel"
-                                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 bg-white font-medium"
-                                required
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-slate-700 font-bold mb-1">10-Digit Mobile Number</label>
-                              <div className="relative">
-                                <span className="absolute left-3 top-2.5 text-slate-400 font-bold font-mono text-xs">+91</span>
-                                <input
-                                  type="tel"
-                                  maxLength={10}
-                                  value={customerPhone}
-                                  onChange={(e) => setCustomerPhone(e.target.value.replace(/[^0-9]/g, ''))}
-                                  placeholder="9876543210"
-                                  className="w-full pl-12 pr-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono text-xs bg-white font-medium"
-                                  required
-                                />
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl text-[11px] text-slate-600 flex items-center gap-2">
-                            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                            <span>Real-time booking and dispatch notifications will be sent to this mobile number.</span>
-                          </div>
-
-                          <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
-                            <button
-                              type="button"
-                              onClick={handlePrevStep}
-                              className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition flex items-center gap-1 cursor-pointer"
-                            >
-                              <ChevronLeft className="w-4 h-4" />
-                              <span>Back to Schedule</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => handleNextStep(2)}
-                              className="py-3 px-6 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer"
-                            >
-                              <span>Continue to Pickup Address</span>
-                              <ChevronRight className="w-4 h-4" />
-                            </button>
-                          </div>
+                        {/* ================= STEP 2: WHERE & WHO ================= */}
+                        <div className={bookingStep === 2 ? 'block' : 'hidden'} data-step="2">
+                          <BookingStep2WhereAndWho
+                            customerName={customerName}
+                            onCustomerNameChange={setCustomerName}
+                            customerPhone={customerPhone}
+                            onCustomerPhoneChange={setCustomerPhone}
+                            addresses={addresses}
+                            selectedAddressId={selectedAddressId}
+                            onSelectSavedAddress={(addr) => {
+                              setSelectedAddressId(addr.id);
+                              setIsEnteringNewAddress(false);
+                              setIsRefiningAddress(false);
+                            }}
+                            isEnteringNewAddress={isEnteringNewAddress}
+                            onToggleNewAddress={(val) => {
+                              setIsEnteringNewAddress(val);
+                              if (!val && addresses.length > 0) {
+                                setSelectedAddressId(addresses[0].id);
+                              }
+                            }}
+                            newAddress={newAddress}
+                            onUpdateNewAddress={(patch) => setNewAddress((prev) => ({ ...prev, ...patch }))}
+                            isRefiningAddress={isRefiningAddress}
+                            onToggleRefineAddress={() => setIsRefiningAddress((prev) => !prev)}
+                            refinedAddress={refinedAddress}
+                            onUpdateRefinedAddress={(patch) => setRefinedAddress((prev) => ({ ...prev, ...patch }))}
+                            updateSavedAddressBook={updateSavedAddressBook}
+                            onToggleUpdateSavedAddressBook={setUpdateSavedAddressBook}
+                            onGetCurrentLocation={handleGetCurrentLocation}
+                            isLocating={isLocating}
+                            locationFeedback={locationFeedback}
+                            onOpenMapPicker={(target) => handleOpenMapPicker(target)}
+                            onClearLocation={handleClearLocation}
+                            onPrev={handlePrevStep}
+                            onNext={() => handleNextStep(2)}
+                            bookingStepError={bookingStep === 2 ? bookingStepError : null}
+                          />
                         </div>
 
-                        {/* ================= STEP 3: PICKUP ADDRESS ================= */}
-                        <div className={bookingStep === 3 ? 'space-y-5 animate-fade-in' : 'hidden'} data-step="3">
-                          <div className="space-y-1">
-                            <div className="flex items-center justify-between">
-                              <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
-                                <MapPin className="w-4 h-4 text-brand-600" /> Step 3: Pickup Address
-                              </h3>
-                              {addresses.length > 0 && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setIsEnteringNewAddress(!isEnteringNewAddress);
-                                    setBookingStep(3);
-                                  }}
-                                  className="text-xs font-bold text-brand-600 hover:underline cursor-pointer"
-                                >
-                                  {isEnteringNewAddress ? 'Choose Saved Address' : '+ New Address'}
-                                </button>
-                              )}
-                            </div>
-                            <p className="text-[11px] text-slate-500">
-                              Select a saved address from your address book or enter a new pickup location.
-                            </p>
-                          </div>
-
-                          {!isEnteringNewAddress && addresses.length > 0 ? (
-                            <div className="space-y-2">
-                              {addresses.map((addr) => {
-                                const isSelected = selectedAddressId === addr.id;
-                                return (
-                                  <div
-                                    key={addr.id}
-                                    className={`p-3.5 rounded-2xl border transition ${isSelected
-                                        ? 'border-brand-600 bg-brand-50/70 text-slate-900 ring-2 ring-brand-500/20'
-                                        : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
-                                      }`}
-                                  >
-                                    <label className="flex items-start gap-3 cursor-pointer">
-                                      <input
-                                        type="radio"
-                                        name="selectedAddress"
-                                        value={addr.id}
-                                        checked={isSelected}
-                                        onChange={() => handleSelectSavedAddress(addr)}
-                                        className="mt-1 text-brand-600 focus:ring-brand-500"
-                                      />
-                                      <div className="text-xs flex-1">
-                                        <div className="flex items-center justify-between">
-                                          <span className="font-bold text-slate-900">{addr.label}</span>
-                                          {isSelected && (
-                                            <button
-                                              type="button"
-                                              onClick={(e) => {
-                                                e.preventDefault();
-                                                e.stopPropagation();
-                                                setIsRefiningAddress(!isRefiningAddress);
-                                              }}
-                                              className="text-[11px] font-bold text-brand-700 bg-white hover:bg-brand-100 border border-brand-300 px-2.5 py-1 rounded-lg transition flex items-center gap-1 cursor-pointer"
-                                              data-testid={`refine-address-${addr.id}`}
-                                            >
-                                              <Edit2 className="w-3 h-3" />
-                                              <span>{isRefiningAddress ? 'Hide Refinement' : 'Refine / Edit Address'}</span>
-                                            </button>
-                                          )}
-                                        </div>
-                                        <span className="text-slate-600 block mt-0.5">{addr.address_line}</span>
-                                        {addr.landmark && (
-                                          <span className="text-slate-500 text-[11px] block">Landmark: {addr.landmark}</span>
-                                        )}
-                                        <div className="flex items-center gap-3 mt-1 text-[11px] font-mono text-slate-400">
-                                          <span>PIN: {addr.pincode}</span>
-                                          {(() => {
-                                            const cov = getPincodeCoverageInfo(addr.pincode);
-                                            if (cov && !cov.isActive) {
-                                              return (
-                                                <span className="text-[10px] font-sans font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
-                                                  Coverage Inactive
-                                                </span>
-                                              );
-                                            }
-                                            if (cov && cov.areaName) {
-                                              return (
-                                                <span className="text-slate-500 font-sans font-medium">
-                                                  • {cov.areaName}
-                                                </span>
-                                              );
-                                            }
-                                            return null;
-                                          })()}
-                                          {addr.latitude && addr.longitude && (
-                                            <span className="text-emerald-700 font-sans font-semibold">📍 GPS Pin Attached</span>
-                                          )}
-                                        </div>
-                                      </div>
-                                    </label>
-
-                                    {/* Refinement Sub-form for Selected Address */}
-                                    {isSelected && isRefiningAddress && (
-                                      <div className="mt-3 pt-3 border-t border-brand-200/80 space-y-2.5 text-xs animate-fade-in" data-testid="address-refinement-panel">
-                                        <span className="font-bold text-brand-900 block text-[11px] uppercase tracking-wider">
-                                          Refine Address for this Pickup
-                                        </span>
-                                        <div>
-                                          {renderAddressInputFields({
-                                            line: refinedAddress.line,
-                                            landmark: refinedAddress.landmark,
-                                            pincode: refinedAddress.pincode,
-                                            onLineChange: (val) => updateRefinedAddress({ line: val }),
-                                            onLandmarkChange: (val) => updateRefinedAddress({ landmark: val }),
-                                            onPincodeChange: (val) => updateRefinedAddress({ pincode: val }),
-                                            lineLabel: 'Door / Flat No., Building, Street',
-                                            landmarkLabel: 'Landmark',
-                                            pincodeLabel: 'PIN Code',
-                                            labelClass: 'block text-[11px] font-bold text-slate-700 mb-1',
-                                            linePlaceholder: 'e.g. Flat 301, Tower B, 12th Main Rd',
-                                            landmarkPlaceholder: 'e.g. Opposite Park',
-                                            pincodePlaceholder: 'e.g. 560038',
-                                            inputClass: 'w-full px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 bg-white'
-                                          })}
-
-                                          {renderMapPinBox(
-                                            refinedAddress.latitude,
-                                            refinedAddress.longitude,
-                                            'booking_refine',
-                                            refinedAddress.line || addr.address_line,
-                                            'Adjust Pickup Pin for Refined Address',
-                                            { cardStyle: false, fallbackText: 'No map pin set', buttonText: 'Adjust on Map' }
-                                          )}
-                                        </div>
-
-                                        <label className="flex items-center gap-2 pt-1 text-xs font-semibold text-slate-700 cursor-pointer">
-                                          <input
-                                            type="checkbox"
-                                            checked={updateSavedAddressBook}
-                                            onChange={(e) => setUpdateSavedAddressBook(e.target.checked)}
-                                            className="rounded text-brand-600 focus:ring-brand-500"
-                                          />
-                                          <span>Update my saved address book with these details</span>
-                                        </label>
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          ) : (
-                            <div className="space-y-2 text-xs">
-                              {renderAddressInputFields({
-                                line: newAddress.line,
-                                landmark: newAddress.landmark,
-                                pincode: newAddress.pincode,
-                                onLineChange: (val) => updateNewAddress({ line: val }),
-                                onLandmarkChange: (val) => updateNewAddress({ landmark: val }),
-                                onPincodeChange: (val) => updateNewAddress({ pincode: val }),
-                                linePlaceholder: 'House / Flat No., Apartment, Street name',
-                                landmarkPlaceholder: 'Landmark (e.g. Near Metro)',
-                                pincodePlaceholder: 'PIN Code (e.g. 560103)',
-                                required: true,
-                                pinRequired: true,
-                                inputClass: 'w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-medium bg-white',
-                                subInputClass: 'w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 bg-white',
-                                middleSlot: (
-                                  <div className="space-y-1.5 pt-0.5">
-                                    <div className="flex items-center justify-between flex-wrap gap-2">
-                                      <div className="flex items-center gap-2">
-                                        <button
-                                          type="button"
-                                          onClick={handleGetCurrentLocation}
-                                          disabled={isLocating}
-                                          className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 disabled:opacity-50 px-3 py-1.5 rounded-lg border border-brand-200 transition cursor-pointer"
-                                        >
-                                          <MapPin className="w-3.5 h-3.5 text-brand-600" />
-                                          <span>{isLocating ? 'Acquiring GPS...' : '📍 Use current location'}</span>
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => setMapPickerState({
-                                            isOpen: true,
-                                            target: 'booking_new',
-                                            initialLat: newAddress.latitude,
-                                            initialLng: newAddress.longitude,
-                                            addressContext: newAddress.line || 'New Address',
-                                            title: 'Pin Exact Doorstep on Map'
-                                          })}
-                                          className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 px-3 py-1.5 rounded-lg border border-brand-200 transition cursor-pointer"
-                                        >
-                                          <Navigation className="w-3.5 h-3.5 text-brand-600" />
-                                          <span>Adjust Pin on Map</span>
-                                        </button>
-                                      </div>
-                                      {newAddress.latitude && newAddress.longitude && (
-                                        <div className="flex items-center gap-2">
-                                          <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
-                                            ✓ GPS Attached
-                                          </span>
-                                          <button
-                                            type="button"
-                                            onClick={handleClearLocation}
-                                            className="text-[10px] text-slate-400 hover:text-slate-600 underline cursor-pointer"
-                                          >
-                                            Remove
-                                          </button>
-                                        </div>
-                                      )}
-                                    </div>
-                                    {locationFeedback && (
-                                      <p
-                                        className={`text-[11px] leading-tight ${locationFeedback.type === 'success'
-                                            ? 'text-emerald-700 font-medium'
-                                            : locationFeedback.type === 'loading'
-                                              ? 'text-brand-600 animate-pulse'
-                                              : 'text-amber-700'
-                                          }`}
-                                      >
-                                        {locationFeedback.message}
-                                      </p>
-                                    )}
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          )}
-
-                          <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
-                            <button
-                              type="button"
-                              onClick={handlePrevStep}
-                              className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition flex items-center gap-1 cursor-pointer"
-                            >
-                              <ChevronLeft className="w-4 h-4" />
-                              <span>Back to Contact</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => handleNextStep(3)}
-                              className="py-3 px-6 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer"
-                            >
-                              <span>Continue to Order Review</span>
-                              <ChevronRight className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* ================= STEP 4: REVIEW & OFFERS ================= */}
-                        <div className={bookingStep === 4 ? 'space-y-5 animate-fade-in' : 'hidden'} data-step="4">
-                          <div className="space-y-1">
-                            <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
-                              <CheckCircle2 className="w-4 h-4 text-brand-600" /> Step 4: Review Booking Details & Offers
-                            </h3>
-                            <p className="text-[11px] text-slate-500">
-                              Verify your laundry pickup schedule, contact details, address, and apply promotional coupons.
-                            </p>
-                          </div>
-
-                          {/* Summary Cards */}
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                            <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 space-y-1">
-                              <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
-                                Scheduled Pickup
-                              </span>
-                              <p className="font-bold text-slate-900 text-xs">
-                                {pickupDate} • {selectedSlotName}
-                              </p>
-                              <span className="text-[11px] text-slate-500 block">
-                                Service(s): {activeSelectedServices.map((s) => s.name).join(', ') || 'Wash & Fold'}
-                              </span>
-                            </div>
-
-                            <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 space-y-1">
-                              <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
-                                Contact Details
-                              </span>
-                              <p className="font-bold text-slate-900 text-xs">
-                                {customerName || 'Customer'}
-                              </p>
-                              <span className="text-[11px] text-slate-500 block font-mono">
-                                +91 {customerPhone}
-                              </span>
-                            </div>
-
-                            <div className="sm:col-span-2 p-3.5 rounded-2xl bg-slate-50 border border-slate-200 space-y-1">
-                              <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
-                                Pickup Address
-                              </span>
-                              <p className="font-medium text-slate-900 text-xs">
-                                Address: {isEnteringNewAddress || addresses.length === 0
+                        {/* ================= STEP 3: REVIEW & CONFIRM ================= */}
+                        <div className={bookingStep === 3 ? 'block' : 'hidden'} data-step="3">
+                          <BookingStep3ReviewAndConfirm
+                              selectedServices={activeSelectedServices}
+                              pickupDate={pickupDate}
+                              selectedSlotName={selectedSlotName}
+                              customerName={customerName}
+                              customerPhone={customerPhone || currentUser?.phone || ''}
+                              pickupAddressLine={
+                                isEnteringNewAddress || addresses.length === 0
                                   ? newAddress.line
-                                  : (isRefiningAddress ? refinedAddress.line : addresses.find((a) => a.id === selectedAddressId)?.address_line)}
-                              </p>
-                              <span className="text-[11px] text-slate-500">
-                                PIN: {isEnteringNewAddress || addresses.length === 0 ? newAddress.pincode : (isRefiningAddress ? refinedAddress.pincode : addresses.find((a) => a.id === selectedAddressId)?.pincode)}
-                                {(newAddress.landmark || refinedAddress.landmark || addresses.find((a) => a.id === selectedAddressId)?.landmark) ? ` • Landmark: ${newAddress.landmark || refinedAddress.landmark || addresses.find((a) => a.id === selectedAddressId)?.landmark}` : ''}
-                              </span>
-                            </div>
+                                  : (isRefiningAddress ? refinedAddress.line : (addresses.find((a) => a.id === selectedAddressId)?.address_line || ''))
+                              }
+                              pickupLandmark={
+                                isEnteringNewAddress || addresses.length === 0
+                                  ? newAddress.landmark
+                                  : (isRefiningAddress ? refinedAddress.landmark : (addresses.find((a) => a.id === selectedAddressId)?.landmark || ''))
+                              }
+                              pickupPincode={
+                                isEnteringNewAddress || addresses.length === 0
+                                  ? newAddress.pincode
+                                  : (isRefiningAddress ? refinedAddress.pincode : (addresses.find((a) => a.id === selectedAddressId)?.pincode || ''))
+                              }
+                              hasGpsPin={
+                                !!(isEnteringNewAddress
+                                  ? (newAddress.latitude && newAddress.longitude)
+                                  : (isRefiningAddress
+                                      ? (refinedAddress.latitude && refinedAddress.longitude)
+                                      : (addresses.find((a) => a.id === selectedAddressId)?.latitude && addresses.find((a) => a.id === selectedAddressId)?.longitude)))
+                              }
+                              estimatedSubtotalPaise={combinedEstimatedSubtotalPaise}
+                              appliedCoupon={appliedCoupon}
+                              availablePromotions={availablePromotions}
+                              couponCodeInput={couponCodeInput}
+                              onCouponCodeInputChange={setCouponCodeInput}
+                              onApplyCoupon={handleApplyCoupon}
+                              onRemoveCoupon={handleRemoveCoupon}
+                              couponValidationLoading={couponValidationLoading}
+                              couponError={couponError}
+                              couponSuccessMessage={couponSuccessMessage}
+                              isSubmitting={isBookingSubmitting}
+                              isResolvingPending={isResolvingPending}
+                              pendingRecoveryStatus={pendingRecovery?.status}
+                              statusCheckOutcome={statusCheckOutcome}
+                              isAuthenticated={!!currentUser}
+                              onPrev={handlePrevStep}
+                              onConfirmBooking={handleCreateBooking}
+                            />
                           </div>
-
-                          {/* Promotional Offers & Coupon Section in Review */}
-                          <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3 text-xs">
-                            <div className="flex items-center justify-between">
-                              <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                                <TicketPercent className="w-4 h-4 text-brand-600" /> Promotional Coupon
-                              </label>
-                              {appliedCoupon ? (
-                                <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
-                                  Coupon Attached
-                                </span>
-                              ) : (
-                                <span className="text-[10px] font-semibold text-slate-400">
-                                  Optional
-                                </span>
-                              )}
-                            </div>
-
-                            {appliedCoupon ? (
-                              <div className="bg-white border border-emerald-300 rounded-2xl p-3.5 space-y-2 shadow-2xs">
-                                <div className="flex items-start justify-between gap-2">
-                                  <div className="flex items-start gap-2.5">
-                                    <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0 mt-0.5">
-                                      <Tag className="w-4 h-4" />
-                                    </div>
-                                    <div>
-                                      <div className="flex items-center gap-2">
-                                        <span className="font-mono font-black text-slate-900 text-sm tracking-wider">
-                                          {appliedCoupon.code}
-                                        </span>
-                                        <span className="text-[10px] bg-emerald-100 text-emerald-800 font-black px-2 py-0.5 rounded-full">
-                                          {appliedCoupon.discount_type === 'percentage'
-                                            ? `${appliedCoupon.discount_value}% OFF`
-                                            : `₹${(appliedCoupon.discount_paise / 100).toFixed(0)} OFF`}
-                                        </span>
-                                      </div>
-                                      <p className="text-[11px] text-slate-600 mt-1 font-medium">
-                                        Estimated Discount: <span className="font-bold text-emerald-700">Up to ₹{(appliedCoupon.discount_paise / 100).toFixed(0)}</span>
-                                      </p>
-                                      <p className="text-[10px] text-amber-700 font-medium mt-0.5 flex items-center gap-1">
-                                        <span>⏳</span> Final savings verified upon digital scale weighing at intake hub.
-                                      </p>
-                                      {appliedCoupon.min_order_paise ? (
-                                        <p className="text-[10px] text-slate-500 mt-0.5">
-                                          Condition: Requires final measured subtotal of min. ₹{(appliedCoupon.min_order_paise / 100).toFixed(0)}.
-                                        </p>
-                                      ) : null}
-                                    </div>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={handleRemoveCoupon}
-                                    className="text-xs font-bold text-rose-600 hover:text-rose-700 px-2.5 py-1 rounded-lg hover:bg-rose-50 transition cursor-pointer"
-                                  >
-                                    Remove
-                                  </button>
-                                </div>
-                                <div className="text-[10px] text-slate-500 bg-slate-50 p-2 rounded-xl border border-slate-100">
-                                  🔒 Offer locked for this order. As per our pre-booking promotion policy, terms are snapshotted and will be applied at weighing.
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="space-y-3">
-                                {availablePromotions.length > 0 && (
-                                  <div className="space-y-2">
-                                    <span className="text-[11px] font-bold text-slate-600 block">
-                                      Featured Offers Available:
-                                    </span>
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                      {availablePromotions.map((promo) => (
-                                        <div
-                                          key={promo.code}
-                                          className="bg-white border border-slate-200 hover:border-brand-300 rounded-xl p-2.5 flex items-center justify-between gap-2 transition shadow-2xs"
-                                        >
-                                          <div className="min-w-0">
-                                            <div className="flex items-center gap-1.5">
-                                              <span className="font-mono font-bold text-xs text-brand-900 bg-brand-50 px-1.5 py-0.5 rounded border border-brand-200">
-                                                {promo.code}
-                                              </span>
-                                              <span className="text-[10px] font-bold text-emerald-700">
-                                                {promo.discount_type === 'percentage'
-                                                  ? `${promo.discount_value}% OFF`
-                                                  : `₹${(promo.discount_value / 100).toFixed(0)} OFF`}
-                                              </span>
-                                            </div>
-                                            <p className="text-[10px] text-slate-500 mt-1 truncate" title={promo.description}>
-                                              {promo.description || 'Promotional discount'}
-                                            </p>
-                                          </div>
-                                          <button
-                                            type="button"
-                                            onClick={() => handleApplyCoupon(promo.code)}
-                                            disabled={couponValidationLoading}
-                                            className="px-2.5 py-1.5 bg-brand-50 hover:bg-brand-600 text-brand-700 hover:text-white border border-brand-200 hover:border-brand-600 rounded-lg font-bold text-[11px] transition shrink-0 cursor-pointer disabled:opacity-50"
-                                          >
-                                            Apply
-                                          </button>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )}
-
-                                {/* Manual Code Input Field */}
-                                <div className="pt-1 border-t border-slate-200/60 space-y-1.5">
-                                  <span className="text-[11px] text-slate-500 block">
-                                    Have another promo code?
-                                  </span>
-                                  <div className="flex items-center gap-2">
-                                    <input
-                                      type="text"
-                                      value={couponCodeInput}
-                                      onChange={(e) => setCouponCodeInput(e.target.value.toUpperCase())}
-                                      placeholder="Enter code (e.g. WELCOME50)"
-                                      className="flex-1 px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 font-mono uppercase text-xs bg-white"
-                                      data-testid="coupon-code-input"
-                                    />
-                                    <button
-                                      type="button"
-                                      onClick={() => handleApplyCoupon()}
-                                      disabled={couponValidationLoading || !couponCodeInput.trim()}
-                                      className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-sm transition cursor-pointer disabled:opacity-50"
-                                      data-testid="apply-coupon-btn"
-                                    >
-                                      {couponValidationLoading ? 'Applying...' : 'Apply'}
-                                    </button>
-                                  </div>
-                                </div>
-
-                                {couponError && (
-                                  <p className="text-[11px] text-rose-600 font-semibold" data-testid="coupon-error-msg">
-                                    {couponError}
-                                  </p>
-                                )}
-                                {couponSuccessMessage && (
-                                  <p className="text-[11px] text-emerald-600 font-semibold" data-testid="coupon-success-msg">
-                                    {couponSuccessMessage}
-                                  </p>
-                                )}
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Step 4 Actions (Back & Forward) */}
-                          <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
-                            <button
-                              type="button"
-                              onClick={handlePrevStep}
-                              className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition flex items-center gap-1 cursor-pointer"
-                            >
-                              <ChevronLeft className="w-4 h-4" />
-                              <span>Back to Address</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => handleNextStep(4)}
-                              className="py-3 px-6 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer"
-                            >
-                              <span>Continue to Payment & Confirmation</span>
-                              <ChevronRight className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* ================= STEP 5: PAYMENT OPTION & FINAL CONFIRMATION ================= */}
-                        <div className={bookingStep === 5 ? 'space-y-5 animate-fade-in' : 'hidden'} data-step="5">
-                          <div className="space-y-1">
-                            <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
-                              <CreditCard className="w-4 h-4 text-brand-600" /> Step 5: Payment Option & Confirmation
-                            </h3>
-                            <p className="text-[11px] text-slate-500">
-                              Choose your preferred payment method upon doorstep delivery. No advance payment is charged now.
-                            </p>
-                          </div>
-
-                          {!hasAvailablePaymentMethod && (
-                            <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3">
-                              <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-                              <div className="space-y-1">
-                                <span className="font-bold text-xs text-amber-900 block">Payment Methods Paused</span>
-                                <p className="text-[11px] text-amber-800 leading-snug">
-                                  Online booking is temporarily unavailable because payment methods are currently paused by store management. Please check back later.
-                                </p>
-                              </div>
-                            </div>
-                          )}
-
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            {isCodAvailable ? (
-                              <label
-                                className={`p-4 rounded-2xl border cursor-pointer transition flex items-start gap-3 ${selectedPaymentMethod === 'cash'
-                                    ? 'border-brand-600 bg-brand-50/70 text-slate-900 ring-2 ring-brand-500/20 shadow-2xs'
-                                    : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
-                                  }`}
-                              >
-                                <input
-                                  type="radio"
-                                  name="paymentMethod"
-                                  value="cash"
-                                  checked={selectedPaymentMethod === 'cash'}
-                                  onChange={() => setSelectedPaymentMethod('cash')}
-                                  className="mt-1 text-brand-600 focus:ring-brand-500 cursor-pointer"
-                                />
-                                <div className="text-xs space-y-1">
-                                  <span className="font-bold text-slate-900 block text-sm">Cash on Delivery</span>
-                                  <p className="text-[11px] text-slate-500 leading-snug">
-                                    Pay cash to the delivery associate when clean, folded clothes are delivered to your doorstep.
-                                  </p>
-                                </div>
-                              </label>
-                            ) : (
-                              <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50 text-slate-400 flex items-start gap-3">
-                                <Banknote className="w-5 h-5 text-slate-400 mt-0.5 shrink-0" />
-                                <div className="text-xs space-y-1">
-                                  <span className="font-bold text-slate-500 block text-sm">Cash on Delivery Paused</span>
-                                  <p className="text-[11px] text-slate-400 leading-snug">
-                                    Cash collection is temporarily disabled by store policy.
-                                  </p>
-                                </div>
-                              </div>
-                            )}
-
-                            {isOnlineAvailable ? (
-                              <label
-                                className={`p-4 rounded-2xl border cursor-pointer transition flex items-start gap-3 ${selectedPaymentMethod === 'razorpay'
-                                    ? 'border-brand-600 bg-brand-50/70 text-slate-900 ring-2 ring-brand-500/20 shadow-2xs'
-                                    : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
-                                  }`}
-                              >
-                                <input
-                                  type="radio"
-                                  name="paymentMethod"
-                                  value="razorpay"
-                                  checked={selectedPaymentMethod === 'razorpay'}
-                                  onChange={() => setSelectedPaymentMethod('razorpay')}
-                                  className="mt-1 text-brand-600 focus:ring-brand-500 cursor-pointer"
-                                />
-                                <div className="text-xs space-y-1">
-                                  <div className="flex items-center gap-1.5">
-                                    <span className="font-bold text-slate-900 text-sm">Online Payment</span>
-                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-brand-100 text-brand-800">Razorpay</span>
-                                  </div>
-                                  <p className="text-[11px] text-slate-500 leading-snug">
-                                    Pay securely online via UPI, Credit/Debit cards, or NetBanking once your invoice is generated.
-                                  </p>
-                                </div>
-                              </label>
-                            ) : (
-                              <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50 text-slate-400 flex items-start gap-3">
-                                <CreditCard className="w-5 h-5 text-slate-400 mt-0.5 shrink-0" />
-                                <div className="text-xs space-y-1">
-                                  <span className="font-bold text-slate-500 block text-sm">Online Payment Paused</span>
-                                  <p className="text-[11px] text-slate-400 leading-snug">
-                                    Instant online gateway is currently paused until gateway activation is complete.
-                                  </p>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="p-3.5 bg-brand-50/80 rounded-2xl border border-brand-200 text-xs text-brand-900 space-y-1">
-                            <span className="font-bold flex items-center gap-1.5 text-xs text-brand-900">
-                              <Scale className="w-4 h-4 text-brand-600" />
-                              Zero Advance Charge
-                            </span>
-                            <p className="text-[11px] text-brand-800 leading-relaxed">
-                              Actual laundry weight and exact bill will be verified on calibrated digital scales at store intake. You pay only for actual measured weight!
-                            </p>
-                          </div>
-
-                          <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs space-y-1.5">
-                            <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
-                              Booking Summary
-                            </span>
-                            <div className="flex justify-between items-center text-slate-600">
-                              <span>Pickup:</span>
-                              <span className="font-bold text-slate-900">{pickupDate} ({selectedSlotName})</span>
-                            </div>
-                            <div className="flex justify-between items-center text-slate-600">
-                              <span>Contact:</span>
-                              <span className="font-bold text-slate-900">{customerName} (+91 {customerPhone})</span>
-                            </div>
-                            {appliedCoupon && (
-                              <div className="flex justify-between items-center text-emerald-700 font-medium">
-                                <span>Coupon Attached:</span>
-                                <span className="font-bold font-mono">{appliedCoupon.code}</span>
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Step 5 Actions (Back & Submit) */}
-                          <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row justify-between items-center gap-3">
-                            <button
-                              type="button"
-                              onClick={handlePrevStep}
-                              className="w-full sm:w-auto py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition flex items-center justify-center gap-1 cursor-pointer"
-                            >
-                              <ChevronLeft className="w-4 h-4" />
-                              <span>Back to Review</span>
-                            </button>
-
-                            <button
-                              type="submit"
-                              disabled={isBookingSubmitting || isResolvingPending || !hasAvailablePaymentMethod}
-                              className="w-full sm:w-auto py-3.5 px-8 bg-brand-600 hover:bg-brand-700 text-white font-black text-sm rounded-xl shadow-lg transition flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
-                            >
-                              {isBookingSubmitting || isResolvingPending ? (
-                                <>
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                  <span>{isResolvingPending ? 'Resolving Booking...' : 'Confirming Pickup Booking...'}</span>
-                                </>
-                              ) : pendingRecovery?.status === 'uncertain_timeout' ? (
-                                statusCheckOutcome === 'not_found' ? (
-                                  <>
-                                    <CheckCircle2 className="w-4 h-4" />
-                                    <span>Complete Booking</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <RefreshCw className="w-4 h-4" />
-                                    <span>Verify Unconfirmed Booking First</span>
-                                  </>
-                                )
-                              ) : !hasAvailablePaymentMethod ? (
-                                <>
-                                  <AlertCircle className="w-4 h-4" />
-                                  <span>Payment Methods Paused</span>
-                                </>
-                              ) : currentUser ? (
-                                <>
-                                  <CheckCircle2 className="w-4 h-4" />
-                                  <span>Confirm Pickup Booking</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Lock className="w-4 h-4" />
-                                  <span>Sign In to Book Pickup</span>
-                                </>
-                              )}
-                            </button>
-                          </div>
-                        </div>
                       </form>
                     </div>
 
@@ -3140,43 +2714,6 @@ export const CustomerHome: React.FC = () => {
                             3. Exact bill generated upon store intake & digital scale verification. <br />
                             4. Delivered clean & crisp. Pay at your doorstep after your laundry is weighed (Cash on Delivery).
                           </p>
-                        </div>
-
-                        <div className="hidden lg:block pt-2">
-                          <button
-                            onClick={handleCreateBooking}
-                            disabled={isBookingSubmitting || isResolvingPending}
-                            className="w-full py-3.5 bg-white hover:bg-slate-100 active:scale-[0.99] text-brand-700 font-black text-sm rounded-2xl shadow-lg transition flex items-center justify-center gap-2 disabled:opacity-50"
-                          >
-                            {isBookingSubmitting || isResolvingPending ? (
-                              <>
-                                <Loader2 className="w-5 h-5 animate-spin" />
-                                <span>{isResolvingPending ? 'Resolving Booking...' : 'Confirming Pickup Booking...'}</span>
-                              </>
-                            ) : pendingRecovery?.status === 'uncertain_timeout' ? (
-                              statusCheckOutcome === 'not_found' ? (
-                                <>
-                                  <CheckCircle2 className="w-5 h-5" />
-                                  <span>Complete Booking</span>
-                                </>
-                              ) : (
-                                <>
-                                  <RefreshCw className="w-5 h-5" />
-                                  <span>Verify Unconfirmed Booking First</span>
-                                </>
-                              )
-                            ) : currentUser ? (
-                              <>
-                                <CheckCircle2 className="w-5 h-5" />
-                                <span>Confirm Pickup Booking</span>
-                              </>
-                            ) : (
-                              <>
-                                <Lock className="w-5 h-5" />
-                                <span>Sign In to Book Pickup</span>
-                              </>
-                            )}
-                          </button>
                         </div>
                       </div>
 

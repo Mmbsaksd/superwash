@@ -26,7 +26,13 @@ export const CustomerBottomNav: React.FC<CustomerBottomNavProps> = ({
       id: 'home',
       label: 'Home',
       icon: Home,
-      action: () => navigate('/')
+      action: () => {
+        if (isCustomerPage) {
+          navigate('/customer?tab=home');
+        } else {
+          navigate('/');
+        }
+      }
     },
     {
       id: 'orders',
@@ -106,7 +112,7 @@ export const CustomerBottomNav: React.FC<CustomerBottomNavProps> = ({
           }
 
           let isItemActive = false;
-          if (item.id === 'home' && isLandingPage) isItemActive = true;
+          if (item.id === 'home' && (isLandingPage || (isCustomerPage && activeTab === 'home'))) isItemActive = true;
           if (item.id === 'orders' && isCustomerPage && (activeTab === 'current' || activeTab === 'history')) isItemActive = true;
           if (item.id === 'profile' && isCustomerPage && (activeTab === 'addresses' || activeTab === 'profile')) isItemActive = true;
           if (item.id === 'settings' && isCustomerPage && (activeTab === 'settings' || activeTab === 'contact')) isItemActive = true;

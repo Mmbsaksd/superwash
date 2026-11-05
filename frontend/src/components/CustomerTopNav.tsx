@@ -31,8 +31,8 @@ export const CustomerTopNav: React.FC<CustomerTopNavProps> = ({
     {
       id: 'home',
       label: 'Home',
-      to: '/',
-      isActive: isLandingPage
+      to: isCustomerPage ? '/customer?tab=home' : '/',
+      isActive: isLandingPage || (isCustomerPage && activeTab === 'home')
     },
     {
       id: 'orders',

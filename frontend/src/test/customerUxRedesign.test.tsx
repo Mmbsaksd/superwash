@@ -290,7 +290,7 @@ describe('Customer UX Redesign — Navigation Components', () => {
   });
 });
 
-describe('Customer UX Redesign — 5-Step Sequential Booking Flow in CustomerHome', () => {
+describe('Customer UX Redesign — 3-Step Simplified Booking Flow in CustomerHome', () => {
   const testCustomer: Profile = {
     id: '00000000-0000-4000-a000-000000000001',
     role: 'customer',
@@ -305,7 +305,7 @@ describe('Customer UX Redesign — 5-Step Sequential Booking Flow in CustomerHom
     localStorage.setItem('superwash_auth_profile', JSON.stringify(testCustomer));
   });
 
-  it('guides customer sequentially through 5 steps with back/continue validation', async () => {
+  it('guides customer sequentially through 3 steps with back/continue validation', async () => {
     render(
       <MemoryRouter initialEntries={['/customer?tab=book']}>
         <AuthProvider>
@@ -316,66 +316,53 @@ describe('Customer UX Redesign — 5-Step Sequential Booking Flow in CustomerHom
       </MemoryRouter>
     );
 
-    // Verify initial render lands on Step 1 and services have loaded
+    // Verify initial render lands on Step 1: What & When
     await waitFor(() => {
       expect(screen.getByText('Schedule Home Pickup')).toBeInTheDocument();
-      expect(screen.getByText(/Step 1 of 5/i)).toBeInTheDocument();
+      expect(screen.getByText(/Step 1 of 3/i)).toBeInTheDocument();
       expect(screen.getByText(/Select 3-Hour Time Window/i)).toBeInTheDocument();
       expect(screen.getByText(/Select Laundry Service\(s\)/i)).toBeInTheDocument();
     }, { timeout: 5000 });
 
-    // Step 1: Click Continue to Contact Info
-    const continueToContactBtn = screen.getByRole('button', { name: /Continue to Contact Info/i });
-    expect(continueToContactBtn).toBeInTheDocument();
-    fireEvent.click(continueToContactBtn);
+    // Step 1: Click Continue to Location & Contact
+    const continueToStep2Btn = screen.getByRole('button', { name: /Continue to Location & Contact/i });
+    expect(continueToStep2Btn).toBeInTheDocument();
+    fireEvent.click(continueToStep2Btn);
 
-    // Step 2: Contact info step should now be active
+    // Step 2: Where & Who step should now be active
     await waitFor(() => {
-      expect(screen.getByText(/Step 2 of 5/i)).toBeInTheDocument();
-      expect(screen.getByText(/Step 2: Contact & Mobile Number/i)).toBeInTheDocument();
+      expect(screen.getByText(/Step 2 of 3/i)).toBeInTheDocument();
+      expect(screen.getByText(/Contact Information/i)).toBeInTheDocument();
+      expect(screen.getByText(/Pickup Address & Map Location/i)).toBeInTheDocument();
     }, { timeout: 4000 });
 
-    // Step 2: Continue to address
-    const continueToAddressBtn = screen.getByRole('button', { name: /Continue to Pickup Address/i });
-    fireEvent.click(continueToAddressBtn);
+    // Fill address line if needed so validation passes
+    const addressInputs = screen.getAllByRole('textbox');
+    // If new address form is displayed, fill the address line and pin
+    const addrInput = addressInputs.find((el) => el.getAttribute('placeholder')?.includes('Flat') || el.getAttribute('placeholder')?.includes('Apartment'));
+    if (addrInput) {
+      fireEvent.change(addrInput, { target: { value: 'Flat 101, Test Residency, Bellandur' } });
+    }
 
-    // Step 3: Pickup address
+    // Step 2: Continue to Review & Confirm
+    const continueToStep3Btn = screen.getByRole('button', { name: /Continue to Review & Confirm/i });
+    fireEvent.click(continueToStep3Btn);
+
+    // Step 3: Review & Confirm step should now be active
     await waitFor(() => {
-      expect(screen.getByText(/Step 3 of 5/i)).toBeInTheDocument();
-      expect(screen.getByText(/Step 3: Pickup Address/i)).toBeInTheDocument();
+      expect(screen.getByText(/Step 3 of 3/i)).toBeInTheDocument();
+      expect(screen.getByText(/Review Booking Details/i)).toBeInTheDocument();
+      expect(screen.getByText(/Pay at Doorstep Upon Delivery/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Confirm Pickup Booking/i })).toBeInTheDocument();
     }, { timeout: 6000 });
 
-    // Step 3: Continue to review
-    const continueToReviewBtn = screen.getByRole('button', { name: /Continue to Order Review/i });
-    fireEvent.click(continueToReviewBtn);
-
-    // Step 4: Review & coupon
-    await waitFor(() => {
-      expect(screen.getByText(/Step 4 of 5/i)).toBeInTheDocument();
-      expect(screen.getByText(/Step 4: Review Booking Details/i)).toBeInTheDocument();
-      expect(screen.getByText(/Scheduled Pickup/i)).toBeInTheDocument();
-      expect(screen.getAllByText(/Promotional Coupon/i).length).toBeGreaterThanOrEqual(1);
-    }, { timeout: 6000 });
-
-    // Step 4: Continue to payment
-    const continueToPaymentBtn = screen.getByRole('button', { name: /Continue to Payment/i });
-    fireEvent.click(continueToPaymentBtn);
-
-    // Step 5: Payment & confirmation
-    await waitFor(() => {
-      expect(screen.getByText(/Step 5 of 5/i)).toBeInTheDocument();
-      expect(screen.getByText(/Step 5: Payment Option/i)).toBeInTheDocument();
-      expect(screen.getByText(/Zero Advance Charge/i)).toBeInTheDocument();
-      expect(screen.getAllByRole('button', { name: /Confirm Pickup Booking/i }).length).toBeGreaterThanOrEqual(1);
-    }, { timeout: 6000 });
-
-    // Can navigate back from Step 5 to Step 4
-    const backToReviewBtn = screen.getByRole('button', { name: /Back to Review/i });
-    fireEvent.click(backToReviewBtn);
+    // Can navigate back from Step 3 to Step 2
+    const backToLocationBtn = screen.getByRole('button', { name: /Back to Location/i });
+    fireEvent.click(backToLocationBtn);
 
     await waitFor(() => {
-      expect(screen.getByText(/Step 4 of 5/i)).toBeInTheDocument();
-      expect(screen.getByText(/Step 4: Review Booking Details/i)).toBeInTheDocument();
+      expect(screen.getByText(/Step 2 of 3/i)).toBeInTheDocument();
+      expect(screen.getByText(/Contact Information/i)).toBeInTheDocument();
     }, { timeout: 6000 });
   }, 30000);
 });

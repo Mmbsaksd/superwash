@@ -4,6 +4,7 @@ import { useAuth } from './context/AuthContext';
 import { RoleSwitcherBar } from './components/RoleSwitcherBar';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { PublicLayout } from './components/PublicLayout';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Loader2 } from 'lucide-react';
 
 // Lazy-loaded routes for optimal initial bundle size and route-level code splitting
@@ -91,8 +92,9 @@ export const App: React.FC = () => {
 
       {/* Main Content Viewports */}
       <main className="flex-1">
-        <Suspense fallback={<PageFallback />}>
-          <Routes>
+        <ErrorBoundary>
+          <Suspense fallback={<PageFallback />}>
+            <Routes>
             {/* Public Landing Page */}
             <Route path="/" element={<LandingPage />} />
 
@@ -186,7 +188,8 @@ export const App: React.FC = () => {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>
-      </main>
+      </ErrorBoundary>
+    </main>
     </div>
   );
 };

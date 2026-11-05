@@ -315,3 +315,7 @@ export function isAmbiguousNetworkError(error: any): boolean {
 export function isDefinitiveError(error: any): boolean {
   return !isAmbiguousNetworkError(error);
 }
+
+
+// Re-export Guest Booking Draft Lifecycle Manager for unified import access
+export * from './guestBookingDraft';
